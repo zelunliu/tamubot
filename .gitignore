@@ -1,0 +1,36 @@
+# Environment & secrets
+.env
+*.env.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Raw data (large files, regeneratable by running the scrapers)
+tamu_data/raw/syllabi/
+tamu_data/raw/catalog/
+
+# PDFs anywhere in the repo (debug/test files)
+*.pdf
+
+# Personal processing logs (progress checkpoints, error logs)
+tamu_data/logs/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code internal
+.claude/

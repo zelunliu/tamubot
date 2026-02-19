@@ -1,0 +1,19 @@
+# App
+streamlit
+python-dotenv
+google-genai>=1.0
+langchain
+
+# MongoDB Atlas
+pymongo[srv]
+voyageai
+
+# Legacy (Vertex AI fallback)
+google-cloud-aiplatform
+langchain-google-vertexai
+
+# Data pipeline
+scrapy
+trafilatura
+pymupdf
+pydantic>=2.0

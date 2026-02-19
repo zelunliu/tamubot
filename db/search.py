@@ -1,0 +1,301 @@
+"""Search functions over the MongoDB Atlas chunks/policies/courses collections.
+
+Provides:
+    hybrid_search   — $rankFusion of vector + text search
+    search_semantic — pure vector search
+    search_by_course — metadata filter lookup
+    get_policy      — policy collection lookup
+    aggregate_query — count/comparison aggregations
+"""
+
+import os
+from typing import Optional
+
+import voyageai
+from dotenv import load_dotenv
+from pymongo import MongoClient
+
+load_dotenv()
+
+MONGODB_URI = os.getenv("MONGODB_URI")
+DB_NAME = os.getenv("MONGODB_DB", "tamubot")
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
+
+EMBEDDING_MODEL = "voyage-3"
+
+_client: Optional[MongoClient] = None
+_voyage: Optional[voyageai.Client] = None
+
+
+def _get_db():
+    global _client
+    if _client is None:
+        _client = MongoClient(MONGODB_URI)
+    return _client[DB_NAME]
+
+
+def _get_voyage():
+    global _voyage
+    if _voyage is None:
+        _voyage = voyageai.Client(api_key=VOYAGE_API_KEY)
+    return _voyage
+
+
+def _embed_query(query: str) -> list[float]:
+    client = _get_voyage()
+    result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
+    return result.embeddings[0]
+
+
+def _build_vector_stage(
+    query_embedding: list[float],
+    k: int,
+    filters: Optional[dict] = None,
+) -> dict:
+    """Build a $vectorSearch stage."""
+    stage = {
+        "$vectorSearch": {
+            "index": "vector_index",
+            "path": "embedding",
+            "queryVector": query_embedding,
+            "numCandidates": k * 10,
+            "limit": k,
+        }
+    }
+    if filters:
+        stage["$vectorSearch"]["filter"] = filters
+    return stage
+
+
+def _build_text_stage(
+    query: str,
+    k: int,
+    filters: Optional[dict] = None,
+) -> dict:
+    """Build a $search stage for full-text BM25."""
+    compound: dict = {
+        "must": [
+            {
+                "text": {
+                    "query": query,
+                    "path": ["content", "title"],
+                }
+            }
+        ]
+    }
+    if filters:
+        filter_clauses = []
+        for field, value in filters.items():
+            if isinstance(value, list):
+                filter_clauses.append({"in": {"path": field, "value": value}})
+            else:
+                filter_clauses.append({"equals": {"path": field, "value": value}})
+        compound["filter"] = filter_clauses
+
+    return {
+        "$search": {
+            "index": "text_index",
+            "compound": compound,
+        }
+    }
+
+
+def _projection():
+    """Standard projection excluding the raw embedding to reduce payload."""
+    return {
+        "$project": {
+            "embedding": 0,
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def _rrf_fuse(ranked_lists: list[list[dict]], k_param: int = 60) -> list[dict]:
+    """Reciprocal Rank Fusion over multiple ranked result lists.
+
+    Each doc is identified by its _id. Returns docs sorted by fused score.
+    """
+    scores: dict[str, float] = {}
+    doc_map: dict[str, dict] = {}
+
+    for result_list in ranked_lists:
+        for rank, doc in enumerate(result_list):
+            doc_id = str(doc["_id"])
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k_param + rank + 1)
+            if doc_id not in doc_map:
+                doc_map[doc_id] = doc
+
+    sorted_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+    return [doc_map[did] for did in sorted_ids]
+
+
+def hybrid_search(
+    query: str,
+    filters: Optional[dict] = None,
+    k: int = 5,
+) -> list[dict]:
+    """Hybrid search using manual RRF of vector + text pipelines.
+
+    Runs vector search and text search separately, then fuses with RRF.
+    Compatible with M0 free tier (no $rankFusion needed).
+
+    Args:
+        query: natural-language question
+        filters: optional filter dict, e.g. {"course_id": "CSCE 120"}
+        k: number of results to return
+
+    Returns:
+        List of chunk documents (dicts) ranked by fused score.
+    """
+    db = _get_db()
+    query_embedding = _embed_query(query)
+
+    # Build atlas filters for vector search
+    atlas_filters = None
+    if filters:
+        atlas_filters = {}
+        for field, value in filters.items():
+            if isinstance(value, list):
+                atlas_filters[field] = {"$in": value}
+            else:
+                atlas_filters[field] = value
+
+    # Vector search pipeline
+    vector_pipeline = [
+        _build_vector_stage(query_embedding, k, atlas_filters),
+        _projection(),
+    ]
+    vector_results = list(db["chunks"].aggregate(vector_pipeline))
+
+    # Text search pipeline
+    text_pipeline = [
+        _build_text_stage(query, k, filters),
+        {"$limit": k},
+        _projection(),
+    ]
+    try:
+        text_results = list(db["chunks"].aggregate(text_pipeline))
+    except Exception:
+        # Text index may not be ready yet — fall back to vector only
+        text_results = []
+
+    # Fuse and return top-k
+    fused = _rrf_fuse([vector_results, text_results])
+    return fused[:k]
+
+
+def search_semantic(
+    query: str,
+    filters: Optional[dict] = None,
+    top_k: int = 5,
+) -> list[dict]:
+    """Pure vector similarity search."""
+    db = _get_db()
+    query_embedding = _embed_query(query)
+
+    atlas_filters = None
+    if filters:
+        atlas_filters = {}
+        for field, value in filters.items():
+            if isinstance(value, list):
+                atlas_filters[field] = {"$in": value}
+            else:
+                atlas_filters[field] = value
+
+    pipeline = [
+        _build_vector_stage(query_embedding, top_k, atlas_filters),
+        {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+        _projection(),
+    ]
+
+    return list(db["chunks"].aggregate(pipeline))
+
+
+def search_by_course(
+    course_id: str,
+    category: Optional[str] = None,
+    term: Optional[str] = None,
+) -> list[dict]:
+    """Direct metadata lookup — no embedding needed."""
+    db = _get_db()
+    query: dict = {"course_id": course_id}
+    if category:
+        query["category"] = category
+    if term:
+        query["term"] = term
+
+    return list(
+        db["chunks"]
+        .find(query, {"embedding": 0})
+        .sort([("section", 1), ("chunk_index", 1)])
+    )
+
+
+def get_policy(policy_name: str) -> Optional[dict]:
+    """Look up a boilerplate policy by name (case-insensitive substring)."""
+    db = _get_db()
+    return db["policies"].find_one(
+        {"policy_name": {"$regex": policy_name, "$options": "i"}}
+    )
+
+
+def multi_course_retrieve(
+    query: str,
+    course_ids: list[str],
+    category: Optional[str] = None,
+    k_per_course: int = 10,
+) -> list[dict]:
+    """Parallel filtered hybrid searches for multi-course comparison queries.
+
+    Runs one hybrid_search per course_id with filters, then combines all results.
+
+    Args:
+        query: search query (ideally rewritten by router)
+        course_ids: list of course IDs to retrieve for
+        category: optional category filter applied to all courses
+        k_per_course: how many candidates to retrieve per course
+
+    Returns:
+        Combined list of chunk documents from all courses.
+    """
+    all_results = []
+    for course_id in course_ids:
+        filters: dict = {"course_id": course_id}
+        if category:
+            filters["category"] = category
+        results = hybrid_search(query, filters=filters, k=k_per_course)
+        all_results.extend(results)
+    return all_results
+
+
+def aggregate_query(
+    category: str,
+    course_id: Optional[str] = None,
+    term: Optional[str] = None,
+) -> list[dict]:
+    """Aggregate query for comparisons (e.g. 'how many sections of CSCE 120?')."""
+    db = _get_db()
+    match: dict = {}
+    if category:
+        match["categories_present"] = category
+    if course_id:
+        match["course_id"] = course_id
+    if term:
+        match["term"] = term
+
+    pipeline = [
+        {"$match": match},
+        {
+            "$group": {
+                "_id": "$course_id",
+                "sections": {"$push": "$section"},
+                "instructors": {"$addToSet": "$instructor.name"},
+                "count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"_id": 1}},
+    ]
+    return list(db["courses"].aggregate(pipeline))
