@@ -152,13 +152,17 @@ tamu_data/raw/catalog/    tamu_data/raw/syllabi/*.pdf
 
 ### Query Router (`db/router.py`)
 
-Single Gemini 2.5 Flash call classifies user intent → structured JSON. The `route_retrieve_rerank()` function orchestrates the full Stage 1+2 pipeline: classify → retrieve → rerank.
+Single Gemini 2.5 Flash call **extracts structured variables** from the query — no intent classification. The `route_retrieve_rerank()` function orchestrates the full Stage 1+2 pipeline: extract → derive → retrieve → rerank.
 
-**8 Intent Types**: `single_course_lookup`, `multi_course_comparison`, `aggregation_query`, `policy_lookup`, `schedule_query`, `instructor_query`, `general_academic`, `out_of_scope`
+**Variables extracted by LLM**: `course_ids`, `specific_categories`, `category_confidence`, `specific_only`, `semantic_intent`, `semantic_type`, `rewritten_query`, `section`
 
-**RouterResult dataclass**: `intent`, `course_ids: list[str]`, `section`, `category`, `policy_name`, `rewritten_query`, `confidence`, `requires_retrieval`, `is_comparison`
+**Derived in pure Python** (no LLM): `function` (one of 8) + `retrieval_mode` (`metadata` | `hybrid` | `semantic`)
 
-Falls back to `hybrid_search` when confidence < 0.5. Comparison queries route to `multi_course_retrieve()` + `rerank_multi_course()`.
+**8 Functions**: `metadata_default`, `metadata_specific`, `metadata_combined`, `hybrid_default`, `hybrid_specific`, `hybrid_combined`, `semantic_general`, `out_of_scope`
+
+**RouterResult dataclass**: all extracted variables + derived `function` + `retrieval_mode`, auto-computed in `__post_init__`. `requires_retrieval` property = `bool(course_ids) or semantic_intent`.
+
+`_derive_function()` and `_derive_retrieval_mode()` are pure Python helpers implementing the derivation matrix. `category_confidence >= CATEGORY_CONFIDENCE_THRESHOLD (0.7)` → metadata path (no embedding).
 
 ### Reranker (`db/reranker.py`)
 
@@ -170,9 +174,10 @@ Voyage AI rerank-2 cross-encoder reranking:
 
 Outlet LLM (Gemini 2.0 Flash):
 - `format_context_xml(results)` — XML-tagged chunks with source/course/category attributes
-- `build_system_prompt(intent, course_ids)` — intent-adaptive system prompts
-- `generate(results, question, intent, course_ids)` — grounded generation with `[Source N]` citations
-- `out_of_scope` intent returns a canned response (no LLM call)
+- `build_system_prompt(function, course_ids, semantic_type)` — function-adaptive system prompts + semantic_type advisory overlay
+- `generate(results, question, function, course_ids, semantic_type)` — grounded generation with `[Source N]` citations
+- `out_of_scope` function returns a canned response (no LLM call)
+- Per-function temperatures: `metadata_*` → 0.0, `hybrid_*` → 0.1, `semantic_general` → 0.0
 - Post-processing: collapses excessive whitespace from Gemini markdown table generation
 
 ### Syllabus Parsing (`process_syllabi.py`)
@@ -194,30 +199,35 @@ Features: resume from last position, error logging, rate limit handling, `--retr
 - Syllabus PDF download — 7,970 PDFs across all departments
 - **Gemini PDF parsing** — 259/259 CSCE+ISEN files parsed (74 errors retried)
 - MongoDB Atlas integration layer: models, indexes, ingestion, search (db/ package)
-- **3-stage RAG pipeline**: Router (8 intents, multi-course, query rewriting) → Retrieval+Rerank (Voyage rerank-2) → Generator (XML context, citations)
+- **3-stage RAG pipeline**: Router → Retrieval+Rerank (Voyage rerank-2) → Generator (XML context, citations)
 - **SDK migration**: `google-generativeai` → `google-genai>=1.0`
-- App rewired to 3-stage pipeline; single-course, instructor, schedule, aggregation, policy, out-of-scope queries all working end-to-end
 - Project restructured: clean root, `tamu_data/raw/` + `tamu_data/processed/`, legacy data deleted
 - **Observability stack (Phase 1)** — Langfuse tracing + RAGAS automated evaluation live
   - `db/observability.py`: custom REST-based Langfuse client (bypasses SDK for Python 3.14 compat)
   - Full 5-span trace hierarchy per request (Router → Retrieval → [Embeddings, Search, Reranker] → Generator)
   - RAGAS Faithfulness + AnswerRelevancy scored asynchronously using Voyage AI embeddings as critic
   - Langfuse project: https://cloud.langfuse.com/project/cmlyjfvy200qbad07ezy65y21
+- **New router schema** — replaced 8-intent classification with structured variable extraction
+  - Router LLM extracts: `course_ids`, `specific_categories`, `category_confidence`, `specific_only`, `semantic_intent`, `semantic_type`, `rewritten_query`
+  - Function and retrieval_mode derived in pure Python from those variables (no LLM judgment for routing)
+  - 8 functions: `metadata_default/specific/combined`, `hybrid_default/specific/combined`, `semantic_general`, `out_of_scope`
+  - `search_by_course_categories()` added — exact index lookup, no embedding, no reranking (metadata path)
+  - `_deduplicate_chunks()` in place — fixes comparison query whitespace bug
+  - **Dry-run eval: 34/34 (100%)** across all function types (CSCE 638 + CSCE 670 test suite)
+  - Key routing insight: `hybrid_specific` is correct for queries that name a category explicitly as the subject
+    (e.g. "based on the grading structure" → `specific_only=True`, retrieves GRADING + advisory overlay)
 
 ### Known Issues
-- **Comparison query whitespace bug**: Gemini generates markdown table cells padded with thousands of spaces when receiving near-duplicate chunks (e.g. multiple sections of same course). Post-processing collapses whitespace but the table is truncated because tokens were wasted.
-  - **Root cause**: Retrieved chunks for "compare CSCE 120 and CSCE 221" are near-duplicates — 3 CSCE 120 chunks + 3 CSCE 221 chunks with identical content across sections.
-  - **Likely fixes**:
-    1. **Deduplicate before generation** — keep only one chunk per `(course_id, category)` before passing to generator
-    2. **Prompt engineering** — instruct model to use bullet points instead of tables
+- **`hybrid_combined` requires careful phrasing**: When a category is explicitly named in the query as subject matter, the router correctly sets `specific_only=True` → `hybrid_specific`. Only queries that request a general overview *while also* mentioning a category as background context produce `specific_only=False` → `hybrid_combined`. This is correct behavior, not a bug.
+- **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — if thinking uses its full budget, only ~512 tokens remain for JSON output. Adequate for current prompt; watch if prompt grows.
 - **Langfuse SDK incompatible with Python 3.14**: Official SDK uses `pydantic.v1` which breaks on Python 3.14+. Workaround: custom `MinimalLangfuseClient` in `db/observability.py` posts directly to REST API. Revert to official SDK when they ship a fix.
 
 ### Next Steps
-1. **Fix comparison query whitespace bug** — deduplicate chunks by `(course_id, category)` before generator
-2. **Expand parsing to all departments** — run `process_syllabi.py` without `--department` filter
-3. **Add latency percentile tracking** — p50/p95 per intent type in Langfuse dashboards
+1. **Expand parsing to all departments** — run `process_syllabi.py` without `--department` filter
+2. **Run full pipeline eval** — test retrieval quality + citation rate once MongoDB is ingested
+3. **Add latency percentile tracking** — p50/p95 per function type in Langfuse dashboards
 4. **Set score alerts** — Langfuse webhook when faithfulness < 0.5
-5. **Observability Phase 2** — prompt management via Langfuse, A/B testing router prompts
+5. **Observability Phase 2** — prompt management via Langfuse, A/B testing router variables
 
 ## Cloud Deployment
 

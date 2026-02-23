@@ -1,9 +1,10 @@
-"""Query intent router — classifies user questions and orchestrates retrieval + reranking.
+"""Query router — extracts structured variables from user questions and orchestrates retrieval + reranking.
 
 Stage 1 of the 3-stage RAG pipeline: Router/Inlet → Retrieval+Rerank → Generator/Outlet.
 
-Uses Gemini 2.5 Flash for intent classification with 8 intent types, multi-course entity
-extraction, and query rewriting/expansion.
+Uses Gemini 2.5 Flash for structured variable extraction (course IDs, categories,
+semantic intent) with query rewriting/expansion.  The retrieval function is derived
+mechanically from the extracted variables — there is no intent classification step.
 """
 
 import json
@@ -18,55 +19,95 @@ from db import search, reranker
 
 
 # ---------------------------------------------------------------------------
-# Intent taxonomy
+# Router prompt — structured variable extraction
 # ---------------------------------------------------------------------------
 
-VALID_INTENTS = [
-    "single_course_lookup",
-    "multi_course_comparison",
-    "aggregation_query",
-    "policy_lookup",
-    "schedule_query",
-    "instructor_query",
-    "general_academic",
-    "out_of_scope",
-]
-
 ROUTER_PROMPT = """\
-You are a query classifier for a Texas A&M University course assistant.
-Given the user's question, extract structured JSON with these fields:
+You are a query parser for a Texas A&M University course assistant.
+Extract structured variables from the user's question and emit JSON.
 
-{{
-  "intent": one of {intents},
-  "course_ids": list of course IDs mentioned (e.g. ["CSCE 120", "CSCE 221"]), or [],
-  "section": section number if mentioned, or null,
-  "category": one of ["COURSE_OVERVIEW", "INSTRUCTOR", "PREREQUISITES", "LEARNING_OUTCOMES", "MATERIALS", "GRADING", "SCHEDULE", "ATTENDANCE_AND_MAKEUP", "AI_POLICY", "UNIVERSITY_POLICIES", "SUPPORT_SERVICES"] if relevant, or null,
-  "policy_name": boilerplate policy name if asking about a specific policy, or null,
-  "rewritten_query": the user's question rewritten for optimal search retrieval (expand slang, add synonyms),
-  "confidence": float 0-1 indicating how confident you are in the classification
-}}
+COURSE IDs
+Identify all course IDs mentioned (e.g. "CSCE 638", "CSCE 670").
+Normalize: uppercase department + space + number ("csce638" → "CSCE 638", "CSCE-670" → "CSCE 670").
 
-Intent definitions:
-- "single_course_lookup": asking about a specific course's details (grading, schedule, instructor, materials, AI policy, etc.)
-- "multi_course_comparison": comparing two or more courses or sections (e.g. "compare CSCE 120 and 221", "differences between...")
-- "aggregation_query": asking for counts, lists, or summaries across sections (e.g. "how many sections of CSCE 120?", "which instructors teach...")
-- "policy_lookup": asking about a university-wide boilerplate policy (academic integrity, disability, Title IX, etc.)
-- "schedule_query": asking when a course meets, meeting times, days, room locations
-- "instructor_query": asking who teaches a course, office hours, contact info
-- "general_academic": broad questions about course topics, prerequisites, or recommendations not tied to a specific section
-- "out_of_scope": greetings, weather, unrelated questions — not about TAMU academics
+CATEGORIES
+Identify which syllabus categories the question is asking about.
+Valid categories: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS,
+GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, UNIVERSITY_POLICIES, SUPPORT_SERVICES
 
-Query rewriting rules:
+- specific_categories: list of relevant categories (or [] if none are clearly targeted)
+- specific_only: true if the question asks ONLY about those categories (not a general overview).
+  False if the question is broad or requests a general overview with a category emphasis.
+- category_confidence: 0.0–1.0 for confidence in the extracted categories.
+
+Examples:
+- "What is the grading breakdown for CSCE 638?"
+  → specific_categories=["GRADING"], specific_only=true, category_confidence=0.95
+- "Tell me about CSCE 670"
+  → specific_categories=[], specific_only=false, category_confidence=1.0
+- "Tell me about CSCE 638, especially the grading"
+  → specific_categories=["GRADING"], specific_only=false, category_confidence=0.85
+- "Can I use ChatGPT in CSCE 638?"
+  → specific_categories=["AI_POLICY"], specific_only=true, category_confidence=0.95
+- "What materials and grading does CSCE 638 require?"
+  → specific_categories=["MATERIALS","GRADING"], specific_only=true, category_confidence=0.9
+
+SEMANTIC INTENT
+Determine if the question has a subjective, advisory, or opinion component.
+IMPORTANT: semantic_intent only applies to TAMU academic questions. Non-TAMU questions
+(weather, restaurants, cover letters, coding tasks unrelated to courses) must use
+semantic_intent = false regardless of phrasing.
+
+Set semantic_intent = true ONLY when the question is about TAMU academics AND:
+- Asks for opinions, evaluations, or difficulty comparisons about specific courses
+- Asks about career relevance or skill building ("good for ML career?", "worth taking?")
+- Uses clearly evaluative language about a course: "hard", "strict", "fair", "useful", "worth it"
+- Is a TAMU academic discovery query with NO specific course ID
+  (e.g. "what courses cover ML?", "what is the TAMU academic integrity policy?",
+   "what campus resources are available?")
+
+Set semantic_intent = false for:
+- Purely factual questions (what, when, who, list, how many) — even when comparing two courses
+- Factual side-by-side comparisons of course policies, schedules, or grading structures
+- Questions NOT about TAMU academics (weather, restaurants, non-academic tasks)
+- Greetings and off-topic requests
+
+Examples:
+- "Compare the grading of CSCE 638 and CSCE 670" → semantic_intent=false (factual comparison)
+- "Is CSCE 638 harder than CSCE 670?" → semantic_intent=true (evaluative/opinion)
+- "What is the TAMU academic integrity policy?" → semantic_intent=true (TAMU discovery, no course_id)
+- "What are the best restaurants near TAMU?" → semantic_intent=false (NOT TAMU academic)
+- "Can you write a cover letter?" → semantic_intent=false (NOT TAMU academic)
+
+If semantic_intent = true, set semantic_type to one of:
+- ACADEMIC: Learning outcomes, topics covered, academic content, policies, campus resources
+- CAREER: Job relevance, skill building, industry applications
+- DIFFICULTY: Workload, how hard is it, grading rigor
+- PLANNING: Which course to take, course sequence, scheduling
+- GENERAL: Any other advisory/subjective component about a TAMU course
+
+If semantic_intent = false, set semantic_type = null.
+
+QUERY REWRITING
+Rewrite the query with expanded synonyms for optimal retrieval:
 - "late work" → "attendance makeup deadline extensions late submission"
 - "ChatGPT" / "AI tools" → "AI policy artificial intelligence generative AI tools"
 - "prereqs" → "prerequisites required courses corequisites"
 - "prof" / "teacher" → "instructor professor"
 - "grade breakdown" → "grading policy grade distribution weight percentage"
-- Keep the rewrite concise but include key synonyms for better retrieval.
+Keep the rewrite concise but include key synonyms.
 
-Course ID normalization:
-- "csce120" → "CSCE 120", "CSCE-120" → "CSCE 120", "csce 120" → "CSCE 120"
-- Always output uppercase department + space + number
+Output ONLY a JSON object with these fields:
+{{
+  "course_ids": list of normalized course IDs or [],
+  "section": section number string if mentioned, or null,
+  "specific_categories": list of category strings or [],
+  "specific_only": true or false,
+  "category_confidence": float 0.0–1.0,
+  "semantic_intent": true or false,
+  "semantic_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"GENERAL" or null,
+  "rewritten_query": "expanded query string for retrieval"
+}}
 
 Respond with ONLY valid JSON, no other text.
 
@@ -75,33 +116,98 @@ User question: {query}
 
 
 # ---------------------------------------------------------------------------
-# Router result
+# Derivation helpers (pure Python, no LLM)
+# ---------------------------------------------------------------------------
+
+def _derive_retrieval_mode(course_ids: list[str], category_confidence: float) -> str:
+    """Derive retrieval_mode from course presence and category confidence.
+
+    - No course IDs → "semantic" (full-corpus vector search)
+    - course IDs + high confidence → "metadata" (exact index lookup)
+    - course IDs + low confidence → "hybrid" (RRF of vector + text)
+    """
+    if not course_ids:
+        return "semantic"
+    if category_confidence >= config.CATEGORY_CONFIDENCE_THRESHOLD:
+        return "metadata"
+    return "hybrid"
+
+
+def _derive_function(
+    course_ids: list[str],
+    semantic_intent: bool,
+    specific_categories: list[str],
+    specific_only: bool,
+) -> str:
+    """Derive the retrieval function name from extracted variables.
+
+    Function matrix:
+    course_ids  semantic_intent  specific_categories  specific_only  → function
+    empty       True             any                  any            → semantic_general
+    empty       False            any                  any            → out_of_scope
+    present     False            empty                —              → metadata_default
+    present     False            populated            True           → metadata_specific
+    present     False            populated            False          → metadata_combined
+    present     True             empty                —              → hybrid_default
+    present     True             populated            True           → hybrid_specific
+    present     True             populated            False          → hybrid_combined
+    """
+    if not course_ids:
+        return "semantic_general" if semantic_intent else "out_of_scope"
+
+    if not semantic_intent:
+        if not specific_categories:
+            return "metadata_default"
+        return "metadata_specific" if specific_only else "metadata_combined"
+    else:
+        if not specific_categories:
+            return "hybrid_default"
+        return "hybrid_specific" if specific_only else "hybrid_combined"
+
+
+# ---------------------------------------------------------------------------
+# RouterResult — extracted variables + derived fields
 # ---------------------------------------------------------------------------
 
 @dataclass
 class RouterResult:
     """Structured output from the query router."""
-    intent: str = "general_academic"
+
+    # Extracted by router LLM
     course_ids: list[str] = field(default_factory=list)
-    section: Optional[str] = None
-    category: Optional[str] = None
-    policy_name: Optional[str] = None
+    specific_categories: list[str] = field(default_factory=list)
+    specific_only: bool = False
+    semantic_intent: bool = False
+    semantic_type: Optional[str] = None
+    category_confidence: float = 0.0
     rewritten_query: str = ""
-    confidence: float = 0.0
+    section: Optional[str] = None
+
+    # Derived in Python — auto-computed in __post_init__ if left empty
+    retrieval_mode: str = ""
+    function: str = ""
+
+    def __post_init__(self):
+        if not self.retrieval_mode:
+            self.retrieval_mode = _derive_retrieval_mode(
+                self.course_ids, self.category_confidence
+            )
+        if not self.function:
+            self.function = _derive_function(
+                self.course_ids,
+                self.semantic_intent,
+                self.specific_categories,
+                self.specific_only,
+            )
 
     @property
     def requires_retrieval(self) -> bool:
-        return self.intent != "out_of_scope"
-
-    @property
-    def is_comparison(self) -> bool:
-        return self.intent == "multi_course_comparison"
+        return bool(self.course_ids) or self.semantic_intent
 
 
 def _normalize_course_id(raw: str) -> str:
-    """Normalize a course ID like 'csce120' → 'CSCE 120'."""
+    """Normalize a course ID like 'csce638' → 'CSCE 638'."""
     raw = raw.strip().upper().replace("-", " ")
-    # If no space between letters and digits, insert one
     match = re.match(r"^([A-Z]+)\s*(\d+.*)$", raw)
     if match:
         return f"{match.group(1)} {match.group(2)}"
@@ -113,7 +219,7 @@ def _normalize_course_id(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 def classify_query(query: str, router_span=None) -> "RouterResult":
-    """Classify a user query into intent + entities using Gemini Flash.
+    """Extract structured variables from a user query using Gemini Flash.
 
     Args:
         query:       The raw user question.
@@ -121,10 +227,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     """
     client = config.get_genai_client()
 
-    prompt = ROUTER_PROMPT.format(
-        query=query,
-        intents=json.dumps(VALID_INTENTS),
-    )
+    prompt = ROUTER_PROMPT.format(query=query)
 
     try:
         response = client.models.generate_content(
@@ -133,7 +236,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
             config=types.GenerateContentConfig(
                 temperature=0,
                 response_mime_type="application/json",
-                max_output_tokens=512,
+                max_output_tokens=1024,
                 thinking_config=types.ThinkingConfig(thinking_budget=512),
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             ),
@@ -149,12 +252,11 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     try:
         data = json.loads(response.text)
     except (json.JSONDecodeError, ValueError, AttributeError):
-        result = RouterResult(intent="general_academic", rewritten_query=query, confidence=0.0)
+        result = RouterResult(rewritten_query=query, category_confidence=0.0)
         if router_span is not None:
             try:
                 router_span.update(metadata={
-                    "intent": result.intent,
-                    "confidence": result.confidence,
+                    "function": result.function,
                     "course_ids": [],
                     "parse_error": True,
                 })
@@ -166,25 +268,37 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     raw_ids = data.get("course_ids") or []
     if isinstance(raw_ids, str):
         raw_ids = [raw_ids]
-    if not raw_ids and data.get("course_id"):
-        raw_ids = [data["course_id"]]
-    course_ids = [_normalize_course_id(c) for c in raw_ids]
+    course_ids = [_normalize_course_id(c) for c in raw_ids if c]
 
-    intent = data.get("intent", "general_academic")
-    if intent not in VALID_INTENTS:
-        intent = "general_academic"
+    # Validate specific_categories against known values
+    valid_categories = {
+        "COURSE_OVERVIEW", "INSTRUCTOR", "PREREQUISITES", "LEARNING_OUTCOMES",
+        "MATERIALS", "GRADING", "SCHEDULE", "ATTENDANCE_AND_MAKEUP",
+        "AI_POLICY", "UNIVERSITY_POLICIES", "SUPPORT_SERVICES",
+    }
+    specific_categories = [
+        c for c in (data.get("specific_categories") or [])
+        if c in valid_categories
+    ]
+
+    valid_semantic_types = {"ACADEMIC", "CAREER", "DIFFICULTY", "PLANNING", "GENERAL"}
+    semantic_type = data.get("semantic_type")
+    if semantic_type not in valid_semantic_types:
+        semantic_type = None
 
     result = RouterResult(
-        intent=intent,
         course_ids=course_ids,
-        section=data.get("section"),
-        category=data.get("category"),
-        policy_name=data.get("policy_name"),
+        specific_categories=specific_categories,
+        specific_only=bool(data.get("specific_only", False)),
+        semantic_intent=bool(data.get("semantic_intent", False)),
+        semantic_type=semantic_type,
+        category_confidence=float(data.get("category_confidence", 0.0)),
         rewritten_query=data.get("rewritten_query", query),
-        confidence=data.get("confidence", 0.0),
+        section=data.get("section"),
+        # function and retrieval_mode auto-derived in __post_init__
     )
 
-    # Record router metadata + token usage into the span
+    # Record router metadata into the span
     if router_span is not None:
         try:
             usage = response.usage_metadata
@@ -192,9 +306,13 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
             router_span.update(
                 output=data,
                 metadata={
-                    "intent": result.intent,
-                    "confidence": result.confidence,
+                    "function": result.function,
+                    "retrieval_mode": result.retrieval_mode,
                     "course_ids": result.course_ids,
+                    "specific_categories": result.specific_categories,
+                    "semantic_intent": result.semantic_intent,
+                    "semantic_type": result.semantic_type,
+                    "category_confidence": result.category_confidence,
                     "rewritten_query": result.rewritten_query,
                     "input_tokens": getattr(usage, "prompt_token_count", None),
                     "output_tokens": getattr(usage, "candidates_token_count", None),
@@ -242,7 +360,7 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
 
     search_query = router_result.rewritten_query or query
 
-    # Out-of-scope: no retrieval
+    # No retrieval needed (out_of_scope or no course + no semantic intent)
     if not router_result.requires_retrieval:
         return [], router_result
 
@@ -254,7 +372,8 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
                 name="Retrieval_Stage",
                 input={
                     "query": search_query,
-                    "intent": router_result.intent,
+                    "function": router_result.function,
+                    "retrieval_mode": router_result.retrieval_mode,
                     "course_ids": router_result.course_ids,
                 },
             )
@@ -262,7 +381,9 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
             retrieval_span = None
 
     try:
-        reranked = _retrieve_and_rerank(query, search_query, router_result, retrieval_span)
+        reranked = _deduplicate_chunks(
+            _retrieve_and_rerank(query, search_query, router_result, retrieval_span)
+        )
     except Exception as e:
         if retrieval_span is not None:
             try:
@@ -273,13 +394,29 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
 
     if retrieval_span is not None:
         try:
-            retrieval_span.end(
-                output={"n_results": len(reranked)},
-            )
+            retrieval_span.end(output={"n_results": len(reranked)})
         except Exception:
             pass
 
     return reranked, router_result
+
+
+def _deduplicate_chunks(results: list[dict]) -> list[dict]:
+    """Keep only the highest-scored chunk per (course_id, category) pair.
+
+    The reranker returns results sorted best-first, so the first occurrence
+    of each pair is the most relevant.  Deduplication prevents near-duplicate
+    chunks (e.g. same GRADING content across 3 sections) from inflating the
+    context and triggering Gemini's whitespace padding bug.
+    """
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for doc in results:
+        key = (doc.get("course_id", ""), doc.get("category", ""))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(doc)
+    return deduped
 
 
 def _retrieve_and_rerank(
@@ -288,75 +425,74 @@ def _retrieve_and_rerank(
     router_result: "RouterResult",
     retrieval_span=None,
 ) -> list[dict]:
-    """Internal helper: run the intent-specific retrieval + reranking."""
+    """Internal helper: run the function-specific retrieval + optional reranking.
 
-    # Low confidence → fall back to broad hybrid search
-    if router_result.confidence < 0.5:
-        results = search.hybrid_search(search_query, k=config.RETRIEVAL_TOP_K, parent_span=retrieval_span)
-        return reranker.rerank(search_query, results, parent_span=retrieval_span)
+    Retrieval strategy:
+    - metadata path (retrieval_mode="metadata"): search_by_course_categories, no reranking
+    - hybrid path (retrieval_mode="hybrid"):     hybrid_search per course + reranking
+    - semantic path (retrieval_mode="semantic"): search_semantic + reranking
+    """
+    fn = router_result.function
+    mode = router_result.retrieval_mode
+    cfg = config.FUNCTION_RETRIEVAL_CONFIG.get(fn, {})
+    retrieve_k = cfg.get("retrieve_k", config.RETRIEVAL_TOP_K)
+    rerank_k = cfg.get("rerank_k", config.RERANK_TOP_K)
 
-    # --- Intent-specific retrieval ---
+    course_ids = router_result.course_ids
+    specific_cats = router_result.specific_categories
 
-    if router_result.intent == "policy_lookup" and router_result.policy_name:
-        policy = search.get_policy(router_result.policy_name)
-        if policy:
-            policy.pop("_id", None)
-            return [policy]
-        # Fall through to hybrid if not found
+    # ── semantic_general: no course ID, pure corpus-wide vector search ──────
+    if fn == "semantic_general":
+        results = search.search_semantic(search_query, top_k=retrieve_k)
+        return reranker.rerank(search_query, results, top_k=rerank_k, parent_span=retrieval_span)
 
-    if router_result.intent == "aggregation_query":
-        course_id = router_result.course_ids[0] if router_result.course_ids else None
-        agg_results = search.aggregate_query(
-            category=router_result.category or "",
-            course_id=course_id,
+    # ── out_of_scope: should have been filtered upstream ────────────────────
+    if fn == "out_of_scope" or not course_ids:
+        return []
+
+    # ── Determine which categories to fetch ─────────────────────────────────
+    if fn in ("metadata_default", "hybrid_default"):
+        categories = config.DEFAULT_SUMMARY_CATEGORIES
+    elif fn in ("metadata_specific", "hybrid_specific"):
+        categories = specific_cats or config.DEFAULT_SUMMARY_CATEGORIES
+    elif fn in ("metadata_combined", "hybrid_combined"):
+        # DEFAULT_SUMMARY + specific, deduped, order preserved
+        seen_cats: set[str] = set()
+        categories = []
+        for c in (config.DEFAULT_SUMMARY_CATEGORIES + specific_cats):
+            if c not in seen_cats:
+                seen_cats.add(c)
+                categories.append(c)
+    else:
+        categories = config.DEFAULT_SUMMARY_CATEGORIES
+
+    # ── Per-course fetch helper ──────────────────────────────────────────────
+    def fetch_course(cid: str) -> list[dict]:
+        if mode == "metadata":
+            return search.search_by_course_categories(cid, categories)
+        # hybrid path
+        filters: dict = {"course_id": cid}
+        return search.hybrid_search(
+            search_query, filters=filters, k=retrieve_k, parent_span=retrieval_span
         )
-        if agg_results:
-            return agg_results
 
-    if router_result.intent == "multi_course_comparison" and len(router_result.course_ids) >= 2:
-        results = search.multi_course_retrieve(
-            query=search_query,
-            course_ids=router_result.course_ids,
-            category=router_result.category,
-            k_per_course=config.RETRIEVAL_TOP_K // len(router_result.course_ids),
-            parent_span=retrieval_span,
-        )
-        course_groups: dict[str, list[dict]] = {}
-        for doc in results:
-            cid = doc.get("course_id", "unknown")
-            course_groups.setdefault(cid, []).append(doc)
-        return reranker.rerank_multi_course(
-            search_query, course_groups, top_k_per_course=3, parent_span=retrieval_span
-        )
+    # ── Single-course path ───────────────────────────────────────────────────
+    if len(course_ids) == 1:
+        results = fetch_course(course_ids[0])
+        if mode == "metadata":
+            return results  # exact lookup — no reranking needed
+        return reranker.rerank(search_query, results, top_k=rerank_k, parent_span=retrieval_span)
 
-    # Single-course intents: schedule, instructor, single_course_lookup
-    if router_result.intent in ("single_course_lookup", "schedule_query", "instructor_query"):
-        filters: dict = {}
-        if router_result.course_ids:
-            filters["course_id"] = router_result.course_ids[0]
-        if router_result.category:
-            filters["category"] = router_result.category
-        if router_result.intent == "schedule_query" and not router_result.category:
-            filters["category"] = "SCHEDULE"
-        elif router_result.intent == "instructor_query" and not router_result.category:
-            filters["category"] = "INSTRUCTOR"
+    # ── Multi-course path ────────────────────────────────────────────────────
+    course_groups: dict[str, list[dict]] = {cid: fetch_course(cid) for cid in course_ids}
 
-        results = search.hybrid_search(
-            search_query,
-            filters=filters if filters else None,
-            k=config.RETRIEVAL_TOP_K,
-            parent_span=retrieval_span,
-        )
-        return reranker.rerank(search_query, results, parent_span=retrieval_span)
+    if mode == "metadata":
+        # No reranking — interleave results across courses
+        combined: list[dict] = []
+        for cid in course_ids:
+            combined.extend(course_groups[cid])
+        return combined
 
-    # general_academic or any fallthrough
-    filters = {}
-    if router_result.course_ids:
-        filters["course_id"] = router_result.course_ids[0]
-    results = search.hybrid_search(
-        search_query,
-        filters=filters if filters else None,
-        k=config.RETRIEVAL_TOP_K,
-        parent_span=retrieval_span,
+    return reranker.rerank_multi_course(
+        search_query, course_groups, top_k_per_course=rerank_k, parent_span=retrieval_span
     )
-    return reranker.rerank(search_query, results, parent_span=retrieval_span)

@@ -27,9 +27,31 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.0-flash")
 
-# --- Retrieval tuning ---
+# --- Retrieval tuning (global fallbacks for low-confidence paths) ---
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "20"))
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))
+
+# Default categories fetched when no specific category is requested.
+DEFAULT_SUMMARY_CATEGORIES: list[str] = [
+    "COURSE_OVERVIEW", "PREREQUISITES", "LEARNING_OUTCOMES"
+]
+
+# category_confidence threshold: >= this → use metadata (exact) path;
+# < this → fall back to hybrid search.
+CATEGORY_CONFIDENCE_THRESHOLD: float = 0.7
+
+# Per-function retrieval config: retrieve_k = candidates sent to reranker,
+# rerank_k = final results kept after reranking (ignored on metadata path).
+# For multi-course functions these are *per course*.
+FUNCTION_RETRIEVAL_CONFIG: dict[str, dict[str, int]] = {
+    "metadata_default":  {"retrieve_k": 10, "rerank_k": 0},
+    "metadata_specific": {"retrieve_k": 10, "rerank_k": 0},
+    "metadata_combined": {"retrieve_k": 10, "rerank_k": 0},
+    "semantic_general":  {"retrieve_k": 30, "rerank_k": 10},
+    "hybrid_default":    {"retrieve_k": 12, "rerank_k": 3},
+    "hybrid_specific":   {"retrieve_k": 10, "rerank_k": 3},
+    "hybrid_combined":   {"retrieve_k": 15, "rerank_k": 4},
+}
 
 # --- Retrieval backend ---
 # "mongodb" (default) or "vertex" (legacy fallback)

@@ -169,7 +169,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             with st.spinner("Routing query and retrieving information..."):
                 try:
                     source_docs, router_result = route_retrieve_rerank(prompt, trace=lf_trace)
-                    logger.info(f"Router: intent={router_result.intent}, courses={router_result.course_ids}, docs={len(source_docs)}")
+                    logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
                     st.error(f"Retrieval failed: {e}")
@@ -181,8 +181,9 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     answer = generator.generate(
                         results=source_docs,
                         question=prompt,
-                        intent=router_result.intent if router_result else "general_academic",
+                        function=router_result.function if router_result else "semantic_general",
                         course_ids=router_result.course_ids if router_result else None,
+                        semantic_type=router_result.semantic_type if router_result else None,
                         trace=lf_trace,
                     )
                     logger.info(f"Generation complete, answer length: {len(answer)}")
@@ -219,9 +220,12 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             if source_docs:
                 with st.expander("View Source Documents", expanded=False):
                     if router_result:
+                        mode_label = router_result.retrieval_mode
+                        sem = f" | Semantic: {router_result.semantic_type}" if router_result.semantic_type else ""
                         st.caption(
-                            f"Intent: **{router_result.intent}** | "
-                            f"Confidence: {router_result.confidence:.2f} | "
+                            f"Function: **{router_result.function}** | "
+                            f"Mode: {mode_label} | "
+                            f"CatConf: {router_result.category_confidence:.2f}{sem} | "
                             f"Courses: {', '.join(router_result.course_ids) or 'none'}"
                         )
                     for i, doc in enumerate(source_docs):

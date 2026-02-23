@@ -1,7 +1,7 @@
 """Generator (Outlet LLM) — Stage 3 of the 3-stage RAG pipeline.
 
 Takes reranked retrieval results and generates a grounded, cited response
-using Gemini Flash with intent-adaptive system prompts.
+using Gemini Flash with function-adaptive system prompts.
 """
 
 import re
@@ -50,7 +50,7 @@ def format_context_xml(results: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Intent-adaptive system prompts
+# Function-adaptive system prompts
 # ---------------------------------------------------------------------------
 
 _BASE_SYSTEM = """\
@@ -60,54 +60,115 @@ You help students find information about courses, syllabi, policies, and schedul
 RULES:
 1. Answer ONLY based on the provided <context>. Never invent information.
 2. Cite your sources using [Source N] notation matching the source numbers in the context.
-3. If the context does not contain enough information to answer, say so clearly.
+3. Verification: Before answering, identify which chunk contains the answer. \
+If no chunk contains it, state "I cannot find that information in the provided context" \
+and do NOT use training data to fill the gap.
 4. Do NOT answer questions outside TAMU academics — politely decline.
 5. Be concise but thorough. Use markdown formatting for readability.
 6. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
 """
 
-_INTENT_PROMPTS = {
-    "single_course_lookup": (
-        "The user is asking about a specific course. "
-        "Provide a clear, detailed answer based on the syllabus information. "
-        "Include the course ID and section in your response."
+# Primary prompt per function — describes the factual framing of the response.
+_FUNCTION_PROMPTS: dict[str, str] = {
+    "metadata_default": (
+        "The user is asking for a general overview of a course. "
+        "Provide key facts about course overview, prerequisites, and learning outcomes. "
+        "Include the course ID and section. Label information by section where multiple sections are present."
     ),
-    "multi_course_comparison": (
-        "The user is comparing multiple courses. "
-        "Present the comparison in a clear markdown table when possible. "
-        "Ensure you cover each course mentioned and highlight key differences. "
-        "Use [Source N] citations for each piece of information."
+    "metadata_specific": (
+        "The user is asking about specific course details. "
+        "Focus on the requested categories and be precise and complete. "
+        "Include the course ID and section. Name the instructor where relevant."
     ),
-    "aggregation_query": (
-        "The user is asking for counts, lists, or summaries. "
-        "Present numerical data clearly. List all relevant items."
+    "metadata_combined": (
+        "The user is asking about specific course details in the context of a broader overview. "
+        "Cover both the requested categories and the general course overview. "
+        "Include the course ID and section."
     ),
-    "policy_lookup": (
-        "The user is asking about a university policy. "
-        "Provide the policy information accurately and completely."
+    "semantic_general": (
+        "The user has a broad question not tied to a specific course. "
+        "Provide a helpful answer based only on the available context. "
+        "If the evidence is insufficient to answer fully, state: "
+        "'I don't have enough data to answer this accurately based on the available syllabi.'"
     ),
-    "schedule_query": (
-        "The user is asking about course meeting times or schedule. "
-        "Be precise about days, times, and locations."
+    "hybrid_default": (
+        "The user is asking about a course with an advisory or subjective component. "
+        "Provide factual information from the course content and address the advisory aspect "
+        "using only evidence from the context. "
+        "Avoid speculation — ground all advisory statements in specific course details."
     ),
-    "instructor_query": (
-        "The user is asking about instructors. "
-        "Include name, office hours, email, and office location if available."
+    "hybrid_specific": (
+        "The user is asking about specific course categories with an advisory component. "
+        "Focus on the requested categories and use that evidence to address the advisory dimension. "
+        "Ground all advisory statements in specific facts from the context."
     ),
-    "general_academic": (
-        "The user has a general academic question. "
-        "Provide a helpful answer based on the available context. "
-        "If multiple courses are relevant, mention each."
+    "hybrid_combined": (
+        "The user is asking about specific course details and a broader overview with an advisory component. "
+        "Cover all relevant categories and use the evidence to address the advisory aspect. "
+        "Ground all advisory statements in specific facts from the context."
     ),
 }
 
+# Advisory overlay appended when semantic_type is present (hybrid_* and semantic_general).
+_SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
+    "ACADEMIC": (
+        "Address the academic dimension: discuss learning outcomes, topics covered, and academic content."
+    ),
+    "CAREER": (
+        "Address the career relevance dimension: discuss how the course content relates to "
+        "industry applications and career paths."
+    ),
+    "DIFFICULTY": (
+        "Address the difficulty/workload dimension: use grading weights, prerequisites, and "
+        "attendance requirements as evidence of course rigor."
+    ),
+    "PLANNING": (
+        "Address the planning dimension: help the student understand how this course fits into "
+        "their academic progression."
+    ),
+    "GENERAL": (
+        "Address the advisory aspect of the question using evidence from the course context."
+    ),
+}
 
-def build_system_prompt(intent: str, course_ids: list[str] | None = None) -> str:
-    """Build an intent-adaptive system prompt."""
+# Per-function generation temperature.
+# metadata_* and semantic_general: 0.0 (maximum fidelity to context).
+# hybrid_*: 0.1 (slight flexibility for advisory synthesis).
+_FUNCTION_TEMPERATURES: dict[str, float] = {
+    "metadata_default":  0.0,
+    "metadata_specific": 0.0,
+    "metadata_combined": 0.0,
+    "semantic_general":  0.0,
+    "hybrid_default":    0.1,
+    "hybrid_specific":   0.1,
+    "hybrid_combined":   0.1,
+}
+
+
+def build_system_prompt(
+    function: str,
+    course_ids: list[str] | None = None,
+    semantic_type: str | None = None,
+) -> str:
+    """Build a function-adaptive system prompt."""
     parts = [_BASE_SYSTEM]
 
-    intent_instruction = _INTENT_PROMPTS.get(intent, _INTENT_PROMPTS["general_academic"])
-    parts.append(intent_instruction)
+    function_instruction = _FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"])
+    parts.append(function_instruction)
+
+    # Multi-course comparison overlay
+    if course_ids and len(course_ids) > 1:
+        parts.append(
+            "The user is comparing multiple courses. "
+            "Present the comparison in a Markdown table. "
+            "IMMEDIATELY ADD ' |' AFTER EACH HEADING — do not add extra spaces for column alignment. "
+            "Ensure you cover each course mentioned and highlight key differences. "
+            "Use [Source N] citations for each piece of information."
+        )
+
+    # Advisory overlay for hybrid/semantic functions
+    if semantic_type and semantic_type in _SEMANTIC_TYPE_PROMPTS:
+        parts.append(_SEMANTIC_TYPE_PROMPTS[semantic_type])
 
     if course_ids:
         parts.append(f"Courses referenced: {', '.join(course_ids)}")
@@ -122,32 +183,37 @@ def build_system_prompt(intent: str, course_ids: list[str] | None = None) -> str
 def generate(
     results: list[dict],
     question: str,
-    intent: str = "general_academic",
+    function: str = "semantic_general",
     course_ids: list[str] | None = None,
+    semantic_type: str | None = None,
     trace=None,
 ) -> str:
     """Generate a grounded response with citations using Gemini 2.0 Flash.
 
     Args:
-        results:    Reranked retrieval results (list of chunk dicts).
-        question:   The user's original question.
-        intent:     Classified intent from the router.
-        course_ids: Extracted course IDs for context.
-        trace:      Optional Langfuse trace; creates a Generator_Stage generation span.
+        results:       Reranked retrieval results (list of chunk dicts).
+        question:      The user's original question.
+        function:      Retrieval function from the router (e.g. "metadata_specific").
+        course_ids:    Extracted course IDs for context.
+        semantic_type: Advisory semantic type from the router (e.g. "CAREER").
+        trace:         Optional Langfuse trace; creates a Generator_Stage span.
 
     Returns:
         Generated answer string with [Source N] citations.
     """
-    # Out-of-scope gets a canned response without an LLM call
-    if intent == "out_of_scope":
+    # out_of_scope gets a canned response without an LLM call
+    if function == "out_of_scope":
         return (
             "Howdy! I'm TamuBot, your Texas A&M academic assistant. "
             "I can help you with questions about courses, syllabi, grading policies, "
             "schedules, and university policies. What would you like to know?"
         )
 
-    context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(intent, course_ids)
+    # Recency bias: reverse so the top-scored chunk (index 0) sits closest
+    # to the question, where LLMs attend most reliably.
+    ordered_results = list(reversed(results))
+    context_xml = format_context_xml(ordered_results)
+    system_prompt = build_system_prompt(function, course_ids, semantic_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
     # Generator_Stage generation span
@@ -159,7 +225,8 @@ def generate(
                 model=config.GENERATION_MODEL,
                 input=user_message,
                 metadata={
-                    "intent": intent,
+                    "function": function,
+                    "semantic_type": semantic_type,
                     "course_ids": course_ids or [],
                     "n_sources": len(results),
                     "system_prompt_length": len(system_prompt),
@@ -175,7 +242,7 @@ def generate(
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                temperature=0.2,
+                temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
                 max_output_tokens=4096,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             ),

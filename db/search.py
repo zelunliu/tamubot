@@ -297,6 +297,49 @@ def search_by_course(
     )
 
 
+def search_by_course_categories(
+    course_id: str,
+    categories: list[str],
+    term: Optional[str] = None,
+) -> list[dict]:
+    """Direct metadata lookup by course_id and a list of categories — no embedding needed.
+
+    Returns all matching chunks sorted by the provided category order, then by
+    section and chunk_index within each category.
+
+    Args:
+        course_id:   Course ID to filter on (e.g. "CSCE 638").
+        categories:  List of category strings to include (matched via $in).
+        term:        Optional term filter.
+
+    Returns:
+        List of chunk documents (dicts) without embeddings.
+    """
+    if not categories:
+        return []
+
+    db = _get_db()
+    query: dict = {"course_id": course_id, "category": {"$in": categories}}
+    if term:
+        query["term"] = term
+
+    results = list(
+        db["chunks"]
+        .find(query, {"embedding": 0})
+        .sort([("section", 1), ("chunk_index", 1)])
+    )
+
+    # Re-sort to preserve the requested category order
+    category_order = {cat: i for i, cat in enumerate(categories)}
+    results.sort(
+        key=lambda d: (
+            category_order.get(d.get("category", ""), len(categories)),
+            d.get("chunk_index", 0),
+        )
+    )
+    return results
+
+
 def get_policy(policy_name: str) -> Optional[dict]:
     """Look up a boilerplate policy by name (case-insensitive substring)."""
     db = _get_db()
