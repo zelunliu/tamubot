@@ -112,8 +112,13 @@ def _normalize_course_id(raw: str) -> str:
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify_query(query: str) -> RouterResult:
-    """Classify a user query into intent + entities using Gemini Flash."""
+def classify_query(query: str, router_span=None) -> "RouterResult":
+    """Classify a user query into intent + entities using Gemini Flash.
+
+    Args:
+        query:       The raw user question.
+        router_span: Optional Langfuse span to record router metadata into.
+    """
     client = config.get_genai_client()
 
     prompt = ROUTER_PROMPT.format(
@@ -121,32 +126,46 @@ def classify_query(query: str) -> RouterResult:
         intents=json.dumps(VALID_INTENTS),
     )
 
-    response = client.models.generate_content(
-        model=config.MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0,
-            response_mime_type="application/json",
-            max_output_tokens=512,
-            thinking_config=types.ThinkingConfig(thinking_budget=512),
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        ),
-    )
+    try:
+        response = client.models.generate_content(
+            model=config.MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                max_output_tokens=512,
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            ),
+        )
+    except Exception as e:
+        if router_span is not None:
+            try:
+                router_span.update(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
 
     try:
         data = json.loads(response.text)
     except (json.JSONDecodeError, ValueError, AttributeError):
-        return RouterResult(
-            intent="general_academic",
-            rewritten_query=query,
-            confidence=0.0,
-        )
+        result = RouterResult(intent="general_academic", rewritten_query=query, confidence=0.0)
+        if router_span is not None:
+            try:
+                router_span.update(metadata={
+                    "intent": result.intent,
+                    "confidence": result.confidence,
+                    "course_ids": [],
+                    "parse_error": True,
+                })
+            except Exception:
+                pass
+        return result
 
     # Normalize course IDs
     raw_ids = data.get("course_ids") or []
     if isinstance(raw_ids, str):
         raw_ids = [raw_ids]
-    # Also accept legacy single course_id field
     if not raw_ids and data.get("course_id"):
         raw_ids = [data["course_id"]]
     course_ids = [_normalize_course_id(c) for c in raw_ids]
@@ -155,7 +174,7 @@ def classify_query(query: str) -> RouterResult:
     if intent not in VALID_INTENTS:
         intent = "general_academic"
 
-    return RouterResult(
+    result = RouterResult(
         intent=intent,
         course_ids=course_ids,
         section=data.get("section"),
@@ -165,29 +184,116 @@ def classify_query(query: str) -> RouterResult:
         confidence=data.get("confidence", 0.0),
     )
 
+    # Record router metadata + token usage into the span
+    if router_span is not None:
+        try:
+            usage = response.usage_metadata
+            thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
+            router_span.update(
+                output=data,
+                metadata={
+                    "intent": result.intent,
+                    "confidence": result.confidence,
+                    "course_ids": result.course_ids,
+                    "rewritten_query": result.rewritten_query,
+                    "input_tokens": getattr(usage, "prompt_token_count", None),
+                    "output_tokens": getattr(usage, "candidates_token_count", None),
+                    "thinking_tokens": thinking_tokens,
+                },
+            )
+        except Exception:
+            pass
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator: route → retrieve → rerank
 # ---------------------------------------------------------------------------
 
-def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
+def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterResult"]:
     """Full Stage 1+2 pipeline: classify → retrieve → rerank.
+
+    Args:
+        query: The raw user question.
+        trace: Optional Langfuse trace to attach Router_Stage and Retrieval_Stage spans to.
 
     Returns:
         (reranked_results, router_result) — list of chunk dicts and the router classification.
     """
-    router_result = classify_query(query)
+    # --- Router_Stage span ---
+    router_span = None
+    if trace is not None:
+        try:
+            router_span = trace.span(
+                name="Router_Stage",
+                input={"query": query},
+            )
+        except Exception:
+            router_span = None
+
+    router_result = classify_query(query, router_span=router_span)
+
+    if router_span is not None:
+        try:
+            router_span.end()
+        except Exception:
+            pass
+
     search_query = router_result.rewritten_query or query
 
     # Out-of-scope: no retrieval
     if not router_result.requires_retrieval:
         return [], router_result
 
+    # --- Retrieval_Stage span ---
+    retrieval_span = None
+    if trace is not None:
+        try:
+            retrieval_span = trace.span(
+                name="Retrieval_Stage",
+                input={
+                    "query": search_query,
+                    "intent": router_result.intent,
+                    "course_ids": router_result.course_ids,
+                },
+            )
+        except Exception:
+            retrieval_span = None
+
+    try:
+        reranked = _retrieve_and_rerank(query, search_query, router_result, retrieval_span)
+    except Exception as e:
+        if retrieval_span is not None:
+            try:
+                retrieval_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    if retrieval_span is not None:
+        try:
+            retrieval_span.end(
+                output={"n_results": len(reranked)},
+            )
+        except Exception:
+            pass
+
+    return reranked, router_result
+
+
+def _retrieve_and_rerank(
+    query: str,
+    search_query: str,
+    router_result: "RouterResult",
+    retrieval_span=None,
+) -> list[dict]:
+    """Internal helper: run the intent-specific retrieval + reranking."""
+
     # Low confidence → fall back to broad hybrid search
     if router_result.confidence < 0.5:
-        results = search.hybrid_search(search_query, k=config.RETRIEVAL_TOP_K)
-        reranked = reranker.rerank(search_query, results)
-        return reranked, router_result
+        results = search.hybrid_search(search_query, k=config.RETRIEVAL_TOP_K, parent_span=retrieval_span)
+        return reranker.rerank(search_query, results, parent_span=retrieval_span)
 
     # --- Intent-specific retrieval ---
 
@@ -195,7 +301,7 @@ def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
         policy = search.get_policy(router_result.policy_name)
         if policy:
             policy.pop("_id", None)
-            return [policy], router_result
+            return [policy]
         # Fall through to hybrid if not found
 
     if router_result.intent == "aggregation_query":
@@ -205,7 +311,7 @@ def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
             course_id=course_id,
         )
         if agg_results:
-            return agg_results, router_result
+            return agg_results
 
     if router_result.intent == "multi_course_comparison" and len(router_result.course_ids) >= 2:
         results = search.multi_course_retrieve(
@@ -213,27 +319,23 @@ def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
             course_ids=router_result.course_ids,
             category=router_result.category,
             k_per_course=config.RETRIEVAL_TOP_K // len(router_result.course_ids),
+            parent_span=retrieval_span,
         )
-        # Group by course for balanced reranking
         course_groups: dict[str, list[dict]] = {}
         for doc in results:
             cid = doc.get("course_id", "unknown")
             course_groups.setdefault(cid, []).append(doc)
-        reranked = reranker.rerank_multi_course(
-            search_query, course_groups, top_k_per_course=3
+        return reranker.rerank_multi_course(
+            search_query, course_groups, top_k_per_course=3, parent_span=retrieval_span
         )
-        return reranked, router_result
 
     # Single-course intents: schedule, instructor, single_course_lookup
-    if router_result.intent in (
-        "single_course_lookup", "schedule_query", "instructor_query"
-    ):
+    if router_result.intent in ("single_course_lookup", "schedule_query", "instructor_query"):
         filters: dict = {}
         if router_result.course_ids:
             filters["course_id"] = router_result.course_ids[0]
         if router_result.category:
             filters["category"] = router_result.category
-        # Map specific intents to category filters
         if router_result.intent == "schedule_query" and not router_result.category:
             filters["category"] = "SCHEDULE"
         elif router_result.intent == "instructor_query" and not router_result.category:
@@ -243,9 +345,9 @@ def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
             search_query,
             filters=filters if filters else None,
             k=config.RETRIEVAL_TOP_K,
+            parent_span=retrieval_span,
         )
-        reranked = reranker.rerank(search_query, results)
-        return reranked, router_result
+        return reranker.rerank(search_query, results, parent_span=retrieval_span)
 
     # general_academic or any fallthrough
     filters = {}
@@ -255,6 +357,6 @@ def route_retrieve_rerank(query: str) -> tuple[list[dict], RouterResult]:
         search_query,
         filters=filters if filters else None,
         k=config.RETRIEVAL_TOP_K,
+        parent_span=retrieval_span,
     )
-    reranked = reranker.rerank(search_query, results)
-    return reranked, router_result
+    return reranker.rerank(search_query, results, parent_span=retrieval_span)

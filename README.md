@@ -21,18 +21,22 @@ User Query
   XML-tagged context, intent-adaptive prompts, [Source N] citations
     │
 Response
+    │
+[Background] Langfuse + RAGAS
+  Trace stored → Faithfulness + AnswerRelevancy scored asynchronously
 ```
 
-**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.0 Flash (generator) · Scrapy · Pydantic v2
+**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.0 Flash (generator) · Langfuse (observability) · RAGAS (evaluation) · Scrapy · Pydantic v2
 
 ## Quickstart
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (tested on 3.14)
 - [MongoDB Atlas](https://www.mongodb.com/atlas) cluster (free M0 works)
 - [Voyage AI](https://www.voyageai.com/) API key
 - [Google AI](https://aistudio.google.com/) API key (Gemini)
+- [Langfuse](https://cloud.langfuse.com) account (free tier works)
 
 ### Setup
 
@@ -60,6 +64,11 @@ VOYAGE_API_KEY=...
 GOOGLE_API_KEY=...
 
 RETRIEVAL_BACKEND=mongodb
+
+# Observability (optional but recommended)
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
 ### Load data into MongoDB
@@ -85,6 +94,8 @@ streamlit run app.py
 
 Open [http://localhost:8501](http://localhost:8501).
 
+---
+
 ## Example Queries
 
 | Query | Intent | What happens |
@@ -96,6 +107,8 @@ Open [http://localhost:8501](http://localhost:8501).
 | Can I use ChatGPT in CSCE 221? | `single_course_lookup` + AI_POLICY | Query rewritten with AI synonyms |
 | What is the academic integrity policy? | `policy_lookup` | policies collection lookup |
 | Howdy! | `out_of_scope` | Canned response, no DB call |
+
+---
 
 ## Data Pipeline
 
@@ -118,6 +131,31 @@ python -m db.setup_atlas
 python -m db.ingest
 ```
 
+---
+
+## Observability & Evaluation
+
+Every user query is traced end-to-end in **Langfuse** and asynchronously evaluated by **RAGAS**. See [`OBSERVABILITY.md`](OBSERVABILITY.md) for the full monitoring runbook.
+
+### What gets tracked
+
+| Signal | Tool | Where |
+|--------|------|--------|
+| Full request trace (Router → Retrieval → Generator) | Langfuse | Traces tab |
+| Token usage per stage + thinking tokens | Langfuse | Trace → Generation span |
+| Retrieval stats (n_docs, reranker scores) | Langfuse | Trace → Retrieval_Stage span |
+| Intent + confidence + rewritten query | Langfuse | Trace → Router_Stage span |
+| Faithfulness score | RAGAS → Langfuse | Trace → Scores section |
+| Answer Relevancy score | RAGAS → Langfuse | Trace → Scores section |
+
+### Implementation notes
+
+- **Langfuse SDK** (Python) is **not used** — all telemetry posts directly to the Langfuse REST API via `httpx` (`db/observability.py`). This was necessary because the official SDK's Fern-generated layer depends on `pydantic.v1` which breaks on Python 3.14+.
+- **RAGAS** runs in a background daemon thread after each response — it does not block the UI.
+- **RAGAS embeddings** use Voyage AI (`voyage-3`) to avoid Google Embedding API version compatibility issues.
+
+---
+
 ## Project Structure
 
 ```
@@ -129,17 +167,23 @@ tamubot/
 │   ├── models.py           # Pydantic v2 MongoDB models
 │   ├── setup_atlas.py      # Create Atlas indexes
 │   ├── ingest.py           # Embed + upsert to MongoDB
-│   ├── search.py           # Hybrid search functions
-│   ├── router.py           # Query router + orchestrator
-│   ├── reranker.py         # Voyage AI reranking
-│   └── generator.py        # LLM generation with citations
+│   ├── search.py           # Hybrid search (Voyage_Embeddings + MongoDB_Hybrid_Search spans)
+│   ├── router.py           # Query router + orchestrator (Router_Stage span)
+│   ├── reranker.py         # Voyage AI reranking (Voyage_Reranker span)
+│   ├── generator.py        # LLM generation with citations (Generator_Stage generation)
+│   └── observability.py    # Langfuse REST client + RAGAS evaluation
 ├── tamu_data/
 │   ├── processed/
 │   │   └── gemini_parsed/  # 259 structured syllabus JSONs (committed)
 │   ├── raw/                # PDFs + scraped JSONL (gitignored, large)
 │   └── scraper/            # Scrapy project (catalog + class_search spiders)
-└── pipeline/legacy/        # Superseded scripts (Vertex AI, PyMuPDF)
+├── pipeline/legacy/        # Superseded scripts (Vertex AI, PyMuPDF)
+├── scripts/                # One-off analysis and debug scripts
+├── OBSERVABILITY.md        # Langfuse + RAGAS monitoring runbook
+└── research_prompts.md     # Gemini Deep Research prompts
 ```
+
+---
 
 ## MongoDB Collections
 
@@ -149,9 +193,32 @@ tamubot/
 | `courses` | One doc per section — metadata for aggregations | `crn` |
 | `policies` | Deduplicated university boilerplate policies | SHA-256 of policy name |
 
-## Known Issues
+---
 
-- **Comparison query whitespace bug**: Gemini sometimes generates markdown tables with excessive cell padding when chunks are near-duplicates across sections. Fix in progress — deduplicating chunks per `(course_id, category)` before generation.
+## Current Status (as of 2026-02-23)
+
+### Completed
+- Scrapy spiders for catalog + class search (all departments)
+- Syllabus PDF download — 7,970 PDFs across all departments
+- Gemini PDF parsing — 259/259 CSCE + ISEN files parsed
+- MongoDB Atlas integration: models, indexes, ingestion, hybrid search
+- 3-stage RAG pipeline: Router (8 intents) → Retrieval + Rerank → Generator (citations)
+- **Observability stack** (Phase 1): Langfuse tracing + RAGAS automated evaluation
+  - Custom REST-based Langfuse client (Python 3.14 compatible)
+  - Full trace hierarchy: Router_Stage → Retrieval_Stage → [Voyage_Embeddings, MongoDB_Hybrid_Search, Voyage_Reranker] → Generator_Stage
+  - RAGAS Faithfulness + AnswerRelevancy scored after every response via Voyage AI embeddings
+
+### Known Issues
+- **Comparison query whitespace bug**: Gemini generates markdown tables with excessive cell padding when chunks are near-duplicates across sections. Fix: deduplicate by `(course_id, category)` before generation.
+- **`general_academic` lacks depth control**: No sub-intent signal — discovery queries and specific-course questions land in the same bucket.
+
+### Next Steps
+1. Fix comparison query deduplication
+2. Expand parsing to all departments (`python process_syllabi.py` without `--department`)
+3. Add latency percentile tracking in Langfuse dashboards
+4. Set up Langfuse score alerts (faithfulness < 0.5 threshold)
+
+---
 
 ## License
 

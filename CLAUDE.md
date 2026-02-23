@@ -187,7 +187,7 @@ Sends each PDF directly to Gemini 2.5 Flash (multimodal) and gets structured JSO
 
 Features: resume from last position, error logging, rate limit handling, `--retry-errors` flag.
 
-## Current Status (as of 2026-02-18)
+## Current Status (as of 2026-02-23)
 
 ### Completed
 - Scrapy spiders for catalog + class search (all departments)
@@ -198,6 +198,11 @@ Features: resume from last position, error logging, rate limit handling, `--retr
 - **SDK migration**: `google-generativeai` → `google-genai>=1.0`
 - App rewired to 3-stage pipeline; single-course, instructor, schedule, aggregation, policy, out-of-scope queries all working end-to-end
 - Project restructured: clean root, `tamu_data/raw/` + `tamu_data/processed/`, legacy data deleted
+- **Observability stack (Phase 1)** — Langfuse tracing + RAGAS automated evaluation live
+  - `db/observability.py`: custom REST-based Langfuse client (bypasses SDK for Python 3.14 compat)
+  - Full 5-span trace hierarchy per request (Router → Retrieval → [Embeddings, Search, Reranker] → Generator)
+  - RAGAS Faithfulness + AnswerRelevancy scored asynchronously using Voyage AI embeddings as critic
+  - Langfuse project: https://cloud.langfuse.com/project/cmlyjfvy200qbad07ezy65y21
 
 ### Known Issues
 - **Comparison query whitespace bug**: Gemini generates markdown table cells padded with thousands of spaces when receiving near-duplicate chunks (e.g. multiple sections of same course). Post-processing collapses whitespace but the table is truncated because tokens were wasted.
@@ -205,14 +210,14 @@ Features: resume from last position, error logging, rate limit handling, `--retr
   - **Likely fixes**:
     1. **Deduplicate before generation** — keep only one chunk per `(course_id, category)` before passing to generator
     2. **Prompt engineering** — instruct model to use bullet points instead of tables
-    3. **Try `gemini-2.0-flash-lite`** for generation
+- **Langfuse SDK incompatible with Python 3.14**: Official SDK uses `pydantic.v1` which breaks on Python 3.14+. Workaround: custom `MinimalLangfuseClient` in `db/observability.py` posts directly to REST API. Revert to official SDK when they ship a fix.
 
 ### Next Steps
-1. **Fix comparison query whitespace bug** — deduplicate chunks before generator
+1. **Fix comparison query whitespace bug** — deduplicate chunks by `(course_id, category)` before generator
 2. **Expand parsing to all departments** — run `process_syllabi.py` without `--department` filter
-3. **Run `db/setup_atlas.py`** — create MongoDB indexes
-4. **Run `db/ingest.py`** — ingest 259 parsed JSONs into MongoDB with Voyage embeddings
-5. **End-to-end testing** — comprehensive testing of all 8 intent types with real data
+3. **Add latency percentile tracking** — p50/p95 per intent type in Langfuse dashboards
+4. **Set score alerts** — Langfuse webhook when faithfulness < 0.5
+5. **Observability Phase 2** — prompt management via Langfuse, A/B testing router prompts
 
 ## Cloud Deployment
 

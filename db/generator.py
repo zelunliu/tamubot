@@ -124,14 +124,16 @@ def generate(
     question: str,
     intent: str = "general_academic",
     course_ids: list[str] | None = None,
+    trace=None,
 ) -> str:
-    """Generate a grounded response with citations using Gemini 2.5 Flash.
+    """Generate a grounded response with citations using Gemini 2.0 Flash.
 
     Args:
-        results: reranked retrieval results (list of chunk dicts)
-        question: the user's original question
-        intent: classified intent from the router
-        course_ids: extracted course IDs for context
+        results:    Reranked retrieval results (list of chunk dicts).
+        question:   The user's original question.
+        intent:     Classified intent from the router.
+        course_ids: Extracted course IDs for context.
+        trace:      Optional Langfuse trace; creates a Generator_Stage generation span.
 
     Returns:
         Generated answer string with [Source N] citations.
@@ -146,22 +148,64 @@ def generate(
 
     context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(intent, course_ids)
-
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
+    # Generator_Stage generation span
+    generation_span = None
+    if trace is not None:
+        try:
+            generation_span = trace.generation(
+                name="Generator_Stage",
+                model=config.GENERATION_MODEL,
+                input=user_message,
+                metadata={
+                    "intent": intent,
+                    "course_ids": course_ids or [],
+                    "n_sources": len(results),
+                    "system_prompt_length": len(system_prompt),
+                },
+            )
+        except Exception:
+            generation_span = None
+
     client = config.get_genai_client()
-    response = client.models.generate_content(
-        model=config.GENERATION_MODEL,
-        contents=user_message,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.2,
-            max_output_tokens=4096,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        ),
-    )
+    try:
+        response = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=user_message,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.2,
+                max_output_tokens=4096,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            ),
+        )
+    except Exception as e:
+        if generation_span is not None:
+            try:
+                generation_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
 
     text = response.text or ""
     # Gemini sometimes pads markdown table cells with excessive whitespace
     text = re.sub(r' {3,}', ' ', text)
-    return text.strip()
+    text = text.strip()
+
+    if generation_span is not None:
+        try:
+            usage = response.usage_metadata
+            thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
+            generation_span.end(
+                output=text,
+                usage={
+                    "input": getattr(usage, "prompt_token_count", None),
+                    "output": getattr(usage, "candidates_token_count", None),
+                },
+                metadata={"thinking_tokens": thinking_tokens},
+            )
+        except Exception:
+            pass
+
+    return text

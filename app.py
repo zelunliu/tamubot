@@ -3,6 +3,7 @@ import os
 import logging
 import traceback
 import config
+from db.observability import get_langfuse, run_ragas_background
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tamubot")
@@ -149,11 +150,25 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
     with st.chat_message("assistant"):
         if USE_MONGODB:
             # --- MongoDB 3-stage pipeline: Route → Retrieve+Rerank → Generate ---
+
+            # Create a parent Langfuse trace for this request
+            lf = get_langfuse()
+            lf_trace = None
+            if lf is not None:
+                try:
+                    lf_trace = lf.trace(
+                        name="TamuBot_Complete_Pipeline",
+                        input=prompt,
+                        metadata={"session_id": str(id(st.session_state))},
+                    )
+                except Exception:
+                    lf_trace = None
+
             source_docs = []
             router_result = None
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    source_docs, router_result = route_retrieve_rerank(prompt)
+                    source_docs, router_result = route_retrieve_rerank(prompt, trace=lf_trace)
                     logger.info(f"Router: intent={router_result.intent}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
@@ -168,6 +183,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                         question=prompt,
                         intent=router_result.intent if router_result else "general_academic",
                         course_ids=router_result.course_ids if router_result else None,
+                        trace=lf_trace,
                     )
                     logger.info(f"Generation complete, answer length: {len(answer)}")
                 except Exception as e:
@@ -178,6 +194,25 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                         answer = "**Relevant documents found:**\n\n" + context_xml
                     else:
                         answer = "No relevant information found in the knowledge base."
+
+            # Close the parent trace, flush all buffered spans, trigger RAGAS
+            if lf_trace is not None:
+                try:
+                    lf_trace.update(output=answer)
+                except Exception:
+                    pass
+                try:
+                    lf.flush()
+                except Exception:
+                    pass
+                if answer and source_docs:
+                    contexts = [
+                        doc.get("content") or doc.get("policy_name", "")
+                        for doc in source_docs
+                        if doc.get("content") or doc.get("policy_name")
+                    ]
+                    if contexts:
+                        run_ragas_background(prompt, contexts, answer, lf_trace.id)
 
             st.markdown(answer)
 

@@ -41,10 +41,37 @@ def _get_voyage():
     return _voyage
 
 
-def _embed_query(query: str) -> list[float]:
-    client = _get_voyage()
-    result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
-    return result.embeddings[0]
+def _embed_query(query: str, parent_span=None) -> list[float]:
+    """Embed a query string using Voyage AI, optionally traced under parent_span."""
+    embed_span = None
+    if parent_span is not None:
+        try:
+            embed_span = parent_span.span(
+                name="Voyage_Embeddings",
+                input={"query": query, "model": EMBEDDING_MODEL},
+            )
+        except Exception:
+            embed_span = None
+
+    try:
+        client = _get_voyage()
+        result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
+        embedding = result.embeddings[0]
+    except Exception as e:
+        if embed_span is not None:
+            try:
+                embed_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    if embed_span is not None:
+        try:
+            embed_span.end(metadata={"embedding_dim": len(embedding)})
+        except Exception:
+            pass
+
+    return embedding
 
 
 def _build_vector_stage(
@@ -136,6 +163,7 @@ def hybrid_search(
     query: str,
     filters: Optional[dict] = None,
     k: int = 5,
+    parent_span=None,
 ) -> list[dict]:
     """Hybrid search using manual RRF of vector + text pipelines.
 
@@ -143,15 +171,17 @@ def hybrid_search(
     Compatible with M0 free tier (no $rankFusion needed).
 
     Args:
-        query: natural-language question
-        filters: optional filter dict, e.g. {"course_id": "CSCE 120"}
-        k: number of results to return
+        query:       Natural-language question.
+        filters:     Optional filter dict, e.g. {"course_id": "CSCE 120"}.
+        k:           Number of results to return.
+        parent_span: Optional Langfuse span; creates Voyage_Embeddings +
+                     MongoDB_Hybrid_Search child spans underneath it.
 
     Returns:
         List of chunk documents (dicts) ranked by fused score.
     """
     db = _get_db()
-    query_embedding = _embed_query(query)
+    query_embedding = _embed_query(query, parent_span=parent_span)
 
     # Build atlas filters for vector search
     atlas_filters = None
@@ -163,28 +193,61 @@ def hybrid_search(
             else:
                 atlas_filters[field] = value
 
-    # Vector search pipeline
-    vector_pipeline = [
-        _build_vector_stage(query_embedding, k, atlas_filters),
-        _projection(),
-    ]
-    vector_results = list(db["chunks"].aggregate(vector_pipeline))
+    # MongoDB search sub-span
+    search_span = None
+    if parent_span is not None:
+        try:
+            search_span = parent_span.span(
+                name="MongoDB_Hybrid_Search",
+                input={"query": query, "filters": filters, "k": k},
+            )
+        except Exception:
+            search_span = None
 
-    # Text search pipeline
-    text_pipeline = [
-        _build_text_stage(query, k, filters),
-        {"$limit": k},
-        _projection(),
-    ]
     try:
-        text_results = list(db["chunks"].aggregate(text_pipeline))
-    except Exception:
-        # Text index may not be ready yet — fall back to vector only
-        text_results = []
+        # Vector search pipeline
+        vector_pipeline = [
+            _build_vector_stage(query_embedding, k, atlas_filters),
+            _projection(),
+        ]
+        vector_results = list(db["chunks"].aggregate(vector_pipeline))
 
-    # Fuse and return top-k
-    fused = _rrf_fuse([vector_results, text_results])
-    return fused[:k]
+        # Text search pipeline
+        text_pipeline = [
+            _build_text_stage(query, k, filters),
+            {"$limit": k},
+            _projection(),
+        ]
+        try:
+            text_results = list(db["chunks"].aggregate(text_pipeline))
+        except Exception:
+            # Text index may not be ready yet — fall back to vector only
+            text_results = []
+
+        # Fuse and return top-k
+        fused = _rrf_fuse([vector_results, text_results])
+        result = fused[:k]
+    except Exception as e:
+        if search_span is not None:
+            try:
+                search_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    if search_span is not None:
+        try:
+            search_span.end(
+                metadata={
+                    "n_vector_results": len(vector_results),
+                    "n_text_results": len(text_results),
+                    "n_fused": len(result),
+                }
+            )
+        except Exception:
+            pass
+
+    return result
 
 
 def search_semantic(
@@ -247,16 +310,18 @@ def multi_course_retrieve(
     course_ids: list[str],
     category: Optional[str] = None,
     k_per_course: int = 10,
+    parent_span=None,
 ) -> list[dict]:
     """Parallel filtered hybrid searches for multi-course comparison queries.
 
     Runs one hybrid_search per course_id with filters, then combines all results.
 
     Args:
-        query: search query (ideally rewritten by router)
-        course_ids: list of course IDs to retrieve for
-        category: optional category filter applied to all courses
-        k_per_course: how many candidates to retrieve per course
+        query:       Search query (ideally rewritten by router).
+        course_ids:  List of course IDs to retrieve for.
+        category:    Optional category filter applied to all courses.
+        k_per_course: How many candidates to retrieve per course.
+        parent_span: Optional Langfuse span forwarded to each hybrid_search call.
 
     Returns:
         Combined list of chunk documents from all courses.
@@ -266,7 +331,7 @@ def multi_course_retrieve(
         filters: dict = {"course_id": course_id}
         if category:
             filters["category"] = category
-        results = hybrid_search(query, filters=filters, k=k_per_course)
+        results = hybrid_search(query, filters=filters, k=k_per_course, parent_span=parent_span)
         all_results.extend(results)
     return all_results
 

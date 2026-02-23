@@ -4,6 +4,13 @@ python-dotenv
 google-genai>=1.0
 langchain
 
+# Observability & evaluation
+# Note: langfuse SDK omitted — uses a minimal httpx REST client (db/observability.py)
+# due to langfuse SDK's pydantic.v1 dependency being incompatible with Python 3.14+.
+ragas
+opentelemetry-api
+langchain-google-genai
+
 # MongoDB Atlas
 pymongo[srv]
 voyageai

@@ -25,13 +25,15 @@ def rerank(
     query: str,
     documents: list[dict],
     top_k: int | None = None,
+    parent_span=None,
 ) -> list[dict]:
     """Rerank a list of chunk documents using Voyage AI cross-encoder.
 
     Args:
-        query: the user's (possibly rewritten) query
-        documents: list of chunk dicts, each must have 'content' (and optionally 'title')
-        top_k: number of results to keep (defaults to config.RERANK_TOP_K)
+        query:       The user's (possibly rewritten) query.
+        documents:   List of chunk dicts, each must have 'content' (and optionally 'title').
+        top_k:       Number of results to keep (defaults to config.RERANK_TOP_K).
+        parent_span: Optional Langfuse span; creates a Voyage_Reranker child span.
 
     Returns:
         Reranked list of chunk dicts, trimmed to top_k.
@@ -54,13 +56,51 @@ def rerank(
         parts.append(doc.get("content", ""))
         doc_texts.append(" | ".join(parts))
 
-    client = _get_voyage()
-    result = client.rerank(
-        query=query,
-        documents=doc_texts,
-        model=config.VOYAGE_RERANK_MODEL,
-        top_k=min(top_k, len(documents)),
-    )
+    # Voyage_Reranker sub-span
+    rerank_span = None
+    if parent_span is not None:
+        try:
+            rerank_span = parent_span.span(
+                name="Voyage_Reranker",
+                input={
+                    "query": query,
+                    "n_docs": len(documents),
+                    "top_k": top_k,
+                    "model": config.VOYAGE_RERANK_MODEL,
+                },
+            )
+        except Exception:
+            rerank_span = None
+
+    try:
+        client = _get_voyage()
+        result = client.rerank(
+            query=query,
+            documents=doc_texts,
+            model=config.VOYAGE_RERANK_MODEL,
+            top_k=min(top_k, len(documents)),
+        )
+    except Exception as e:
+        if rerank_span is not None:
+            try:
+                rerank_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    if rerank_span is not None:
+        try:
+            scores = [r.relevance_score for r in result.results]
+            rerank_span.end(
+                metadata={
+                    "n_returned": len(result.results),
+                    "relevance_scores": scores,
+                    "min_score": min(scores) if scores else None,
+                    "max_score": max(scores) if scores else None,
+                }
+            )
+        except Exception:
+            pass
 
     return [documents[r.index] for r in result.results]
 
@@ -69,6 +109,7 @@ def rerank_multi_course(
     query: str,
     course_groups: dict[str, list[dict]],
     top_k_per_course: int = 3,
+    parent_span=None,
 ) -> list[dict]:
     """Balanced reranking for multi-course comparison queries.
 
@@ -76,9 +117,10 @@ def rerank_multi_course(
     at least top_k_per_course results per course.
 
     Args:
-        query: the user's query
-        course_groups: mapping of course_id → list of chunk dicts
-        top_k_per_course: how many chunks to keep per course
+        query:            The user's query.
+        course_groups:    Mapping of course_id → list of chunk dicts.
+        top_k_per_course: How many chunks to keep per course.
+        parent_span:      Optional Langfuse span forwarded to each rerank() call.
 
     Returns:
         Interleaved list of reranked chunks with balanced representation.
@@ -89,7 +131,9 @@ def rerank_multi_course(
     reranked_groups = {}
     for course_id, docs in course_groups.items():
         if docs:
-            reranked_groups[course_id] = rerank(query, docs, top_k=top_k_per_course)
+            reranked_groups[course_id] = rerank(
+                query, docs, top_k=top_k_per_course, parent_span=parent_span
+            )
         else:
             reranked_groups[course_id] = []
 

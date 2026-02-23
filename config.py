@@ -39,6 +39,11 @@ RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "mongodb")
 LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
 APP_MODE = os.getenv("APP_MODE", "test")
 
+# --- Langfuse ---
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
+LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+
 # --- Shared google-genai client (lazy singleton) ---
 _genai_client = None
 
