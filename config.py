@@ -25,7 +25,7 @@ VOYAGE_RERANK_MODEL = os.getenv("VOYAGE_RERANK_MODEL", "rerank-2")
 # --- Google AI (Gemini for generation + router) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.0-flash")
+GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.5-flash")
 VALIDATION_MODEL = os.getenv("VALIDATION_MODEL", "gemini-2.5-flash-lite")
 
 # --- Thinking token budgets for Gemini 2.5 Flash ---
