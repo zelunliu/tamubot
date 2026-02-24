@@ -260,6 +260,10 @@ def generate(
             "schedules, and university policies. What would you like to know?"
         )
 
+    # Route multi-course queries to two-call comparison architecture
+    if course_ids and len(course_ids) > 1:
+        return generate_comparison(results, question, course_ids, trace)
+
     # format_context_xml handles primacy-recency bracketing:
     # Rank 1 → start, Rank 2 → end, Ranks 3-N → middle
     context_xml = format_context_xml(results)
