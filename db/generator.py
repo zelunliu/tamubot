@@ -4,6 +4,7 @@ Takes reranked retrieval results and generates a grounded, cited response
 using Gemini Flash with function-adaptive system prompts.
 """
 
+import html
 import re
 
 from google.genai import types
@@ -17,14 +18,32 @@ import config
 def format_context_xml(results: list[dict]) -> str:
     """Format retrieval results as XML-tagged chunks for the generator.
 
+    Implements primacy-recency bracketing to combat Lost-in-the-Middle attention degradation:
+    - Rank 1 chunk → Context start (primacy position)
+    - Rank 2 chunk → Context end (recency/nearest query position)
+    - Ranks 3–N → Middle (descending rank order)
+
     Each chunk gets metadata attributes so the LLM can cite sources precisely.
     """
     if not results:
         return "<context>\nNo relevant documents found.\n</context>"
 
+    # Apply primacy-recency reordering: [rank_1, ranks_3_to_N, rank_2]
+    if len(results) == 1:
+        ordered_results = results
+        rank_mapping = [1]
+    elif len(results) == 2:
+        ordered_results = [results[0], results[1]]
+        rank_mapping = [1, 2]
+    else:
+        # Rank 1 at start, Rank 2 at end, Ranks 3-N in middle (descending order)
+        ordered_results = [results[0]] + results[2:] + [results[1]]
+        rank_mapping = [1] + list(range(3, len(results) + 1)) + [2]
+
     parts = ["<context>"]
-    for i, doc in enumerate(results, 1):
-        attrs = [f'source="{i}"']
+    for position, (rank, doc) in enumerate(zip(rank_mapping, ordered_results), 1):
+        # source= attribute uses original rank for citation purposes
+        attrs = [f'source="{rank}"', f'id="{rank}"']
         if doc.get("course_id"):
             attrs.append(f'course="{doc["course_id"]}"')
         if doc.get("section"):
@@ -40,10 +59,14 @@ def format_context_xml(results: list[dict]) -> str:
         title = doc.get("title", "")
         content = doc.get("content", doc.get("policy_name", ""))
 
+        # XML escape special characters in content
+        content_escaped = html.escape(content)
+        title_escaped = html.escape(title) if title else ""
+
         parts.append(f"<chunk {attr_str}>")
-        if title:
-            parts.append(f"<title>{title}</title>")
-        parts.append(f"<content>{content}</content>")
+        if title_escaped:
+            parts.append(f"<title>{title_escaped}</title>")
+        parts.append(f"<content>{content_escaped}</content>")
         parts.append("</chunk>")
     parts.append("</context>")
     return "\n".join(parts)
@@ -209,10 +232,9 @@ def generate(
             "schedules, and university policies. What would you like to know?"
         )
 
-    # Recency bias: reverse so the top-scored chunk (index 0) sits closest
-    # to the question, where LLMs attend most reliably.
-    ordered_results = list(reversed(results))
-    context_xml = format_context_xml(ordered_results)
+    # format_context_xml handles primacy-recency bracketing:
+    # Rank 1 → start, Rank 2 → end, Ranks 3-N → middle
+    context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(function, course_ids, semantic_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
