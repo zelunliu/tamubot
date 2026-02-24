@@ -25,7 +25,20 @@ VOYAGE_RERANK_MODEL = os.getenv("VOYAGE_RERANK_MODEL", "rerank-2")
 # --- Google AI (Gemini for generation + router) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.0-flash")
+GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.5-flash")
+VALIDATION_MODEL = os.getenv("VALIDATION_MODEL", "gemini-2.5-flash-lite")
+
+# --- Thinking token budgets for Gemini 2.5 Flash ---
+# metadata_* functions use deterministic extraction (no thinking needed)
+THINKING_BUDGET_METADATA = 0
+# hybrid_* and semantic_general functions use thinking for complex reasoning
+THINKING_BUDGET_SEMANTIC = 4096
+
+# --- Temperature constants for function-based stochasticity ---
+# Deterministic (factual extraction): 0.0
+TEMP_DETERMINISTIC = 0.0
+# Synthesis (advisory reasoning): 0.2 for linguistic fluidity
+TEMP_SYNTHESIS = 0.2
 
 # --- Retrieval tuning (global fallbacks for low-confidence paths) ---
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "20"))

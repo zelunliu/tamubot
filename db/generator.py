@@ -4,6 +4,7 @@ Takes reranked retrieval results and generates a grounded, cited response
 using Gemini Flash with function-adaptive system prompts.
 """
 
+import html
 import re
 
 from google.genai import types
@@ -17,14 +18,32 @@ import config
 def format_context_xml(results: list[dict]) -> str:
     """Format retrieval results as XML-tagged chunks for the generator.
 
+    Implements primacy-recency bracketing to combat Lost-in-the-Middle attention degradation:
+    - Rank 1 chunk → Context start (primacy position)
+    - Rank 2 chunk → Context end (recency/nearest query position)
+    - Ranks 3–N → Middle (descending rank order)
+
     Each chunk gets metadata attributes so the LLM can cite sources precisely.
     """
     if not results:
         return "<context>\nNo relevant documents found.\n</context>"
 
+    # Apply primacy-recency reordering: [rank_1, ranks_3_to_N, rank_2]
+    if len(results) == 1:
+        ordered_results = results
+        rank_mapping = [1]
+    elif len(results) == 2:
+        ordered_results = [results[0], results[1]]
+        rank_mapping = [1, 2]
+    else:
+        # Rank 1 at start, Rank 2 at end, Ranks 3-N in middle (descending order)
+        ordered_results = [results[0]] + results[2:] + [results[1]]
+        rank_mapping = [1] + list(range(3, len(results) + 1)) + [2]
+
     parts = ["<context>"]
-    for i, doc in enumerate(results, 1):
-        attrs = [f'source="{i}"']
+    for position, (rank, doc) in enumerate(zip(rank_mapping, ordered_results), 1):
+        # source= attribute uses original rank for citation purposes
+        attrs = [f'source="{rank}"', f'id="{rank}"']
         if doc.get("course_id"):
             attrs.append(f'course="{doc["course_id"]}"')
         if doc.get("section"):
@@ -40,10 +59,14 @@ def format_context_xml(results: list[dict]) -> str:
         title = doc.get("title", "")
         content = doc.get("content", doc.get("policy_name", ""))
 
+        # XML escape special characters in content
+        content_escaped = html.escape(content)
+        title_escaped = html.escape(title) if title else ""
+
         parts.append(f"<chunk {attr_str}>")
-        if title:
-            parts.append(f"<title>{title}</title>")
-        parts.append(f"<content>{content}</content>")
+        if title_escaped:
+            parts.append(f"<title>{title_escaped}</title>")
+        parts.append(f"<content>{content_escaped}</content>")
         parts.append("</chunk>")
     parts.append("</context>")
     return "\n".join(parts)
@@ -60,12 +83,15 @@ You help students find information about courses, syllabi, policies, and schedul
 RULES:
 1. Answer ONLY based on the provided <context>. Never invent information.
 2. Cite your sources using [Source N] notation matching the source numbers in the context.
-3. Verification: Before answering, identify which chunk contains the answer. \
+3. Chain-of-Verification (Quote-then-Paraphrase): Before answering, extract a verbatim quote \
+from the most relevant chunk into a <thinking> block. Then paraphrase that quote into your \
+student-facing answer with [Source N] citation. This ensures all claims are grounded in the provided text.
+4. Verification: Before answering, identify which chunk contains the answer. \
 If no chunk contains it, state "I cannot find that information in the provided context" \
 and do NOT use training data to fill the gap.
-4. Do NOT answer questions outside TAMU academics — politely decline.
-5. Be concise but thorough. Use markdown formatting for readability.
-6. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
+5. Do NOT answer questions outside TAMU academics — politely decline.
+6. Be concise but thorough. Use markdown formatting for readability.
+7. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
 """
 
 # Primary prompt per function — describes the factual framing of the response.
@@ -87,23 +113,28 @@ _FUNCTION_PROMPTS: dict[str, str] = {
     ),
     "semantic_general": (
         "The user has a broad question not tied to a specific course. "
+        "First define the relevant principle or framework underlying the question, "
+        "then apply that principle to the specific question using available context. "
         "Provide a helpful answer based only on the available context. "
         "If the evidence is insufficient to answer fully, state: "
         "'I don't have enough data to answer this accurately based on the available syllabi.'"
     ),
     "hybrid_default": (
         "The user is asking about a course with an advisory or subjective component. "
+        "First define the relevant principle or framework, then apply it to the course. "
         "Provide factual information from the course content and address the advisory aspect "
         "using only evidence from the context. "
-        "Avoid speculation — ground all advisory statements in specific course details."
+        "Limit all advisory statements to those grounded in specific course details."
     ),
     "hybrid_specific": (
         "The user is asking about specific course categories with an advisory component. "
+        "First define the relevant principle or framework, then apply it to the specific categories. "
         "Focus on the requested categories and use that evidence to address the advisory dimension. "
         "Ground all advisory statements in specific facts from the context."
     ),
     "hybrid_combined": (
         "The user is asking about specific course details and a broader overview with an advisory component. "
+        "First define the relevant principle or framework, then apply it to the courses. "
         "Cover all relevant categories and use the evidence to address the advisory aspect. "
         "Ground all advisory statements in specific facts from the context."
     ),
@@ -131,17 +162,20 @@ _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Per-function generation temperature.
-# metadata_* and semantic_general: 0.0 (maximum fidelity to context).
-# hybrid_*: 0.1 (slight flexibility for advisory synthesis).
+# Per-function generation temperature (function-based stochasticity).
+# metadata_*: 0.0 (deterministic extraction, maximum fidelity to context).
+# semantic_general, hybrid_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
+# out_of_scope, administrative: 0.0 (high compliance/policy requirement, deterministic).
 _FUNCTION_TEMPERATURES: dict[str, float] = {
     "metadata_default":  0.0,
     "metadata_specific": 0.0,
     "metadata_combined": 0.0,
-    "semantic_general":  0.0,
-    "hybrid_default":    0.1,
-    "hybrid_specific":   0.1,
-    "hybrid_combined":   0.1,
+    "semantic_general":  0.2,
+    "hybrid_default":    0.2,
+    "hybrid_specific":   0.2,
+    "hybrid_combined":   0.2,
+    "out_of_scope":      0.0,
+    "administrative":    0.0,
 }
 
 
@@ -149,12 +183,29 @@ def build_system_prompt(
     function: str,
     course_ids: list[str] | None = None,
     semantic_type: str | None = None,
+    category_confidence: float | None = None,
 ) -> str:
-    """Build a function-adaptive system prompt."""
+    """Build a function-adaptive system prompt.
+
+    Args:
+        function: Router function type (e.g., "metadata_specific").
+        course_ids: List of course IDs referenced in the query.
+        semantic_type: Advisory semantic type (e.g., "CAREER").
+        category_confidence: Router's confidence in category extraction (0.0-1.0).
+                            If < 0.7, injects Verbal Uncertainty Calibration (VUC).
+    """
     parts = [_BASE_SYSTEM]
 
     function_instruction = _FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"])
     parts.append(function_instruction)
+
+    # Verbal Uncertainty Calibration: inject uncertainty language if confidence is low
+    if category_confidence is not None and category_confidence < 0.7:
+        parts.append(
+            "NOTE: The extracted category is not high-confidence. "
+            "Based on the available, but potentially incomplete, data in the provided context, "
+            "provide your best answer. If the evidence is ambiguous or insufficient, acknowledge this limitation."
+        )
 
     # Multi-course comparison overlay
     if course_ids and len(course_ids) > 1:
@@ -209,10 +260,13 @@ def generate(
             "schedules, and university policies. What would you like to know?"
         )
 
-    # Recency bias: reverse so the top-scored chunk (index 0) sits closest
-    # to the question, where LLMs attend most reliably.
-    ordered_results = list(reversed(results))
-    context_xml = format_context_xml(ordered_results)
+    # Route multi-course queries to two-call comparison architecture
+    if course_ids and len(course_ids) > 1:
+        return generate_comparison(results, question, course_ids, trace)
+
+    # format_context_xml handles primacy-recency bracketing:
+    # Rank 1 → start, Rank 2 → end, Ranks 3-N → middle
+    context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(function, course_ids, semantic_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
@@ -235,6 +289,14 @@ def generate(
         except Exception:
             generation_span = None
 
+    # Determine thinking budget based on function type
+    # metadata_* → 0 (deterministic), hybrid_* and semantic_general → 4096 (complex reasoning)
+    thinking_budget = 0
+    if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]:
+        thinking_budget = config.THINKING_BUDGET_SEMANTIC
+    else:
+        thinking_budget = config.THINKING_BUDGET_METADATA
+
     client = config.get_genai_client()
     try:
         response = client.models.generate_content(
@@ -245,6 +307,7 @@ def generate(
                 temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
                 max_output_tokens=4096,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                thinking=types.ThinkingConfig(thinking_budget=thinking_budget),
             ),
         )
     except Exception as e:
@@ -259,6 +322,17 @@ def generate(
     # Gemini sometimes pads markdown table cells with excessive whitespace
     text = re.sub(r' {3,}', ' ', text)
     text = text.strip()
+
+    # Gate 1: Validate citations in response
+    validate_citations_with_trace(text, function, trace)
+
+    # Gate 2: Launch async groundedness scoring (fire-and-forget)
+    # Extract contexts from results for scoring
+    contexts = [doc.get("content", "") for doc in results]
+    trace_id = trace.id if trace is not None else None
+    if trace_id:
+        from db.observability import run_groundedness_scoring_background
+        run_groundedness_scoring_background(question, contexts, text, trace_id)
 
     if generation_span is not None:
         try:
@@ -276,3 +350,224 @@ def generate(
             pass
 
     return text
+
+
+def generate_comparison(
+    results: list[dict],
+    question: str,
+    course_ids: list[str],
+    trace=None,
+) -> str:
+    """Generate a multi-course comparison using two-call architecture.
+
+    Call 1: Extract per-course data into structured JSON.
+    Call 2: Synthesize JSON into a Markdown comparison table.
+
+    Args:
+        results:    Reranked retrieval results (list of chunk dicts).
+        question:   The user's original question.
+        course_ids: List of course IDs being compared (len > 1).
+        trace:      Optional Langfuse trace; creates Comparison_Extraction and
+                    Comparison_Synthesis spans.
+
+    Returns:
+        Markdown comparison table string.
+    """
+    from db.comparison_schemas import CourseComparisonTable
+    import json
+
+    # Format context for extraction call
+    context_xml = format_context_xml(results)
+    system_prompt = build_system_prompt(
+        function="hybrid_combined",
+        course_ids=course_ids,
+        semantic_type="GENERAL",
+    )
+
+    # Call 1: Extract per-course structured data
+    extraction_span = None
+    if trace is not None:
+        try:
+            extraction_span = trace.generation(
+                name="Comparison_Extraction",
+                model=config.GENERATION_MODEL,
+                input=question,
+                metadata={
+                    "function": "hybrid_combined",
+                    "course_ids": course_ids,
+                    "n_sources": len(results),
+                    "call": "extraction",
+                },
+            )
+        except Exception:
+            extraction_span = None
+
+    client = config.get_genai_client()
+    extraction_prompt = f"""{context_xml}
+
+Question: {question}
+
+Extract comparison data for each course mentioned. Focus on grading, workload, prerequisites."""
+
+    try:
+        extraction_response = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=extraction_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+                max_output_tokens=2048,
+                response_mime_type="application/json",
+                response_schema=CourseComparisonTable,
+            ),
+        )
+    except Exception as e:
+        if extraction_span is not None:
+            try:
+                extraction_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    extraction_text = extraction_response.text or "{}"
+    if extraction_span is not None:
+        try:
+            extraction_span.end(output=extraction_text)
+        except Exception:
+            pass
+
+    # Call 2: Synthesize extracted data into Markdown table
+    synthesis_span = None
+    if trace is not None:
+        try:
+            synthesis_span = trace.generation(
+                name="Comparison_Synthesis",
+                model=config.GENERATION_MODEL,
+                input=extraction_text,
+                metadata={
+                    "function": "hybrid_combined",
+                    "course_ids": course_ids,
+                    "call": "synthesis",
+                },
+            )
+        except Exception:
+            synthesis_span = None
+
+    synthesis_prompt = f"""Based on the following extracted course comparison data, create a clean Markdown table comparing the courses side-by-side.
+
+Include columns for: Course, Grading, Workload, Prerequisites, Section, Instructor
+
+Data:
+{extraction_text}
+
+Table format:
+| Course | Grading | Workload | Prerequisites | Section | Instructor |
+|--------|---------|----------|----------------|---------|------------|
+
+Generate ONLY the table. Do NOT add any text before or after the table."""
+
+    try:
+        synthesis_response = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=synthesis_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="You are a technical formatter. Generate clean Markdown tables with no extra whitespace.",
+                temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+                max_output_tokens=2048,
+            ),
+        )
+    except Exception as e:
+        if synthesis_span is not None:
+            try:
+                synthesis_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    table_text = synthesis_response.text or ""
+    # Clean up whitespace in table
+    table_text = re.sub(r' {3,}', ' ', table_text)
+    table_text = table_text.strip()
+
+    if synthesis_span is not None:
+        try:
+            usage = synthesis_response.usage_metadata
+            synthesis_span.end(
+                output=table_text,
+                usage={
+                    "input": getattr(usage, "prompt_token_count", None),
+                    "output": getattr(usage, "candidates_token_count", None),
+                },
+            )
+        except Exception:
+            pass
+
+    return table_text
+
+
+# ---------------------------------------------------------------------------
+# Validation gates (post-generation)
+# ---------------------------------------------------------------------------
+
+
+def validate_citations_gate1(response_text: str) -> bool:
+    """Validate Gate 1: Check for presence of citations in response.
+
+    Gate 1 (Regex): Verify presence of at least one [Source N] or [N] citation.
+    Applied only to factual query types (metadata_*, hybrid_*).
+
+    Args:
+        response_text: Generated response text.
+
+    Returns:
+        True if at least one citation is found, False otherwise.
+    """
+    # Pattern matches [Source N], [Source N:], or [N] where N is a number
+    citation_pattern = r'\[(?:Source\s+)?(\d+)(?::\s*[^\]]*)?]'
+    match = re.search(citation_pattern, response_text)
+    return match is not None
+
+
+def validate_citations_with_trace(
+    response_text: str,
+    function: str,
+    trace=None,
+) -> bool:
+    """Validate citations and log result to Langfuse trace.
+
+    Args:
+        response_text: Generated response text.
+        function:      Retrieval function type.
+        trace:         Optional Langfuse trace object.
+
+    Returns:
+        True if citations are present or validation is skipped.
+    """
+    # Only apply Gate 1 to factual query types
+    factual_functions = [
+        "metadata_default",
+        "metadata_specific",
+        "metadata_combined",
+        "hybrid_default",
+        "hybrid_specific",
+        "hybrid_combined",
+    ]
+
+    if function not in factual_functions:
+        return True
+
+    # Run validation
+    citation_valid = validate_citations_gate1(response_text)
+
+    # Log result to trace metadata
+    if trace is not None:
+        try:
+            trace.score(
+                name="citation_gate1_pass",
+                value=1 if citation_valid else 0,
+                comment="Gate 1 validation: regex citation check",
+            )
+        except Exception:
+            pass
+
+    return citation_valid

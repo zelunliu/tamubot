@@ -402,3 +402,91 @@ def run_ragas_background(
         daemon=True,
     )
     thread.start()
+
+
+def score_groundedness(
+    question: str,
+    contexts: list[str],
+    answer: str,
+    trace_id: Optional[str] = None,
+) -> Optional[float]:
+    """Score response groundedness using RAGAS ResponseGroundedness metric.
+
+    Gate 2 (LLM-as-Judge): Uses Gemini 2.5 Flash-Lite as the critic LLM to evaluate
+    whether all claims in the response are grounded in the provided contexts.
+
+    Args:
+        question:  The original user query.
+        contexts:  Retrieved chunk texts passed to the generator.
+        answer:    The final answer string produced by the generator.
+        trace_id:  Langfuse trace ID to attach the score to. Optional.
+
+    Returns:
+        Groundedness score (0.0–1.0) or None on failure.
+    """
+    try:
+        from ragas import evaluate, EvaluationDataset, SingleTurnSample
+        from ragas.metrics import ResponseGroundedness
+        from ragas.llms import LangchainLLMWrapper
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        import config
+
+        # Use Gemini 2.5 Flash-Lite as critic (cost-effective, sufficient for groundedness)
+        critic_llm = LangchainLLMWrapper(
+            ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash-lite",
+                google_api_key=config.GOOGLE_API_KEY,
+                temperature=0,
+            )
+        )
+
+        sample = SingleTurnSample(
+            user_input=question,
+            retrieved_contexts=contexts,
+            response=answer,
+        )
+        dataset = EvaluationDataset(samples=[sample])
+
+        # Evaluate using ResponseGroundedness metric
+        metric = ResponseGroundedness(llm=critic_llm)
+        result = evaluate(dataset=dataset, metrics=[metric])
+        scores: dict = result.to_pandas().iloc[0].to_dict()
+
+        groundedness_score = scores.get("response_groundedness", None)
+        if groundedness_score is None:
+            logger.warning("ResponseGroundedness metric returned None")
+            return None
+
+        # Upload score to Langfuse
+        lf = get_langfuse()
+        if lf and trace_id:
+            import math
+            if isinstance(groundedness_score, (int, float)) and not math.isnan(groundedness_score):
+                lf.score(
+                    trace_id=trace_id,
+                    name="groundedness_score",
+                    value=float(groundedness_score),
+                    comment="RAGAS ResponseGroundedness (Gate 2 validation)",
+                )
+
+        logger.info(f"Groundedness score for trace {trace_id}: {groundedness_score}")
+        return float(groundedness_score) if groundedness_score is not None else None
+
+    except Exception as e:
+        logger.warning(f"Groundedness scoring failed: {e}")
+        return None
+
+
+def run_groundedness_scoring_background(
+    question: str,
+    contexts: list[str],
+    answer: str,
+    trace_id: Optional[str] = None,
+) -> None:
+    """Fire-and-forget Gate 2 groundedness scoring in a background daemon thread."""
+    thread = threading.Thread(
+        target=score_groundedness,
+        args=(question, contexts, answer, trace_id),
+        daemon=True,
+    )
+    thread.start()
