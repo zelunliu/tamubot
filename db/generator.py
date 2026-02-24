@@ -289,6 +289,14 @@ def generate(
         except Exception:
             generation_span = None
 
+    # Determine thinking budget based on function type
+    # metadata_* → 0 (deterministic), hybrid_* and semantic_general → 4096 (complex reasoning)
+    thinking_budget = 0
+    if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]:
+        thinking_budget = config.THINKING_BUDGET_SEMANTIC
+    else:
+        thinking_budget = config.THINKING_BUDGET_METADATA
+
     client = config.get_genai_client()
     try:
         response = client.models.generate_content(
@@ -299,6 +307,7 @@ def generate(
                 temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
                 max_output_tokens=4096,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                thinking=types.ThinkingConfig(thinking_budget=thinking_budget),
             ),
         )
     except Exception as e:
