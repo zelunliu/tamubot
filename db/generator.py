@@ -326,3 +326,156 @@ def generate(
             pass
 
     return text
+
+
+def generate_comparison(
+    results: list[dict],
+    question: str,
+    course_ids: list[str],
+    trace=None,
+) -> str:
+    """Generate a multi-course comparison using two-call architecture.
+
+    Call 1: Extract per-course data into structured JSON.
+    Call 2: Synthesize JSON into a Markdown comparison table.
+
+    Args:
+        results:    Reranked retrieval results (list of chunk dicts).
+        question:   The user's original question.
+        course_ids: List of course IDs being compared (len > 1).
+        trace:      Optional Langfuse trace; creates Comparison_Extraction and
+                    Comparison_Synthesis spans.
+
+    Returns:
+        Markdown comparison table string.
+    """
+    from db.comparison_schemas import CourseComparisonTable
+    import json
+
+    # Format context for extraction call
+    context_xml = format_context_xml(results)
+    system_prompt = build_system_prompt(
+        function="hybrid_combined",
+        course_ids=course_ids,
+        semantic_type="GENERAL",
+    )
+
+    # Call 1: Extract per-course structured data
+    extraction_span = None
+    if trace is not None:
+        try:
+            extraction_span = trace.generation(
+                name="Comparison_Extraction",
+                model=config.GENERATION_MODEL,
+                input=question,
+                metadata={
+                    "function": "hybrid_combined",
+                    "course_ids": course_ids,
+                    "n_sources": len(results),
+                    "call": "extraction",
+                },
+            )
+        except Exception:
+            extraction_span = None
+
+    client = config.get_genai_client()
+    extraction_prompt = f"""{context_xml}
+
+Question: {question}
+
+Extract comparison data for each course mentioned. Focus on grading, workload, prerequisites."""
+
+    try:
+        extraction_response = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=extraction_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+                max_output_tokens=2048,
+                response_mime_type="application/json",
+                response_schema=CourseComparisonTable,
+            ),
+        )
+    except Exception as e:
+        if extraction_span is not None:
+            try:
+                extraction_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    extraction_text = extraction_response.text or "{}"
+    if extraction_span is not None:
+        try:
+            extraction_span.end(output=extraction_text)
+        except Exception:
+            pass
+
+    # Call 2: Synthesize extracted data into Markdown table
+    synthesis_span = None
+    if trace is not None:
+        try:
+            synthesis_span = trace.generation(
+                name="Comparison_Synthesis",
+                model=config.GENERATION_MODEL,
+                input=extraction_text,
+                metadata={
+                    "function": "hybrid_combined",
+                    "course_ids": course_ids,
+                    "call": "synthesis",
+                },
+            )
+        except Exception:
+            synthesis_span = None
+
+    synthesis_prompt = f"""Based on the following extracted course comparison data, create a clean Markdown table comparing the courses side-by-side.
+
+Include columns for: Course, Grading, Workload, Prerequisites, Section, Instructor
+
+Data:
+{extraction_text}
+
+Table format:
+| Course | Grading | Workload | Prerequisites | Section | Instructor |
+|--------|---------|----------|----------------|---------|------------|
+
+Generate ONLY the table. Do NOT add any text before or after the table."""
+
+    try:
+        synthesis_response = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=synthesis_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="You are a technical formatter. Generate clean Markdown tables with no extra whitespace.",
+                temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+                max_output_tokens=2048,
+            ),
+        )
+    except Exception as e:
+        if synthesis_span is not None:
+            try:
+                synthesis_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    table_text = synthesis_response.text or ""
+    # Clean up whitespace in table
+    table_text = re.sub(r' {3,}', ' ', table_text)
+    table_text = table_text.strip()
+
+    if synthesis_span is not None:
+        try:
+            usage = synthesis_response.usage_metadata
+            synthesis_span.end(
+                output=table_text,
+                usage={
+                    "input": getattr(usage, "prompt_token_count", None),
+                    "output": getattr(usage, "candidates_token_count", None),
+                },
+            )
+        except Exception:
+            pass
+
+    return table_text
