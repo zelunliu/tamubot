@@ -27,6 +27,12 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.0-flash")
 
+# --- Thinking token budgets for Gemini 2.5 Flash ---
+# metadata_* functions use deterministic extraction (no thinking needed)
+THINKING_BUDGET_METADATA = 0
+# hybrid_* and semantic_general functions use thinking for complex reasoning
+THINKING_BUDGET_SEMANTIC = 4096
+
 # --- Retrieval tuning (global fallbacks for low-confidence paths) ---
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "20"))
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))
