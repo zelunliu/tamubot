@@ -180,12 +180,29 @@ def build_system_prompt(
     function: str,
     course_ids: list[str] | None = None,
     semantic_type: str | None = None,
+    category_confidence: float | None = None,
 ) -> str:
-    """Build a function-adaptive system prompt."""
+    """Build a function-adaptive system prompt.
+
+    Args:
+        function: Router function type (e.g., "metadata_specific").
+        course_ids: List of course IDs referenced in the query.
+        semantic_type: Advisory semantic type (e.g., "CAREER").
+        category_confidence: Router's confidence in category extraction (0.0-1.0).
+                            If < 0.7, injects Verbal Uncertainty Calibration (VUC).
+    """
     parts = [_BASE_SYSTEM]
 
     function_instruction = _FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"])
     parts.append(function_instruction)
+
+    # Verbal Uncertainty Calibration: inject uncertainty language if confidence is low
+    if category_confidence is not None and category_confidence < 0.7:
+        parts.append(
+            "NOTE: The extracted category is not high-confidence. "
+            "Based on the available, but potentially incomplete, data in the provided context, "
+            "provide your best answer. If the evidence is ambiguous or insufficient, acknowledge this limitation."
+        )
 
     # Multi-course comparison overlay
     if course_ids and len(course_ids) > 1:
