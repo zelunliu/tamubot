@@ -317,6 +317,14 @@ def generate(
     # Gate 1: Validate citations in response
     validate_citations_with_trace(text, function, trace)
 
+    # Gate 2: Launch async groundedness scoring (fire-and-forget)
+    # Extract contexts from results for scoring
+    contexts = [doc.get("content", "") for doc in results]
+    trace_id = trace.id if trace is not None else None
+    if trace_id:
+        from db.observability import run_groundedness_scoring_background
+        run_groundedness_scoring_background(question, contexts, text, trace_id)
+
     if generation_span is not None:
         try:
             usage = response.usage_metadata
