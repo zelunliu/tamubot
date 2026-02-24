@@ -121,7 +121,7 @@ _FUNCTION_PROMPTS: dict[str, str] = {
         "The user is asking about a course with an advisory or subjective component. "
         "Provide factual information from the course content and address the advisory aspect "
         "using only evidence from the context. "
-        "Avoid speculation — ground all advisory statements in specific course details."
+        "Limit all advisory statements to those grounded in specific course details."
     ),
     "hybrid_specific": (
         "The user is asking about specific course categories with an advisory component. "
