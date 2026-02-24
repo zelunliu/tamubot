@@ -29,7 +29,7 @@ make scrape-classes
 # Scrapy crawl: tamu_data/scraper/ → output: tamu_data/raw/syllabi/*.pdf
 
 # 3. Parse syllabus PDFs with Gemini 2.5 Flash → structured JSON
-GOOGLE_API_KEY=... python process_syllabi.py
+GOOGLE_API_KEY=... python pipeline/process_syllabi.py
 # Options: --department CSCE (single dept), --retry-errors (retry failures)
 # Output: tamu_data/processed/gemini_parsed/*.json
 # Logs:   tamu_data/logs/errors.jsonl, progress.jsonl
@@ -54,8 +54,6 @@ To restart the catalog crawl from scratch, delete `tamu_data/scraper/logs/progre
 tamubot/
 ├── app.py                     # Streamlit chat UI (3-stage RAG pipeline or Vertex legacy)
 ├── config.py                  # Env-based config (MongoDB, Voyage, Gemini, GCP)
-├── process_syllabi.py         # Production Gemini PDF parser (resume-capable)
-├── test_gemini_parse.py       # Test script for Gemini parsing (sample PDFs)
 ├── db/                        # MongoDB Atlas + RAG pipeline
 │   ├── models.py              # Pydantic v2 models (ChunkDoc, PolicyDoc, CourseDoc)
 │   ├── setup_atlas.py         # Creates indexes (vector, text, compound metadata)
@@ -63,19 +61,37 @@ tamubot/
 │   ├── search.py              # Hybrid search + multi-course retrieval (RRF fusion)
 │   ├── router.py              # 8-intent query router + route_retrieve_rerank() orchestrator
 │   ├── reranker.py            # Voyage AI rerank-2 cross-encoder reranking
-│   └── generator.py           # Outlet LLM — XML context, adaptive prompts, citations
+│   ├── generator.py           # Outlet LLM — XML context, adaptive prompts, citations
+│   └── observability.py       # Langfuse tracing + RAGAS evaluation
+├── pipeline/                  # Data pipeline stages
+│   ├── process_syllabi.py     # Production Gemini PDF parser (resume-capable)
+│   ├── test_gemini_parse.py   # Manual test harness for Gemini parsing (sample PDFs)
+│   └── legacy/                # Superseded scripts (convert_for_vertex.py, standardize_syllabi.py)
+├── evals/                     # Evaluation framework
+│   ├── eval_pipeline.py       # End-to-end pipeline eval runner
+│   ├── eval_generator_tiered.py
+│   ├── eval_retrieval_metrics.py
+│   ├── eval_router_metrics.py
+│   ├── eval_statistics.py
+│   ├── generate_golden_set.py
+│   └── evals.txt              # Golden test cases
+├── scripts/                   # One-off analysis + scraping exploration
+│   └── artifacts/             # Generated data files (JSON reports, sample PDFs, HTML)
+├── docs/                      # Reference documentation
+│   ├── OBSERVABILITY.md
+│   ├── research_prompts.md
+│   └── PROJECT_CONTEXT.md
 ├── tamu_data/
 │   ├── raw/
 │   │   ├── catalog/           # Scraped catalog JSONL (gitignored)
 │   │   └── syllabi/           # Downloaded syllabus PDFs — 7,970 files (gitignored)
 │   ├── processed/
 │   │   └── gemini_parsed/     # Gemini 2.5 Flash parsed JSON — 259 files (committed)
-│   ├── logs/                  # Ingestion progress + error logs (gitignored)
+│   ├── logs/                  # Pipeline logs (errors.jsonl=parse, ingest_errors.jsonl=ingest, progress.jsonl, ingest_run.log)
+│   ├── evals/                 # Eval run output (gitignored)
+│   │   ├── golden_sets/       # golden_set_*.jsonl
+│   │   └── reports/           # eval_report_*.md, eval_results_*.jsonl
 │   └── scraper/               # Scrapy project (catalog + class_search spiders)
-├── pipeline/
-│   └── legacy/                # Superseded scripts (convert_for_vertex.py, standardize_syllabi.py)
-├── scripts/                   # One-off analysis, debug, and scraping exploration scripts
-├── research_prompts.md        # Gemini Deep Research prompts
 ├── Makefile                   # Pipeline automation
 └── requirements.txt
 ```
@@ -89,7 +105,7 @@ catalog.tamu.edu          howdyportal.tamu.edu
        │                         │
 tamu_data/raw/catalog/    tamu_data/raw/syllabi/*.pdf
                                  │
-                        process_syllabi.py (Gemini 2.5 Flash multimodal)
+                        pipeline/process_syllabi.py (Gemini 2.5 Flash multimodal)
                                  │
                   tamu_data/processed/gemini_parsed/*.json
                   (structured: 11 categories, metadata, tables)
@@ -180,7 +196,7 @@ Outlet LLM (Gemini 2.0 Flash):
 - Per-function temperatures: `metadata_*` → 0.0, `hybrid_*` → 0.1, `semantic_general` → 0.0
 - Post-processing: collapses excessive whitespace from Gemini markdown table generation
 
-### Syllabus Parsing (`process_syllabi.py`)
+### Syllabus Parsing (`pipeline/process_syllabi.py`)
 
 Sends each PDF directly to Gemini 2.5 Flash (multimodal) and gets structured JSON back in one API call. Each JSON contains:
 - `course_metadata` — course_id, section, term, CRN, instructor, TAs, meeting times, location
@@ -216,18 +232,46 @@ Features: resume from last position, error logging, rate limit handling, `--retr
   - **Dry-run eval: 34/34 (100%)** across all function types (CSCE 638 + CSCE 670 test suite)
   - Key routing insight: `hybrid_specific` is correct for queries that name a category explicitly as the subject
     (e.g. "based on the grading structure" → `specific_only=True`, retrieves GRADING + advisory overlay)
+- **Eval framework** (`evals/`) — golden set + full-pipeline harness + router metrics
+  - `evals/generate_golden_set.py` — synthesizes 50 stratified questions from live MongoDB chunks
+  - `evals/eval_router_metrics.py` — ECE, Intent F1, per-case router accuracy vs golden set
+  - `evals/eval_pipeline.py` — end-to-end eval: router → retrieval → generator; captures recall@k, RAGAS, latency
+  - `evals/adjudicate_golden_set.py` — LLM adjudicates stratum vs router label disagreements; writes corrected golden set
+  - Golden set: 50 questions across all 8 function types (CSCE + ISEN), grounded in live syllabus chunks
+  - **Current accuracy on golden set (unadjudicated): 74%** — ~10 failures are golden label errors, not router bugs
+  - **Recall@k: 36%** on first run — being investigated (see Known Issues)
+  - 75% citation rate on generated responses; 0 pipeline errors
+- **Router improvements** (2026-02-23)
+  - Added `ADMINISTRATIVE` semantic type for TAMU-tool questions (Canvas, Perusall, Howdy Portal)
+    with no specific course_id — routes to `semantic_general` instead of `out_of_scope`
+  - `*_combined` functions now always use hybrid retrieval mode regardless of `category_confidence`
+    (broad framing benefits from semantic component even when the named category is high-confidence)
+  - Suppressed extraction of context-mentioned course IDs (e.g. "I got a B in MATH 151, can I
+    take **this** course?" — MATH 151 is background, not the queried course)
+  - Added prompt examples for "especially considering" / "including" → `specific_only=false`
 
 ### Known Issues
 - **`hybrid_combined` requires careful phrasing**: When a category is explicitly named in the query as subject matter, the router correctly sets `specific_only=True` → `hybrid_specific`. Only queries that request a general overview *while also* mentioning a category as background context produce `specific_only=False` → `hybrid_combined`. This is correct behavior, not a bug.
 - **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — if thinking uses its full budget, only ~512 tokens remain for JSON output. Adequate for current prompt; watch if prompt grows.
 - **Langfuse SDK incompatible with Python 3.14**: Official SDK uses `pydantic.v1` which breaks on Python 3.14+. Workaround: custom `MinimalLangfuseClient` in `db/observability.py` posts directly to REST API. Revert to official SDK when they ship a fix.
+- **Recall@k is 36%** on the initial golden set run. Primary causes: (1) `metadata_*` path retrieves
+  by exact `(course_id, category)` but `source_crn` in golden set is section-specific — a correct answer
+  from a different section of the same course counts as MISS; (2) `semantic_general` and `hybrid_default`
+  retrieve broad context that may not include the exact source chunk. Recall@k needs per-function
+  analysis and potentially a looser match criterion (course_id + category, not CRN-exact).
+- **Golden set labels have ~10 stratum errors** — `_derive_router_ground_truth()` in
+  `generate_golden_set.py` assigns labels mechanically from strata; synthesized questions that name
+  a specific category get wrong labels. Run `evals/adjudicate_golden_set.py` to produce
+  `golden_set_v2.jsonl` with LLM-corrected labels. Estimated true router accuracy ~90%.
 
 ### Next Steps
-1. **Expand parsing to all departments** — run `process_syllabi.py` without `--department` filter
-2. **Run full pipeline eval** — test retrieval quality + citation rate once MongoDB is ingested
-3. **Add latency percentile tracking** — p50/p95 per function type in Langfuse dashboards
-4. **Set score alerts** — Langfuse webhook when faithfulness < 0.5
-5. **Observability Phase 2** — prompt management via Langfuse, A/B testing router variables
+1. **Run golden set adjudication** — `python evals/adjudicate_golden_set.py --golden-set tamu_data/logs/golden_set.jsonl --router-results tamu_data/logs/router_metrics.json --output tamu_data/logs/golden_set_v2.jsonl`
+2. **Re-run eval on adjudicated set** — measure true router accuracy; also run `--ragas` for faithfulness scores
+3. **Investigate recall@k** — redefine hit as `course_id + category` match (not CRN-exact); add per-function breakdown
+4. **Expand parsing to all departments** — run `pipeline/process_syllabi.py` without `--department` filter
+5. **Add latency percentile tracking** — p50/p95 per function type in Langfuse dashboards
+6. **Set score alerts** — Langfuse webhook when faithfulness < 0.5
+7. **Observability Phase 2** — prompt management via Langfuse, A/B testing router variables
 
 ## Cloud Deployment
 

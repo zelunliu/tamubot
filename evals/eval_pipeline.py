@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import io
 import json
 import re
 import sys
@@ -22,6 +23,10 @@ from pathlib import Path
 
 # Ensure repo root is on path when run from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# UTF-8 stdout for Windows (avoids cp1252 encode errors for ✅ ❌ etc.)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 import config
 from db import router as router_mod
@@ -41,6 +46,10 @@ class TestCase:
     expected_specific_categories: list[str] = field(default_factory=list)
     expected_semantic_intent: bool = False
     notes: str = ""
+    # Golden set provenance — used for recall@k
+    source_crn: str = ""
+    source_category: str = ""
+    reference_answer: str = ""
 
 
 TEST_SUITE: list[TestCase] = [
@@ -397,10 +406,18 @@ class EvalResult:
     generation_skipped: bool            # True for out_of_scope or dry-run
     generation_error: str | None
 
+    # Retrieval quality
+    recall_hit: bool | None         # True if source chunk (crn+category) found; None if no source_crn
+
+    # Answer quality (RAGAS — only populated when --ragas flag is set)
+    ragas_faithfulness: float | None
+    ragas_answer_relevancy: float | None
+
     # Timing (ms)
     latency_router_ms: float
     latency_retrieval_ms: float
     latency_generation_ms: float
+    latency_ragas_ms: float
     latency_total_ms: float
 
 
@@ -412,7 +429,12 @@ def _count_citations(text: str) -> int:
 # Run a single test case through the full pipeline
 # ---------------------------------------------------------------------------
 
-def run_test(tc: TestCase, test_id: int, dry_run: bool = False) -> EvalResult:
+def run_test(
+    tc: TestCase,
+    test_id: int,
+    dry_run: bool = False,
+    do_ragas: bool = False,
+) -> EvalResult:
     t0 = time.perf_counter()
 
     # ── Stage 1: Router ──────────────────────────────────────────────────
@@ -460,9 +482,40 @@ def run_test(tc: TestCase, test_id: int, dry_run: bool = False) -> EvalResult:
             generation_error = str(e)
 
     latency_generation_ms = (time.perf_counter() - t_gen_start) * 1000
+
+    # ── Recall@k — did the source chunk surface in retrieved results? ─────
+    # source_crn is only populated when loading from a golden set JSONL.
+    # For the built-in TEST_SUITE (no source_crn), recall_hit is None.
+    recall_hit: bool | None = None
+    if tc.source_crn:
+        recall_hit = any(
+            c.get("crn") == tc.source_crn and c.get("category") == tc.source_category
+            for c in chunks
+        )
+
+    # ── RAGAS quality scores (optional — requires --ragas flag) ───────────
+    t_ragas_start = time.perf_counter()
+    ragas_faithfulness: float | None = None
+    ragas_answer_relevancy: float | None = None
+
+    if do_ragas and not dry_run and chunks and response_text and not generation_error:
+        try:
+            from db.observability import compute_ragas_metrics
+            contexts = [c.get("content", "") for c in chunks if c.get("content")]
+            scores = compute_ragas_metrics(
+                question=tc.query,
+                contexts=contexts,
+                answer=response_text,
+            )
+            ragas_faithfulness = scores.get("faithfulness")
+            ragas_answer_relevancy = scores.get("answer_relevancy")
+        except Exception as e:
+            pass  # RAGAS failure is non-fatal
+
+    latency_ragas_ms = (time.perf_counter() - t_ragas_start) * 1000
     latency_total_ms = (time.perf_counter() - t0) * 1000
 
-    # ── Metrics ───────────────────────────────────────────────────────────
+    # ── Routing correctness ───────────────────────────────────────────────
     unique_courses = sorted({d.get("course_id", "") for d in chunks if d.get("course_id")})
     unique_categories = sorted({d.get("category", "") for d in chunks if d.get("category")})
 
@@ -505,9 +558,13 @@ def run_test(tc: TestCase, test_id: int, dry_run: bool = False) -> EvalResult:
         citation_count=_count_citations(response_text),
         generation_skipped=generation_skipped,
         generation_error=generation_error,
+        recall_hit=recall_hit,
+        ragas_faithfulness=ragas_faithfulness,
+        ragas_answer_relevancy=ragas_answer_relevancy,
         latency_router_ms=round(latency_router_ms, 1),
         latency_retrieval_ms=round(latency_retrieval_ms, 1),
         latency_generation_ms=round(latency_generation_ms, 1),
+        latency_ragas_ms=round(latency_ragas_ms, 1),
         latency_total_ms=round(latency_total_ms, 1),
     )
 
@@ -527,9 +584,9 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
 
     fn = rr.function
     mode = rr.retrieval_mode
-    cfg = config.FUNCTION_RETRIEVAL_CONFIG.get(fn, {})
-    retrieve_k = cfg.get("retrieve_k", config.RETRIEVAL_TOP_K)
-    rerank_k = cfg.get("rerank_k", config.RERANK_TOP_K)
+    dk = router_mod._compute_dynamic_k(fn, len(rr.course_ids))
+    retrieve_k = dk["retrieve_k"]
+    rerank_k = dk["rerank_k"]
 
     course_ids = rr.course_ids
     specific_cats = rr.specific_categories
@@ -621,6 +678,22 @@ def write_markdown_report(
     with_citations = [r for r in results if r.has_citations and not r.generation_skipped]
     generated = [r for r in results if not r.generation_skipped]
 
+    # Recall@k (only cases with source_crn populated)
+    recall_cases = [r for r in results if r.recall_hit is not None]
+    recall_hits = sum(1 for r in recall_cases if r.recall_hit)
+
+    # RAGAS (only cases where scores were computed)
+    ragas_cases = [r for r in results if r.ragas_faithfulness is not None]
+    avg_faithfulness = (
+        sum(r.ragas_faithfulness for r in ragas_cases) / len(ragas_cases)
+        if ragas_cases else None
+    )
+    ragas_rel_cases = [r for r in results if r.ragas_answer_relevancy is not None]
+    avg_relevancy = (
+        sum(r.ragas_answer_relevancy for r in ragas_rel_cases) / len(ragas_rel_cases)
+        if ragas_rel_cases else None
+    )
+
     avg_total_ms = sum(r.latency_total_ms for r in results) / total if total else 0
     avg_router_ms = sum(r.latency_router_ms for r in results) / total if total else 0
     avg_chunks = sum(r.chunks_retrieved for r in results) / total if total else 0
@@ -672,6 +745,13 @@ def write_markdown_report(
     ]
 
     # ── Executive summary ─────────────────────────────────────────────
+    recall_str = (
+        f"{recall_hits}/{len(recall_cases)} ({_pct(recall_hits/len(recall_cases))})"
+        if recall_cases else "N/A (no source_crn — built-in suite)"
+    )
+    faith_str = f"{avg_faithfulness:.3f}" if avg_faithfulness is not None else "not run (omit --ragas)"
+    rel_str = f"{avg_relevancy:.3f}" if avg_relevancy is not None else "not run (omit --ragas)"
+
     lines += [
         "## Executive Summary",
         "",
@@ -680,6 +760,9 @@ def write_markdown_report(
         f"- **Course ID extraction accuracy:** {cids_correct}/{total} ({_pct(cids_correct/total if total else 0)})",
         f"- **Category extraction accuracy:** {cats_correct}/{total} ({_pct(cats_correct/total if total else 0)})",
         f"- **Retrieval/generation errors:** {len(with_errors)}",
+        f"- **Recall@k (source chunk in results):** {recall_str}",
+        f"- **RAGAS Faithfulness (avg):** {faith_str}",
+        f"- **RAGAS Answer Relevancy (avg):** {rel_str}",
         f"- **Responses with citations:** {len(with_citations)}/{len(generated)} ({_pct(len(with_citations)/len(generated) if generated else 0)})",
         f"- **Avg total latency:** {avg_total_ms:.0f} ms",
         f"- **Avg router latency:** {avg_router_ms:.0f} ms",
@@ -693,8 +776,8 @@ def write_markdown_report(
     lines += [
         "## Results by Function",
         "",
-        "| Function | Tests | Fn Acc | CID Acc | Cat Acc | Avg Chunks | Avg Latency (ms) | Errors |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Function | Tests | Fn Acc | CID Acc | Cat Acc | Recall@k | Avg Chunks | Avg Latency (ms) | Errors |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for fn in functions:
         group = [r for r in results if r.function_expected == fn]
@@ -707,9 +790,11 @@ def write_markdown_report(
         ac = sum(r.chunks_retrieved for r in group) / n
         al = sum(r.latency_total_ms for r in group) / n
         errs = sum(1 for r in group if r.retrieval_error or r.generation_error)
+        rg = [r for r in group if r.recall_hit is not None]
+        rk_str = f"{sum(1 for r in rg if r.recall_hit)}/{len(rg)}" if rg else "—"
         lines.append(
             f"| `{fn}` | {n} | {fc}/{n} ({_pct(fc/n)}) | {cc}/{n} ({_pct(cc/n)}) | "
-            f"{sc}/{n} ({_pct(sc/n)}) | {ac:.1f} | {al:.0f} | {errs} |"
+            f"{sc}/{n} ({_pct(sc/n)}) | {rk_str} | {ac:.1f} | {al:.0f} | {errs} |"
         )
     lines += ["", "---", ""]
 
@@ -749,9 +834,13 @@ def write_markdown_report(
                 f"| Chunks retrieved (post-dedup) | {r.chunks_retrieved} |",
                 f"| Unique courses in results | `{r.unique_courses_in_results}` |",
                 f"| Unique categories in results | `{r.unique_categories_in_results}` |",
+                f"| Recall@k (source chunk found) | {'✅' if r.recall_hit else ('❌' if r.recall_hit is False else '—')} |",
+                f"| RAGAS Faithfulness | {f'{r.ragas_faithfulness:.3f}' if r.ragas_faithfulness is not None else '—'} |",
+                f"| RAGAS Answer Relevancy | {f'{r.ragas_answer_relevancy:.3f}' if r.ragas_answer_relevancy is not None else '—'} |",
                 f"| Latency: router | {r.latency_router_ms} ms |",
                 f"| Latency: retrieval+rerank | {r.latency_retrieval_ms} ms |",
                 f"| Latency: generation | {r.latency_generation_ms} ms |",
+                f"| Latency: RAGAS | {r.latency_ragas_ms} ms |",
                 f"| Latency: total | {r.latency_total_ms} ms |",
                 f"| Citations in response | {r.citation_count} (`[Source N]` pattern) |",
                 f"| Response length | {r.response_length_chars} chars |",
@@ -883,31 +972,72 @@ def write_markdown_report(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _load_golden_set(path: Path) -> list[TestCase]:
+    """Load a golden set JSONL (from generate_golden_set.py) as TestCase objects."""
+    cases = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            cases.append(TestCase(
+                query=d.get("question", d.get("query", "")),
+                function_expected=d.get("expected_function", ""),
+                description=d.get("stratum", ""),
+                expected_course_ids=d.get("expected_course_ids", []),
+                expected_specific_categories=d.get("expected_specific_categories", []),
+                expected_semantic_intent=d.get("expected_semantic_intent", False),
+                notes=d.get("source_category", ""),
+                source_crn=d.get("source_crn", "") or "",
+                source_category=d.get("source_category", "") or "",
+                reference_answer=d.get("reference_answer", "") or "",
+            ))
+    return cases
+
+
 def main():
     parser = argparse.ArgumentParser(description="TamuBot pipeline evaluation harness")
     parser.add_argument("--function", help="Run only tests for this function type")
     parser.add_argument("--dry-run", action="store_true",
                         help="Router classification only — skip retrieval and generation")
     parser.add_argument("--test-id", type=int, help="Run only this specific test ID (1-indexed)")
+    parser.add_argument("--golden-set", metavar="PATH",
+                        help="Path to golden set JSONL (from generate_golden_set.py). "
+                             "Runs those questions instead of the built-in TEST_SUITE.")
+    parser.add_argument("--ragas", action="store_true",
+                        help="Run RAGAS Faithfulness + AnswerRelevancy scoring on each "
+                             "generated response. Adds ~1 Gemini call per question.")
     parser.add_argument("--output-dir", default="tamu_data/logs",
                         help="Directory for output files (default: tamu_data/logs)")
     args = parser.parse_args()
 
+    # Load test suite — golden set JSONL or built-in
+    if args.golden_set:
+        gs_path = Path(args.golden_set)
+        if not gs_path.exists():
+            print(f"Golden set not found: {gs_path}")
+            sys.exit(1)
+        base_suite = _load_golden_set(gs_path)
+        print(f"Loaded {len(base_suite)} test cases from {gs_path.name}")
+    else:
+        base_suite = TEST_SUITE
+
     # Filter test suite
-    suite = TEST_SUITE
+    suite = base_suite
     if args.function:
         suite = [tc for tc in suite if tc.function_expected == args.function]
         if not suite:
             print(f"No tests found for function: {args.function}")
-            valid = sorted(set(tc.function_expected for tc in TEST_SUITE))
+            valid = sorted(set(tc.function_expected for tc in base_suite))
             print(f"Valid functions: {', '.join(valid)}")
             sys.exit(1)
     if args.test_id:
         idx = args.test_id - 1
-        if not (0 <= idx < len(TEST_SUITE)):
-            print(f"--test-id must be between 1 and {len(TEST_SUITE)}")
+        if not (0 <= idx < len(base_suite)):
+            print(f"--test-id must be between 1 and {len(base_suite)}")
             sys.exit(1)
-        suite = [TEST_SUITE[idx]]
+        suite = [base_suite[idx]]
 
     # Prepare output dir
     output_dir = Path(args.output_dir)
@@ -918,32 +1048,48 @@ def main():
     md_path = output_dir / f"eval_report_{run_ts}.md"
 
     print(f"\nTamuBot Pipeline Evaluation — {run_ts}")
-    print(f"Mode: {'DRY-RUN (router only)' if args.dry_run else 'Full pipeline'}")
+    print(f"Mode: {'DRY-RUN (router only)' if args.dry_run else 'Full pipeline'}"
+          f"{' + RAGAS' if args.ragas else ''}")
     print(f"Tests: {len(suite)}")
     print(f"Output: {jsonl_path.name} + {md_path.name}")
     print("-" * 60)
 
     results: list[EvalResult] = []
     for i, tc in enumerate(suite, 1):
-        test_id = TEST_SUITE.index(tc) + 1 if not args.test_id else args.test_id
+        test_id = args.test_id if args.test_id else i
         fn_label = f"[{tc.function_expected}]".ljust(22)
         print(f"  {i:2d}/{len(suite)} {fn_label} {tc.query[:60]}...")
         sys.stdout.flush()
 
-        r = run_test(tc, test_id=test_id, dry_run=args.dry_run)
+        r = run_test(tc, test_id=test_id, dry_run=args.dry_run, do_ragas=args.ragas)
         results.append(r)
 
         tick = "[OK]" if r.function_correct else "[FAIL]"
         err = f" ERR: {r.retrieval_error or r.generation_error}" if (r.retrieval_error or r.generation_error) else ""
+        recall_tag = "" if r.recall_hit is None else (f" recall={'HIT' if r.recall_hit else 'MISS'}")
+        ragas_tag = (
+            f" faith={r.ragas_faithfulness:.2f} rel={r.ragas_answer_relevancy:.2f}"
+            if r.ragas_faithfulness is not None else ""
+        )
         print(
             f"       {tick} fn={r.function_actual} mode={r.retrieval_mode_actual} "
-            f"catconf={r.category_confidence:.2f} chunks={r.chunks_retrieved} "
-            f"{r.latency_total_ms:.0f}ms{err}"
+            f"catconf={r.category_confidence:.2f} chunks={r.chunks_retrieved}"
+            f"{recall_tag}{ragas_tag} {r.latency_total_ms:.0f}ms{err}"
         )
 
     print("-" * 60)
     fn_acc = sum(1 for r in results if r.function_correct) / len(results)
     print(f"Function accuracy: {fn_acc:.0%}  ({sum(1 for r in results if r.function_correct)}/{len(results)})")
+    rc = [r for r in results if r.recall_hit is not None]
+    if rc:
+        rh = sum(1 for r in rc if r.recall_hit)
+        print(f"Recall@k:          {rh/len(rc):.0%}  ({rh}/{len(rc)} source chunks found)")
+    rf = [r for r in results if r.ragas_faithfulness is not None]
+    if rf:
+        print(f"RAGAS Faithfulness:   {sum(r.ragas_faithfulness for r in rf)/len(rf):.3f}  (avg over {len(rf)} cases)")
+    rr2 = [r for r in results if r.ragas_answer_relevancy is not None]
+    if rr2:
+        print(f"RAGAS Ans Relevancy:  {sum(r.ragas_answer_relevancy for r in rr2)/len(rr2):.3f}  (avg over {len(rr2)} cases)")
 
     # Write outputs
     write_jsonl(results, jsonl_path)

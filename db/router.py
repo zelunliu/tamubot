@@ -30,6 +30,14 @@ COURSE IDs
 Identify all course IDs mentioned (e.g. "CSCE 638", "CSCE 670").
 Normalize: uppercase department + space + number ("csce638" → "CSCE 638", "CSCE-670" → "CSCE 670").
 
+Important: extract ONLY the course the student is directly asking about.
+Do NOT extract a course ID that appears only as prerequisite context or background.
+Examples of context-only (do NOT extract):
+- "I got a B in MATH 151, can I take this course?" → course_ids=[]  (MATH 151 is background)
+- "Given that CSCE 221 is a prereq, how hard is this class?" → course_ids=[]
+If the question uses "this course" / "this class" with no named course ID to ask about,
+set course_ids=[].
+
 CATEGORIES
 Identify which syllabus categories the question is asking about.
 Valid categories: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS,
@@ -47,6 +55,12 @@ Examples:
   → specific_categories=[], specific_only=false, category_confidence=1.0
 - "Tell me about CSCE 638, especially the grading"
   → specific_categories=["GRADING"], specific_only=false, category_confidence=0.85
+- "Tell me about CSCE 638, especially considering the grading structure"
+  → specific_categories=["GRADING"], specific_only=false, category_confidence=0.85
+  (specific_only=false: "especially considering" signals background context, not exclusive focus)
+- "What should I know about CSCE 638, including its AI policy?"
+  → specific_categories=["AI_POLICY"], specific_only=false, category_confidence=0.90
+  (specific_only=false: "including" and "what should I know" signal broad overview with emphasis)
 - "Can I use ChatGPT in CSCE 638?"
   → specific_categories=["AI_POLICY"], specific_only=true, category_confidence=0.95
 - "What materials and grading does CSCE 638 require?"
@@ -76,6 +90,7 @@ Examples:
 - "Compare the grading of CSCE 638 and CSCE 670" → semantic_intent=false (factual comparison)
 - "Is CSCE 638 harder than CSCE 670?" → semantic_intent=true (evaluative/opinion)
 - "What is the TAMU academic integrity policy?" → semantic_intent=true (TAMU discovery, no course_id)
+- "If I don't access Perusall through Canvas, will my grades show up?" → semantic_intent=true, semantic_type=ADMINISTRATIVE (TAMU tool, no course_id)
 - "What are the best restaurants near TAMU?" → semantic_intent=false (NOT TAMU academic)
 - "Can you write a cover letter?" → semantic_intent=false (NOT TAMU academic)
 
@@ -84,6 +99,9 @@ If semantic_intent = true, set semantic_type to one of:
 - CAREER: Job relevance, skill building, industry applications
 - DIFFICULTY: Workload, how hard is it, grading rigor
 - PLANNING: Which course to take, course sequence, scheduling
+- ADMINISTRATIVE: Questions about TAMU tools and systems (Canvas, Perusall, grade tracking,
+  course logistics) with no specific course ID — or questions about how a platform/tool
+  interacts with grades/assignments when no course is named
 - GENERAL: Any other advisory/subjective component about a TAMU course
 
 If semantic_intent = false, set semantic_type = null.
@@ -116,18 +134,48 @@ User question: {query}
 
 
 # ---------------------------------------------------------------------------
+# Dynamic-k helper (pure Python, no LLM)
+# ---------------------------------------------------------------------------
+
+def _compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
+    """Compute retrieve_k and rerank_k scaled by the number of courses in the query.
+
+    semantic_general is corpus-wide — do not scale by course count.
+    All other functions multiply their per-course base by n_courses, capped at the
+    global maximums to avoid over-retrieving.
+    """
+    base = config.PER_COURSE_K[function]
+    if function == "semantic_general":
+        return dict(base)  # fixed, not scaled
+    n = max(1, n_courses)
+    return {
+        "retrieve_k": min(base["retrieve_k"] * n, config.MAX_RETRIEVE_K),
+        "rerank_k": min(base["rerank_k"] * n, config.MAX_RERANK_K),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Derivation helpers (pure Python, no LLM)
 # ---------------------------------------------------------------------------
 
-def _derive_retrieval_mode(course_ids: list[str], category_confidence: float) -> str:
-    """Derive retrieval_mode from course presence and category confidence.
+def _derive_retrieval_mode(
+    course_ids: list[str],
+    category_confidence: float,
+    function: str = "",
+) -> str:
+    """Derive retrieval_mode from course presence, category confidence, and function.
 
     - No course IDs → "semantic" (full-corpus vector search)
+    - *_combined functions → always "hybrid" regardless of confidence.
+      Broad framing ("what should I know about X, especially Y") benefits from
+      the semantic component even when the named category has high confidence.
     - course IDs + high confidence → "metadata" (exact index lookup)
     - course IDs + low confidence → "hybrid" (RRF of vector + text)
     """
     if not course_ids:
         return "semantic"
+    if function.endswith("_combined"):
+        return "hybrid"
     if category_confidence >= config.CATEGORY_CONFIDENCE_THRESHOLD:
         return "metadata"
     return "hybrid"
@@ -188,16 +236,16 @@ class RouterResult:
     function: str = ""
 
     def __post_init__(self):
-        if not self.retrieval_mode:
-            self.retrieval_mode = _derive_retrieval_mode(
-                self.course_ids, self.category_confidence
-            )
         if not self.function:
             self.function = _derive_function(
                 self.course_ids,
                 self.semantic_intent,
                 self.specific_categories,
                 self.specific_only,
+            )
+        if not self.retrieval_mode:
+            self.retrieval_mode = _derive_retrieval_mode(
+                self.course_ids, self.category_confidence, self.function
             )
 
     @property
@@ -281,7 +329,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         if c in valid_categories
     ]
 
-    valid_semantic_types = {"ACADEMIC", "CAREER", "DIFFICULTY", "PLANNING", "GENERAL"}
+    valid_semantic_types = {"ACADEMIC", "CAREER", "DIFFICULTY", "PLANNING", "ADMINISTRATIVE", "GENERAL"}
     semantic_type = data.get("semantic_type")
     if semantic_type not in valid_semantic_types:
         semantic_type = None
@@ -434,9 +482,9 @@ def _retrieve_and_rerank(
     """
     fn = router_result.function
     mode = router_result.retrieval_mode
-    cfg = config.FUNCTION_RETRIEVAL_CONFIG.get(fn, {})
-    retrieve_k = cfg.get("retrieve_k", config.RETRIEVAL_TOP_K)
-    rerank_k = cfg.get("rerank_k", config.RERANK_TOP_K)
+    dk = _compute_dynamic_k(fn, len(router_result.course_ids))
+    retrieve_k = dk["retrieve_k"]
+    rerank_k = dk["rerank_k"]
 
     course_ids = router_result.course_ids
     specific_cats = router_result.specific_categories

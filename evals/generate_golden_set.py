@@ -1,0 +1,732 @@
+"""Golden test set synthesis for TamuBot evaluation.
+
+Generates 50 stratified questions from live MongoDB chunks and exports to:
+  - tamu_data/logs/golden_set.jsonl  (local JSONL, timestamped + canonical)
+  - Langfuse dataset 'tamubot_golden_v1' (via REST API)
+
+Each golden item carries ground truth for ALL pipeline stages:
+
+  Router stage:
+    expected_function          — one of the 8 router functions
+    expected_course_ids        — [] for no-category strata / semantic_general
+    expected_specific_categories — [] for default/general strata
+    expected_semantic_intent   — True for hybrid_* and semantic_general
+
+  Retrieval stage:
+    source_crn                 — CRN of the chunk that grounded the question
+    source_category            — syllabus category of that chunk
+    source_course_id           — course the chunk belongs to
+    (Reranker ordering is evaluated via automated NDCG in eval_retrieval_metrics.py
+     rather than hand-labelled ranks — no additional field needed here.)
+
+  Generator stage:
+    reference_answer           — chunk content the answer should be grounded in
+
+Category sampling is weighted by real student query priority.
+Function type emerges from how the question is phrased (framing prompt),
+not from which category it's about.
+
+Usage:
+    python scripts/generate_golden_set.py                    # full 50-question run
+    python scripts/generate_golden_set.py --dry-run          # validate distribution only
+    python scripts/generate_golden_set.py --dry-run --n 10   # show scaled distribution
+    python scripts/generate_golden_set.py --no-langfuse      # skip Langfuse upload
+    python scripts/generate_golden_set.py --department CSCE
+    python scripts/generate_golden_set.py --seed 123         # reproducible run
+"""
+
+import argparse
+import json
+import random
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+# ---------------------------------------------------------------------------
+# Category importance weights
+#
+# Reflects what students actually query — not internal routing concerns.
+# GRADING and ATTENDANCE_AND_MAKEUP are useful but over-represented in
+# typical eval sets; halved here so higher-signal categories dominate.
+# ---------------------------------------------------------------------------
+
+CATEGORY_WEIGHTS: dict[str, float] = {
+    "COURSE_OVERVIEW":       0.20,   # what is this course, topics, description
+    "LEARNING_OUTCOMES":     0.17,   # what will I learn, skills, objectives
+    "PREREQUISITES":         0.14,   # required background, can I take this
+    "SCHEDULE":              0.14,   # exam dates, assignment deadlines, lecture topics
+    "MATERIALS":             0.10,   # textbooks, tools, software, cost
+    "GRADING":               0.10,   # halved from initial weight — useful but over-queried
+    "AI_POLICY":             0.07,   # ChatGPT, generative AI rules — high student interest
+    "INSTRUCTOR":            0.04,   # office hours, contact info, TA details
+    "ATTENDANCE_AND_MAKEUP": 0.02,   # halved — late work policy, rarely a primary need
+    "UNIVERSITY_POLICIES":   0.01,   # boilerplate, rarely a primary query target
+    "SUPPORT_SERVICES":      0.01,   # disability services, counseling
+}
+
+# Normalized probabilities (computed once at import)
+_TOTAL_WEIGHT = sum(CATEGORY_WEIGHTS.values())
+CATEGORY_PROBS: dict[str, float] = {
+    cat: w / _TOTAL_WEIGHT for cat, w in CATEGORY_WEIGHTS.items()
+}
+
+
+def weighted_sample_categories(n: int, rng: random.Random | None = None) -> list[str]:
+    """Draw n category names with replacement according to CATEGORY_WEIGHTS."""
+    rng = rng or random.Random()
+    cats = list(CATEGORY_PROBS.keys())
+    probs = list(CATEGORY_PROBS.values())
+    return rng.choices(cats, weights=probs, k=n)
+
+
+# ---------------------------------------------------------------------------
+# Function strata
+#
+# Each stratum defines: how many questions, a framing prompt for synthesis,
+# and whether questions should name a specific course ID.
+#
+# No-category strata (metadata_default, hybrid_default, semantic_general)
+# make up ~56% of the set — broad queries that reflect how students actually
+# approach a course assistant before diving into specifics.
+#
+# Category-specific strata (metadata_specific, hybrid_specific, hybrid_combined)
+# draw from the weighted pool above so high-value categories dominate.
+# ---------------------------------------------------------------------------
+
+STRATUM_MAP: dict[str, dict] = {
+    # ── No-category strata (56%) ──────────────────────────────────────
+    "metadata_default": {
+        "n_questions":         10,
+        "has_category":        False,
+        "expected_semantic_intent": False,
+        "description":         "General overview — no specific category",
+        "framing": (
+            "Ask a broad, general question about the course that does NOT focus on "
+            "any specific syllabus category. Use the course ID from the excerpt. "
+            "Do NOT ask for opinions or difficulty assessments. "
+            "Examples: 'Tell me about CSCE 638', 'What is CSCE 670 about?', "
+            "'Give me an overview of this course', 'What should I know before enrolling?'"
+        ),
+        "use_course_id":       True,
+    },
+    "hybrid_default": {
+        "n_questions":         10,
+        "has_category":        False,
+        "expected_semantic_intent": True,
+        "description":         "Advisory question about the course overall — no specific category",
+        "framing": (
+            "Ask a subjective or advisory question about the course WITHOUT naming "
+            "a specific syllabus category. Use evaluative or career-oriented language. "
+            "Use the course ID from the excerpt. "
+            "Examples: 'Is this course worth taking?', 'How hard is CSCE 638?', "
+            "'Is this good for a career in data science?', "
+            "'Should I take this before CSCE 670?', 'Would you recommend this course?'"
+        ),
+        "use_course_id":       True,
+    },
+    "semantic_general": {
+        "n_questions":         8,
+        "has_category":        False,
+        "expected_semantic_intent": True,
+        "description":         "Discovery question — no specific course ID",
+        "framing": (
+            "Ask a discovery, cross-course, or advisory question about TAMU academics "
+            "WITHOUT mentioning any specific course ID. The question should be answerable "
+            "by searching across courses or using general academic knowledge. "
+            "Examples: 'Which TAMU CS courses cover machine learning?', "
+            "'What courses are good preparation for a PhD in AI?', "
+            "'What are the typical grading norms in TAMU graduate CS courses?', "
+            "'Which courses have the lightest workload in CSCE?'"
+        ),
+        "use_course_id":       False,
+    },
+
+    # ── Category-specific strata (40%) ───────────────────────────────
+    "metadata_specific": {
+        "n_questions":         10,
+        "has_category":        True,
+        "expected_semantic_intent": False,
+        "description":         "Purely factual, asking about one specific category",
+        "framing": (
+            "Ask a direct factual question about the specific category shown in the excerpt. "
+            "The question must clearly imply or name this category. "
+            "Do NOT ask for opinions or difficulty assessments. "
+            "Use the course ID from the excerpt. "
+            "Examples for GRADING: 'What is the grading breakdown for CSCE 638?' "
+            "Examples for SCHEDULE: 'When is the midterm for CSCE 638?' "
+            "Examples for PREREQUISITES: 'What are the prerequisites for CSCE 638?' "
+            "Examples for MATERIALS: 'What textbooks are required for CSCE 670?'"
+        ),
+        "use_course_id":       True,
+    },
+    "hybrid_specific": {
+        "n_questions":         6,
+        "has_category":        True,
+        "expected_semantic_intent": True,
+        "description":         "Evaluative question that explicitly names a specific category",
+        "framing": (
+            "Ask an evaluative or advisory question that explicitly names the category "
+            "from the excerpt as the subject. Use evaluative language. "
+            "Use the course ID from the excerpt. "
+            "Examples for GRADING: 'Is the grading for CSCE 638 fair?' "
+            "Examples for AI_POLICY: 'Is the AI policy for CSCE 638 strict?' "
+            "Examples for SCHEDULE: 'Does the CSCE 638 schedule seem manageable?' "
+            "Examples for PREREQUISITES: 'Are the CSCE 638 prerequisites too demanding?'"
+        ),
+        "use_course_id":       True,
+    },
+    "hybrid_combined": {
+        "n_questions":         4,
+        "has_category":        True,
+        "expected_semantic_intent": False,
+        "description":         "General overview with a specific category as emphasis",
+        "framing": (
+            "Ask a general question about the course that mentions the category from "
+            "the excerpt as background context — not as the exclusive focus. "
+            "Use phrases like 'especially', 'particularly', 'with a focus on', 'including'. "
+            "Use the course ID from the excerpt. "
+            "Examples: 'Tell me about CSCE 638, especially the grading', "
+            "'Give me an overview of CSCE 670 with a focus on learning outcomes', "
+            "'What should I know about CSCE 638, including its AI policy?'"
+        ),
+        "use_course_id":       True,
+    },
+
+    # ── Out-of-scope (4%) ─────────────────────────────────────────────
+    "out_of_scope": {
+        "n_questions":         2,
+        "has_category":        False,
+        "expected_semantic_intent": False,
+        "description":         "Off-topic — not about TAMU academics",
+        "framing":             None,   # synthetic only, no MongoDB sampling
+        "use_course_id":       False,
+    },
+}
+
+# Total = 10+10+8+10+6+4+2 = 50
+
+# Synthetic off-topic questions — drawn randomly for out_of_scope
+OUT_OF_SCOPE_QUESTIONS: list[str] = [
+    "What's the weather forecast for College Station this weekend?",
+    "Can you write a Python function to sort a list?",
+    "What are the best restaurants near the TAMU campus?",
+    "Write me a cover letter for a software engineering internship at Google.",
+    "What is the capital of France?",
+    "How do I set up a React project from scratch?",
+    "What's a good recipe for chicken tikka masala?",
+    "Who won the Super Bowl last year?",
+]
+
+
+# ---------------------------------------------------------------------------
+# Derive router ground truth from stratum + chunk
+# ---------------------------------------------------------------------------
+
+def _derive_router_ground_truth(
+    stratum: str,
+    chunk: dict,
+) -> dict:
+    """Derive expected router output fields from stratum type and source chunk.
+
+    These are the "correct answers" the router should produce for this question —
+    used in eval_router_metrics.py to measure router accuracy.
+    """
+    spec = STRATUM_MAP[stratum]
+    course_id = chunk.get("course_id", "")
+    category = chunk.get("category", "")
+
+    # expected_course_ids: present for all strata that use a course ID
+    if spec.get("use_course_id") and course_id:
+        expected_course_ids = [course_id]
+    else:
+        expected_course_ids = []
+
+    # expected_specific_categories: only for category-specific strata
+    if spec.get("has_category") and category:
+        expected_specific_categories = [category]
+    else:
+        expected_specific_categories = []
+
+    return {
+        "expected_function":             stratum,
+        "expected_course_ids":           expected_course_ids,
+        "expected_specific_categories":  expected_specific_categories,
+        "expected_semantic_intent":      spec["expected_semantic_intent"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# MongoDB chunk sampling
+# ---------------------------------------------------------------------------
+
+def sample_chunks_from_mongo(
+    n_total: int,
+    department: str = "CSCE",
+) -> list[dict]:
+    """Sample chunks from MongoDB weighted by CATEGORY_WEIGHTS.
+
+    Over-samples high-priority categories proportionally so the golden set
+    reflects real student query patterns.
+
+    Returns a flat list of chunk dicts tagged with _sampled_category.
+    """
+    from pymongo import MongoClient
+    import config
+
+    client = MongoClient(config.MONGODB_URI)
+    db = client[config.MONGODB_DB]
+    chunks_col = db["chunks"]
+
+    sampled_chunks: list[dict] = []
+    for cat, prob in CATEGORY_PROBS.items():
+        n_cat = max(2, round(prob * n_total))
+        pipeline = [
+            {
+                "$match": {
+                    "category": cat,
+                    "course_id": {"$regex": f"^{department}", "$options": "i"},
+                    "content": {"$exists": True, "$ne": ""},
+                }
+            },
+            {"$sample": {"size": n_cat}},
+            {
+                "$project": {
+                    "_id": 0,
+                    "crn": 1, "course_id": 1, "category": 1,
+                    "title": 1, "content": 1,
+                    "section": 1, "term": 1, "instructor_name": 1,
+                }
+            },
+        ]
+        docs = list(chunks_col.aggregate(pipeline))
+        for d in docs:
+            d["_sampled_category"] = cat
+        sampled_chunks.extend(docs)
+        print(f"  {cat:<30} weight={prob:.2f}  target={n_cat}  got={len(docs)}")
+
+    client.close()
+    print(f"  Total sampled: {len(sampled_chunks)} chunks")
+    return sampled_chunks
+
+
+# ---------------------------------------------------------------------------
+# Question synthesis
+# ---------------------------------------------------------------------------
+
+def synthesize_question_for_chunk(
+    chunk: dict,
+    stratum: str,
+    framing: str,
+    use_course_id: bool,
+) -> dict | None:
+    """Synthesize one realistic student question from a chunk + framing prompt.
+
+    Returns an enriched question dict with ground truth for all pipeline stages,
+    or None on synthesis failure.
+    """
+    import config
+    from google.genai import types
+
+    client = config.get_genai_client()
+    course_id = chunk.get("course_id", "the course")
+    category = chunk.get("category", "")
+    content = chunk.get("content", "")[:700]
+    crn = chunk.get("crn", "")
+
+    course_hint = (
+        f"The excerpt is from course {course_id} (CRN: {crn})."
+        if use_course_id else
+        "Do NOT mention a specific course ID in your question."
+    )
+
+    prompt = f"""\
+You are generating realistic student evaluation questions for a TAMU course assistant.
+
+Syllabus excerpt (category: {category}):
+---
+{content}
+---
+
+{course_hint}
+
+Task: Generate ONE realistic student question grounded in this excerpt.
+
+Question type guidance:
+{framing}
+
+Rules:
+- The question must be directly answerable using this excerpt
+- Use natural student language (not formal/academic)
+- One sentence, ending with a question mark
+- Do not include the category name (e.g. "GRADING") verbatim in the question
+
+Respond with ONLY the question text, nothing else.
+"""
+
+    try:
+        resp = client.models.generate_content(
+            model=config.GENERATION_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.8, max_output_tokens=120),
+        )
+        question = resp.text.strip().strip('"').strip("'")
+        if not question.endswith("?"):
+            question += "?"
+
+        router_gt = _derive_router_ground_truth(stratum, chunk)
+
+        return {
+            # Question
+            "question": question,
+
+            # Router ground truth
+            "expected_function":            router_gt["expected_function"],
+            "expected_course_ids":          router_gt["expected_course_ids"],
+            "expected_specific_categories": router_gt["expected_specific_categories"],
+            "expected_semantic_intent":     router_gt["expected_semantic_intent"],
+
+            # Retrieval ground truth
+            # The source chunk IS the relevant item — recall@k checks whether
+            # it (or another chunk from the same course/category) surfaces in results.
+            "source_crn":       crn,
+            "source_course_id": course_id,
+            "source_category":  category,
+
+            # Generator ground truth
+            "reference_answer": content,
+
+            # Metadata
+            "stratum":  stratum,
+            "category": category,
+            "source":   "gemini_synthesis",
+        }
+
+    except Exception as e:
+        print(f"  [WARN] Synthesis failed for {course_id}/{category}: {e}")
+        return None
+
+
+def synthesize_stratum(
+    stratum: str,
+    spec: dict,
+    all_chunks: list[dict],
+    n_questions: int,
+    rng: random.Random,
+) -> list[dict]:
+    """Synthesize n_questions for a stratum, sampling chunks by CATEGORY_WEIGHTS."""
+    framing = spec["framing"]
+    use_course_id = spec.get("use_course_id", True)
+
+    if not all_chunks:
+        print(f"  [WARN] No chunks available for stratum '{stratum}'")
+        return []
+
+    # Weight each chunk by its category's priority
+    weights = [CATEGORY_WEIGHTS.get(c.get("category", ""), 0.01) for c in all_chunks]
+
+    results = []
+    attempts = 0
+    max_attempts = n_questions * 4
+
+    while len(results) < n_questions and attempts < max_attempts:
+        attempts += 1
+        chunk = rng.choices(all_chunks, weights=weights, k=1)[0]
+        item = synthesize_question_for_chunk(chunk, stratum, framing, use_course_id)
+        if item:
+            results.append(item)
+            cat = chunk.get("category", "?")
+            print(f"  [{len(results):2d}/{n_questions}] [{cat:<26}] {item['question'][:65]}")
+
+    if len(results) < n_questions:
+        print(f"  [WARN] Only synthesized {len(results)}/{n_questions} for '{stratum}'")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Langfuse dataset upload
+# ---------------------------------------------------------------------------
+
+def upload_to_langfuse(
+    questions: list[dict],
+    dataset_name: str = "tamubot_golden_v1",
+) -> bool:
+    """Create (or upsert) a Langfuse dataset and upload all items."""
+    import httpx
+    import config
+
+    if not (config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY):
+        print("  [WARN] Langfuse credentials not configured — skipping upload.")
+        return False
+
+    host = config.LANGFUSE_BASE_URL.rstrip("/")
+    auth = (config.LANGFUSE_PUBLIC_KEY, config.LANGFUSE_SECRET_KEY)
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{host}/api/public/datasets",
+                json={
+                    "name": dataset_name,
+                    "description": (
+                        "TamuBot golden eval set — questions grounded in real syllabus chunks, "
+                        "weighted by student query priority. Ground truth for router, retrieval, "
+                        "and generator pipeline stages."
+                    ),
+                },
+                auth=auth,
+            )
+            if resp.status_code not in (200, 201):
+                print(f"  [WARN] Dataset creation: HTTP {resp.status_code}")
+            else:
+                print(f"  Langfuse dataset '{dataset_name}' ready.")
+
+            uploaded = 0
+            for q in questions:
+                payload = {
+                    "datasetName": dataset_name,
+                    "input": {"question": q["question"]},
+                    "expectedOutput": {
+                        # Router
+                        "expected_function":            q.get("expected_function"),
+                        "expected_course_ids":          q.get("expected_course_ids", []),
+                        "expected_specific_categories": q.get("expected_specific_categories", []),
+                        "expected_semantic_intent":     q.get("expected_semantic_intent", False),
+                        # Retrieval
+                        "source_crn":                   q.get("source_crn"),
+                        "source_course_id":             q.get("source_course_id"),
+                        "source_category":              q.get("source_category"),
+                        # Generator
+                        "reference_answer":             q.get("reference_answer", ""),
+                    },
+                    "metadata": {
+                        "stratum":        q.get("stratum"),
+                        "category":       q.get("category"),
+                        "category_weight": CATEGORY_WEIGHTS.get(q.get("category", ""), None),
+                        "source":         q.get("source"),
+                    },
+                }
+                r = client.post(f"{host}/api/public/dataset-items", json=payload, auth=auth)
+                if r.status_code in (200, 201):
+                    uploaded += 1
+                else:
+                    print(f"  [WARN] Item upload failed: HTTP {r.status_code}")
+
+        print(f"  Langfuse: {uploaded}/{len(questions)} items uploaded.")
+        return uploaded > 0
+
+    except Exception as e:
+        print(f"  [ERROR] Langfuse upload failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def generate_golden_set(
+    n_total: int = 50,
+    dry_run: bool = False,
+    no_langfuse: bool = False,
+    department: str = "CSCE",
+    output_dir: Path = Path("tamu_data/logs"),
+    seed: int = 42,
+    tag: str = "",
+) -> list[dict]:
+    """Full golden set generation pipeline."""
+    rng = random.Random(seed)
+
+    # Scale per-stratum counts if n_total != 50
+    base_total = sum(s["n_questions"] for s in STRATUM_MAP.values())
+    if n_total != base_total:
+        scale = n_total / base_total
+        stratum_counts = {k: max(1, round(v["n_questions"] * scale))
+                          for k, v in STRATUM_MAP.items()}
+    else:
+        stratum_counts = {k: v["n_questions"] for k, v in STRATUM_MAP.items()}
+
+    no_cat_n  = sum(stratum_counts[s] for s in ("metadata_default", "hybrid_default", "semantic_general"))
+    with_cat_n = sum(stratum_counts[s] for s in ("metadata_specific", "hybrid_specific", "hybrid_combined"))
+
+    print(f"\n{'=' * 60}")
+    print(f"  TamuBot Golden Set Generation")
+    print(f"  Target: {n_total} q  |  Dept: {department}  |  Seed: {seed}")
+    print(f"  No-category: {no_cat_n} ({no_cat_n/n_total:.0%})  "
+          f"Category-specific: {with_cat_n} ({with_cat_n/n_total:.0%})  "
+          f"OOS: {stratum_counts['out_of_scope']}")
+    print(f"{'=' * 60}")
+
+    # ── Step 1: Sample chunks ──────────────────────────────────────────
+    n_retrieval_q = sum(v for k, v in stratum_counts.items() if k != "out_of_scope")
+    n_chunks = n_retrieval_q * 4  # 4x oversample for variety + retry headroom
+
+    print(f"\n[1/4] Sampling ~{n_chunks} chunks from MongoDB...")
+    if dry_run:
+        print("  DRY-RUN: skipping MongoDB calls.")
+        all_chunks: list[dict] = []
+    else:
+        all_chunks = sample_chunks_from_mongo(n_total=n_chunks, department=department)
+
+    # ── Step 2: Synthesize per stratum ────────────────────────────────
+    print(f"\n[2/4] Synthesizing questions...")
+    all_questions: list[dict] = []
+
+    for stratum, spec in STRATUM_MAP.items():
+        if stratum == "out_of_scope":
+            continue
+        n_q = stratum_counts[stratum]
+        has_cat = spec["has_category"]
+        sem = spec["expected_semantic_intent"]
+        print(f"\n  [{stratum}]  n={n_q}  "
+              f"category={'yes' if has_cat else 'no'}  "
+              f"semantic_intent={sem}")
+        print(f"  {spec['description']}")
+
+        if dry_run:
+            print(f"  DRY-RUN: would synthesize {n_q} questions.")
+            continue
+
+        questions = synthesize_stratum(stratum, spec, all_chunks, n_q, rng)
+        all_questions.extend(questions)
+
+    # ── Step 3: out_of_scope ───────────────────────────────────────────
+    n_oos = stratum_counts["out_of_scope"]
+    oos_items = [
+        {
+            "question":                     q,
+            "expected_function":            "out_of_scope",
+            "expected_course_ids":          [],
+            "expected_specific_categories": [],
+            "expected_semantic_intent":     False,
+            "source_crn":                   None,
+            "source_course_id":             None,
+            "source_category":              None,
+            "reference_answer":             "(out of scope)",
+            "stratum":                      "out_of_scope",
+            "category":                     None,
+            "source":                       "synthetic_oos",
+        }
+        for q in rng.sample(OUT_OF_SCOPE_QUESTIONS, min(n_oos, len(OUT_OF_SCOPE_QUESTIONS)))
+    ]
+
+    print(f"\n[3/4] Adding {n_oos} out_of_scope questions (synthetic).")
+    if not dry_run:
+        all_questions.extend(oos_items)
+
+    if dry_run:
+        print(f"\n  DRY-RUN complete. Planned distribution:")
+        print(f"  {'Stratum':<22} {'n':>4}  {'Category':>8}  {'semantic_intent':>16}")
+        print(f"  {'-'*56}")
+        for s, spec in STRATUM_MAP.items():
+            n = stratum_counts[s]
+            has_c = "yes" if spec["has_category"] else "no"
+            sem = str(spec["expected_semantic_intent"])
+            print(f"  {s:<22} {n:>4}  {has_c:>8}  {sem:>16}")
+        total_no_cat = sum(stratum_counts[s]
+                           for s, sp in STRATUM_MAP.items() if not sp["has_category"])
+        total_cat = sum(stratum_counts[s]
+                        for s, sp in STRATUM_MAP.items() if sp["has_category"])
+        print(f"\n  No-category queries: {total_no_cat}/{n_total} "
+              f"({total_no_cat/n_total:.0%})")
+        print(f"  Category-specific:   {total_cat}/{n_total} "
+              f"({total_cat/n_total:.0%})")
+        print(f"\n  Category weights (descending):")
+        for cat, w in sorted(CATEGORY_WEIGHTS.items(), key=lambda x: -x[1]):
+            bar = "#" * round(w * 100)
+            print(f"    {cat:<30} {w:.0%}  {bar}")
+        return []
+
+    # Trim to n_total
+    all_questions = all_questions[:n_total]
+
+    # ── Step 4: Export ─────────────────────────────────────────────────
+    print(f"\n[4/4] Exporting {len(all_questions)} questions...")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prefix = f"golden_set_{tag}" if tag else "golden_set"
+    timestamped_path = output_dir / f"{prefix}_{ts}.jsonl"
+    canonical_path   = output_dir / f"{prefix}.jsonl"
+
+    for path in (timestamped_path, canonical_path):
+        with path.open("w", encoding="utf-8") as f:
+            for q in all_questions:
+                f.write(json.dumps(q) + "\n")
+    print(f"  Timestamped: {timestamped_path}")
+    print(f"  Canonical:   {canonical_path}")
+
+    if not no_langfuse:
+        print("  Uploading to Langfuse dataset 'tamubot_golden_v1'...")
+        upload_to_langfuse(all_questions)
+    else:
+        print("  Langfuse upload skipped (--no-langfuse).")
+
+    # Summary
+    print(f"\n{'=' * 60}")
+    print(f"  Summary: {len(all_questions)} questions generated")
+    print(f"{'=' * 60}")
+
+    print(f"\n  By stratum:")
+    strata_counts: dict[str, int] = {}
+    for q in all_questions:
+        s = q.get("stratum", "?")
+        strata_counts[s] = strata_counts.get(s, 0) + 1
+    for s in STRATUM_MAP:
+        n = strata_counts.get(s, 0)
+        spec = STRATUM_MAP[s]
+        tag = "(no cat)" if not spec["has_category"] else "(cat)"
+        print(f"    {s:<22} {n:2d}  {tag}")
+
+    print(f"\n  By category (actual distribution):")
+    cat_counts: dict[str, int] = {}
+    for q in all_questions:
+        c = q.get("category") or "none/oos"
+        cat_counts[c] = cat_counts.get(c, 0) + 1
+    for c, n in sorted(cat_counts.items(), key=lambda x: -x[1]):
+        w = CATEGORY_WEIGHTS.get(c, 0)
+        bar = "#" * n
+        print(f"    {c:<30} {n:2d}  (target weight={w:.0%})  {bar}")
+
+    return all_questions
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate a stratified golden test set for TamuBot evaluation"
+    )
+    parser.add_argument("--n", type=int, default=50,
+                        help="Target question count (default: 50)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show planned distribution only — skip synthesis and export")
+    parser.add_argument("--no-langfuse", action="store_true",
+                        help="Skip Langfuse dataset upload")
+    parser.add_argument("--department", default="CSCE",
+                        help="MongoDB department filter (default: CSCE)")
+    parser.add_argument("--output-dir", default="tamu_data/logs",
+                        help="Local output directory (default: tamu_data/logs)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducible sampling (default: 42)")
+    parser.add_argument("--tag", default="",
+                        help="Tag appended to output filename, e.g. 'csce' → golden_set_csce.jsonl")
+    args = parser.parse_args()
+
+    generate_golden_set(
+        n_total=args.n,
+        dry_run=args.dry_run,
+        no_langfuse=args.no_langfuse,
+        department=args.department,
+        output_dir=Path(args.output_dir),
+        seed=args.seed,
+        tag=args.tag,
+    )
+
+
+if __name__ == "__main__":
+    main()
