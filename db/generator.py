@@ -314,6 +314,9 @@ def generate(
     text = re.sub(r' {3,}', ' ', text)
     text = text.strip()
 
+    # Gate 1: Validate citations in response
+    validate_citations_with_trace(text, function, trace)
+
     if generation_span is not None:
         try:
             usage = response.usage_metadata
