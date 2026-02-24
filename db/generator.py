@@ -162,17 +162,20 @@ _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Per-function generation temperature.
-# metadata_* and semantic_general: 0.0 (maximum fidelity to context).
-# hybrid_*: 0.1 (slight flexibility for advisory synthesis).
+# Per-function generation temperature (function-based stochasticity).
+# metadata_*: 0.0 (deterministic extraction, maximum fidelity to context).
+# semantic_general, hybrid_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
+# out_of_scope, administrative: 0.0 (high compliance/policy requirement, deterministic).
 _FUNCTION_TEMPERATURES: dict[str, float] = {
     "metadata_default":  0.0,
     "metadata_specific": 0.0,
     "metadata_combined": 0.0,
-    "semantic_general":  0.0,
-    "hybrid_default":    0.1,
-    "hybrid_specific":   0.1,
-    "hybrid_combined":   0.1,
+    "semantic_general":  0.2,
+    "hybrid_default":    0.2,
+    "hybrid_specific":   0.2,
+    "hybrid_combined":   0.2,
+    "out_of_scope":      0.0,
+    "administrative":    0.0,
 }
 
 
