@@ -113,23 +113,28 @@ _FUNCTION_PROMPTS: dict[str, str] = {
     ),
     "semantic_general": (
         "The user has a broad question not tied to a specific course. "
+        "First define the relevant principle or framework underlying the question, "
+        "then apply that principle to the specific question using available context. "
         "Provide a helpful answer based only on the available context. "
         "If the evidence is insufficient to answer fully, state: "
         "'I don't have enough data to answer this accurately based on the available syllabi.'"
     ),
     "hybrid_default": (
         "The user is asking about a course with an advisory or subjective component. "
+        "First define the relevant principle or framework, then apply it to the course. "
         "Provide factual information from the course content and address the advisory aspect "
         "using only evidence from the context. "
         "Limit all advisory statements to those grounded in specific course details."
     ),
     "hybrid_specific": (
         "The user is asking about specific course categories with an advisory component. "
+        "First define the relevant principle or framework, then apply it to the specific categories. "
         "Focus on the requested categories and use that evidence to address the advisory dimension. "
         "Ground all advisory statements in specific facts from the context."
     ),
     "hybrid_combined": (
         "The user is asking about specific course details and a broader overview with an advisory component. "
+        "First define the relevant principle or framework, then apply it to the courses. "
         "Cover all relevant categories and use the evidence to address the advisory aspect. "
         "Ground all advisory statements in specific facts from the context."
     ),
