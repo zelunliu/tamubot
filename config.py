@@ -32,7 +32,7 @@ VALIDATION_MODEL = os.getenv("VALIDATION_MODEL", "gemini-2.5-flash-lite")
 # metadata_* functions use deterministic extraction (no thinking needed)
 THINKING_BUDGET_METADATA = 0
 # hybrid_* and semantic_general functions use thinking for complex reasoning
-THINKING_BUDGET_SEMANTIC = 4096
+THINKING_BUDGET_SEMANTIC = 1024
 
 # --- Temperature constants for function-based stochasticity ---
 # Deterministic (factual extraction): 0.0

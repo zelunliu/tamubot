@@ -150,7 +150,7 @@ tamu_data/raw/catalog/    tamu_data/raw/syllabi/*.pdf
   - `vertex` (legacy): Uses `VertexRagRetriever` → Vertex AI Managed Spanner Corpus → ChatVertexAI.
 - Config loaded from `.env` via `python-dotenv`; see `.env.example` for all variables.
 - **Three Gemini models**: `MODEL_NAME` (gemini-2.5-flash) for router, `GENERATION_MODEL` (gemini-2.5-flash) for generator, `VALIDATION_MODEL` (gemini-2.5-flash-lite) for Gate 2 groundedness scoring.
-- **Thinking budgets**: `THINKING_BUDGET_METADATA=0` (metadata_* functions, deterministic), `THINKING_BUDGET_SEMANTIC=4096` (hybrid_* and semantic_general, complex reasoning).
+- **Thinking budgets**: `THINKING_BUDGET_METADATA=0` (metadata_* functions, deterministic), `THINKING_BUDGET_SEMANTIC=1024` (hybrid_* and semantic_general, complex reasoning).
 - **Temperature constants**: `TEMP_DETERMINISTIC=0.0` (metadata_*, out_of_scope), `TEMP_SYNTHESIS=0.2` (hybrid_*, semantic_general for advisory reasoning).
 
 ### MongoDB Collections (`db/models.py`)
@@ -196,7 +196,8 @@ Outlet LLM (Gemini 2.5 Flash):
 - `format_context_xml(results)` — XML-tagged chunks with **primacy-recency bracketing**: rank 1 at context start, rank 2 at context end, ranks 3–N in the middle. Combats Lost-in-the-Middle attention degradation.
 - `build_system_prompt(function, course_ids, semantic_type, category_confidence)` — function-adaptive prompts + semantic_type advisory overlay + **Verbal Uncertainty Calibration** (injects uncertainty language when `category_confidence < 0.7`).
 - `generate(...)` — single-course grounded generation with `[Source N]` citations + thinking for hybrid/semantic functions. Routes multi-course queries to `generate_comparison`.
-- `generate_comparison(results, question, course_ids, trace)` — **two-call architecture** for multi-course comparisons: Call 1 extracts structured per-course JSON via `CourseComparisonTable` schema, Call 2 synthesizes to a Markdown table.
+- `generate_stream(...)` — streaming variant of `generate()`: yields text chunks via `generate_content_stream()` for single-course queries; falls back to blocking `generate_comparison()` for multi-course (JSON schema can't stream). Gate 1 + Gate 2 fire post-stream on accumulated text.
+- `generate_comparison(results, question, course_ids, trace)` — **single-call architecture** for multi-course comparisons: one Gemini call extracts structured JSON via `CourseComparisonTable` schema; `_render_comparison_markdown()` builds the 4-column table + Detailed Comparison prose in Python. Saves ~5–10s vs former two-call pattern.
 - `validate_citations_gate1(response_text)` / `validate_citations_with_trace(...)` — **Gate 1** regex check: verifies at least one `[Source N]` citation is present in factual responses.
 - Gate 2 groundedness scoring fires asynchronously via `run_groundedness_scoring_background` after each response (RAGAS `ResponseGroundedness`, Gemini 2.5 Flash-Lite as critic).
 - `out_of_scope` returns a canned response (no LLM call).
@@ -205,9 +206,9 @@ Outlet LLM (Gemini 2.5 Flash):
 
 ### Comparison Schemas (`db/comparison_schemas.py`)
 
-Pydantic models for the two-call comparison architecture:
-- `CourseComparisonData` — per-course fields: `course_id`, `grading`, `workload`, `prerequisites`, `section`, `instructor`.
-- `CourseComparisonTable` — wrapper holding a list of `CourseComparisonData`; used as `response_schema` in Call 1 to enforce structured JSON output from Gemini.
+Pydantic models for the single-call comparison architecture:
+- `CourseComparisonData` — per-course fields: `course_id`, `grading`, `workload`, `prerequisites`, `course_overview`, `learning_outcomes`, `topics_complexity`, `materials`.
+- `CourseComparisonTable` — wrapper holding a list of `CourseComparisonData`; used as `response_schema` to enforce structured JSON extraction. Markdown is rendered in Python by `_render_comparison_markdown()` — not by the LLM — because Gemini in JSON mode reliably fills typed fields but not free-form string fields.
 
 ### Syllabus Parsing (`pipeline/process_syllabi.py`)
 
@@ -265,8 +266,14 @@ Features: resume from last position, error logging, rate limit handling, `--retr
 - **Generator improvements** (2026-02-25)
   - **Primacy-recency bracketing** in `format_context_xml`: rank 1 → context start, rank 2 → context end,
     ranks 3–N → middle. Combats Lost-in-the-Middle attention degradation.
-  - **Two-call comparison architecture** (`generate_comparison`): multi-course queries use Call 1
-    (structured JSON extraction via `CourseComparisonTable` schema) + Call 2 (Markdown table synthesis).
+  - **Single-call comparison architecture** (`generate_comparison`): one Gemini call extracts structured
+    JSON via `CourseComparisonTable`; `_render_comparison_markdown()` renders Markdown in Python.
+    Saves ~5–10s vs former two-call pattern. Key insight: Gemini in JSON mode fills typed fields
+    reliably but not free-form string fields — render Markdown in Python instead.
+  - **Streaming output** (`generate_stream`): single-course queries stream tokens via
+    `generate_content_stream()`; app.py renders incrementally with `▌` cursor indicator.
+  - **Thinking budget reduced**: `THINKING_BUDGET_SEMANTIC` 4096 → 1024, saves ~1–3s per
+    hybrid_*/semantic_general call.
   - **Gate 1 citation validation** (`validate_citations_gate1`): regex check for `[Source N]` presence
     in factual responses; result uploaded to Langfuse as `citation_gate1_pass` score.
   - **Gate 2 groundedness scoring**: RAGAS `ResponseGroundedness` metric (Gemini 2.5 Flash-Lite as critic)
@@ -276,9 +283,21 @@ Features: resume from last position, error logging, rate limit handling, `--retr
   - **Chain-of-Verification** system prompt rule: LLM quotes verbatim in `<thinking>` block before
     paraphrasing, ensuring all claims are grounded.
   - **Model upgrade**: generator switched from `gemini-2.0-flash` → `gemini-2.5-flash`.
-  - **Thinking budget**: hybrid_* and semantic_general functions use `thinking_budget=4096`;
+  - **Thinking budget**: hybrid_* and semantic_general functions use `thinking_budget=1024`;
     metadata_* functions use `thinking_budget=0` (deterministic extraction).
   - Temperatures: `metadata_*` → 0.0, `hybrid_*` and `semantic_general` → 0.2.
+- **Comparison output improvements** (2026-02-25)
+  - **4-column table** (Course, Grading, Workload, Prerequisites) replacing the old 6-column table
+    (removed Section and Instructor columns which were always empty for difficulty queries).
+  - **Detailed Comparison prose section** added after table: subsections Course Overview, Learning
+    Outcomes, Topic Complexity, Materials — lets LLM reason about difficulty from retrieved chunks.
+  - `CourseComparisonData` schema extended with `course_overview`, `learning_outcomes`,
+    `topics_complexity`, `materials` fields; `section` and `instructor` removed.
+  - Call 1 `max_output_tokens` raised 2048 → 4096 to fit both courses with all fields.
+  - Extraction prompt now explicitly names all courses and instructs LLM not to skip any.
+  - `get_missing_sections(course_id)` added to `db/search.py` — derives missing categories from
+    `courses.categories_present`; injected into extraction prompt so LLM can distinguish
+    "not found in context" from "not found in original syllabus".
 
 ### Known Issues
 - **`hybrid_combined` requires careful phrasing**: When a category is explicitly named in the query as subject matter, the router correctly sets `specific_only=True` → `hybrid_specific`. Only queries that request a general overview *while also* mentioning a category as background context produce `specific_only=False` → `hybrid_combined`. This is correct behavior, not a bug.
@@ -297,6 +316,14 @@ Features: resume from last position, error logging, rate limit handling, `--retr
   trigger `CryptographyDeprecationWarning` from `pymongo\pyopenssl_context.py`. Currently warnings
   only (not exceptions); will become a hard error in a future cryptography release. Monitor after
   cryptography upgrades.
+- **`completeness_check` / `get_missing_sections` unreliable**: `categories_present` in the courses
+  collection is derived from whichever chunks were actually ingested, not directly from the parser's
+  `completeness_check.missing_sections` field. If a section was parsed but produced a low-quality or
+  empty chunk it may still appear in `categories_present`, making `get_missing_sections()` silently
+  wrong. Also, the courses collection holds one doc per CRN (section), so `find_one` by `course_id`
+  returns an arbitrary section — missing sections may differ across sections of the same course.
+  The `missing_note` injected into the extraction prompt may therefore be inaccurate.
+  Proper fix: store `completeness_check.missing_sections` directly on the course doc during ingestion.
 
 ### Next Steps
 1. **Run golden set adjudication** — `python evals/adjudicate_golden_set.py --golden-set tamu_data/logs/golden_set.jsonl --router-results tamu_data/logs/router_metrics.json --output tamu_data/logs/golden_set_v2.jsonl`

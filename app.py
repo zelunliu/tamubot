@@ -175,26 +175,31 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     st.error(f"Retrieval failed: {e}")
 
             answer = ""
-            with st.spinner("Generating answer..."):
-                try:
-                    logger.info("Starting generation...")
-                    answer = generator.generate(
-                        results=source_docs,
-                        question=prompt,
-                        function=router_result.function if router_result else "semantic_general",
-                        course_ids=router_result.course_ids if router_result else None,
-                        semantic_type=router_result.semantic_type if router_result else None,
-                        trace=lf_trace,
-                    )
-                    logger.info(f"Generation complete, answer length: {len(answer)}")
-                except Exception as e:
-                    logger.error(f"Generation failed: {traceback.format_exc()}")
-                    st.error(f"Generation failed: {e}")
-                    if source_docs:
-                        context_xml = generator.format_context_xml(source_docs)
-                        answer = "**Relevant documents found:**\n\n" + context_xml
-                    else:
-                        answer = "No relevant information found in the knowledge base."
+            answer_placeholder = st.empty()
+            try:
+                logger.info("Starting generation (streaming)...")
+                stream = generator.generate_stream(
+                    results=source_docs,
+                    question=prompt,
+                    function=router_result.function if router_result else "semantic_general",
+                    course_ids=router_result.course_ids if router_result else None,
+                    semantic_type=router_result.semantic_type if router_result else None,
+                    trace=lf_trace,
+                )
+                for token in stream:
+                    answer += token
+                    answer_placeholder.markdown(answer + "▌")
+                answer_placeholder.markdown(answer)
+                logger.info(f"Generation complete, answer length: {len(answer)}")
+            except Exception as e:
+                logger.error(f"Generation failed: {traceback.format_exc()}")
+                st.error(f"Generation failed: {e}")
+                if source_docs:
+                    context_xml = generator.format_context_xml(source_docs)
+                    answer = "**Relevant documents found:**\n\n" + context_xml
+                else:
+                    answer = "No relevant information found in the knowledge base."
+                answer_placeholder.markdown(answer)
 
             # Close the parent trace, flush all buffered spans, trigger RAGAS
             if lf_trace is not None:
@@ -214,8 +219,6 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     ]
                     if contexts:
                         run_ragas_background(prompt, contexts, answer, lf_trace.id)
-
-            st.markdown(answer)
 
             if source_docs:
                 with st.expander("View Source Documents", expanded=False):

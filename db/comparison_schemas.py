@@ -1,7 +1,8 @@
 """Pydantic schemas for multi-course comparison extraction.
 
-Used in the two-call architecture for structured JSON output during
-course comparisons (Call 1: extract per-course data, Call 2: synthesize to Markdown).
+Used in the single-call comparison architecture: Gemini extracts structured
+per-course data via CourseComparisonTable; Markdown is rendered in Python
+from that data (no second LLM call needed).
 """
 
 from pydantic import BaseModel, Field
@@ -30,13 +31,21 @@ class CourseComparisonData(BaseModel):
         ...,
         description="Prerequisites or recommended background (e.g., 'CSCE 121, CSCE 222')",
     )
-    section: str = Field(
+    course_overview: str = Field(
         default="",
-        description="Course section identifier (e.g., '001', 'SLI'). Optional.",
+        description="Course description, scope, and general difficulty level from the syllabus",
     )
-    instructor: str = Field(
+    learning_outcomes: str = Field(
         default="",
-        description="Instructor name. Optional.",
+        description="Key learning objectives and competencies students are expected to achieve",
+    )
+    topics_complexity: str = Field(
+        default="",
+        description="Key topics covered and their technical depth or difficulty level",
+    )
+    materials: str = Field(
+        default="",
+        description="Required textbooks, software, or resources that signal course level",
     )
 
 
