@@ -307,7 +307,7 @@ def generate(
                 temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
                 max_output_tokens=4096,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                thinking=types.ThinkingConfig(thinking_budget=thinking_budget),
+                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
             ),
         )
     except Exception as e:

@@ -66,6 +66,13 @@ FUNCTION_RETRIEVAL_CONFIG: dict[str, dict[str, int]] = {
     "hybrid_combined":   {"retrieve_k": 15, "rerank_k": 4},
 }
 
+# Alias used by router._compute_dynamic_k for per-course scaling.
+PER_COURSE_K = FUNCTION_RETRIEVAL_CONFIG
+
+# Global caps for scaled multi-course retrieval.
+MAX_RETRIEVE_K: int = 60
+MAX_RERANK_K: int = 20
+
 # --- Retrieval backend ---
 # "mongodb" (default) or "vertex" (legacy fallback)
 RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "mongodb")
