@@ -116,7 +116,7 @@ def generate(
         try:
             generation_span = trace.generation(
                 name="Generator_Stage",
-                model=config.GENERATION_MODEL,
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
                 input=user_message,
                 metadata={
                     "function": function,
@@ -136,19 +136,35 @@ def generate(
         else config.THINKING_BUDGET_METADATA
     )
 
-    client = config.get_genai_client()
     try:
-        response = client.models.generate_content(
-            model=config.GENERATION_MODEL,
-            contents=user_message,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
+        if config.USE_TAMU_API:
+            # Gateway always returns SSE; use stream=True and accumulate.
+            tamu = config.get_tamu_client()
+            stream = tamu.chat.completions.create(
+                model=config.TAMU_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
                 temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-                max_output_tokens=4096,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
-            ),
-        )
+                max_tokens=4096,
+                stream=True,
+            )
+            text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
+        else:
+            client = config.get_genai_client()
+            response = client.models.generate_content(
+                model=config.GENERATION_MODEL,
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
+                    max_output_tokens=4096,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+                ),
+            )
+            text = response.text or ""
     except Exception as e:
         if generation_span is not None:
             try:
@@ -156,8 +172,6 @@ def generate(
             except Exception:
                 pass
         raise
-
-    text = response.text or ""
     text = collapse_whitespace(text).strip()
 
     # Gate 1: Validate citations in response
@@ -172,16 +186,19 @@ def generate(
 
     if generation_span is not None:
         try:
-            usage = response.usage_metadata
-            thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
-            generation_span.end(
-                output=text,
-                usage={
-                    "input": getattr(usage, "prompt_token_count", None),
-                    "output": getattr(usage, "candidates_token_count", None),
-                },
-                metadata={"thinking_tokens": thinking_tokens},
-            )
+            if config.USE_TAMU_API:
+                generation_span.end(output=text)
+            else:
+                usage = response.usage_metadata
+                thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
+                generation_span.end(
+                    output=text,
+                    usage={
+                        "input": getattr(usage, "prompt_token_count", None),
+                        "output": getattr(usage, "candidates_token_count", None),
+                    },
+                    metadata={"thinking_tokens": thinking_tokens},
+                )
         except Exception:
             pass
 
@@ -270,7 +287,7 @@ def generate_comparison(
         try:
             extraction_span = trace.generation(
                 name="Comparison_Extraction",
-                model=config.GENERATION_MODEL,
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
                 input=question,
                 metadata={
                     "function": "hybrid_combined",
@@ -295,7 +312,6 @@ def generate_comparison(
         if missing_note_lines else ""
     )
 
-    client = config.get_genai_client()
     courses_list = ", ".join(course_ids)
     extraction_prompt = f"""{context_xml}
 
@@ -315,17 +331,42 @@ For each course provide:
 {missing_note}""".strip()
 
     try:
-        extraction_response = client.models.generate_content(
-            model=config.GENERATION_MODEL,
-            contents=extraction_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
+        if config.USE_TAMU_API:
+            # Gateway always returns SSE; use stream=True and accumulate.
+            tamu = config.get_tamu_client()
+            stream = tamu.chat.completions.create(
+                model=config.TAMU_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": extraction_prompt},
+                ],
                 temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
-                max_output_tokens=4096,
-                response_mime_type="application/json",
-                response_schema=CourseComparisonTable,
-            ),
-        )
+                max_tokens=4096,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "CourseComparisonTable",
+                        "schema": CourseComparisonTable.model_json_schema(),
+                        "strict": True,
+                    },
+                },
+                stream=True,
+            )
+            extraction_text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
+        else:
+            client = config.get_genai_client()
+            extraction_response = client.models.generate_content(
+                model=config.GENERATION_MODEL,
+                contents=extraction_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                    response_schema=CourseComparisonTable,
+                ),
+            )
+            extraction_text = extraction_response.text or "{}"
     except Exception as e:
         if extraction_span is not None:
             try:
@@ -333,8 +374,6 @@ For each course provide:
             except Exception:
                 pass
         raise
-
-    extraction_text = extraction_response.text or "{}"
 
     # Parse structured data and render Markdown in Python
     try:
@@ -347,14 +386,17 @@ For each course provide:
 
     if extraction_span is not None:
         try:
-            usage = extraction_response.usage_metadata
-            extraction_span.end(
-                output=table_text,
-                usage={
-                    "input": getattr(usage, "prompt_token_count", None),
-                    "output": getattr(usage, "candidates_token_count", None),
-                },
-            )
+            if config.USE_TAMU_API:
+                extraction_span.end(output=table_text)
+            else:
+                usage = extraction_response.usage_metadata
+                extraction_span.end(
+                    output=table_text,
+                    usage={
+                        "input": getattr(usage, "prompt_token_count", None),
+                        "output": getattr(usage, "candidates_token_count", None),
+                    },
+                )
         except Exception:
             pass
 
@@ -419,23 +461,41 @@ def generate_stream(
         else config.THINKING_BUDGET_METADATA
     )
 
-    client = config.get_genai_client()
     full_text_parts: list[str] = []
 
-    for chunk in client.models.generate_content_stream(
-        model=config.GENERATION_MODEL,
-        contents=user_message,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
+    if config.USE_TAMU_API:
+        tamu = config.get_tamu_client()
+        stream = tamu.chat.completions.create(
+            model=config.TAMU_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
             temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-            max_output_tokens=4096,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
-        ),
-    ):
-        if chunk.text:
-            full_text_parts.append(chunk.text)
-            yield chunk.text
+            max_tokens=4096,
+            stream=True,
+        )
+        for chunk in stream:
+            token = chunk.choices[0].delta.content
+            if token:
+                full_text_parts.append(token)
+                yield token
+    else:
+        client = config.get_genai_client()
+        for chunk in client.models.generate_content_stream(
+            model=config.GENERATION_MODEL,
+            contents=user_message,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
+                max_output_tokens=4096,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+            ),
+        ):
+            if chunk.text:
+                full_text_parts.append(chunk.text)
+                yield chunk.text
 
     # Post-stream: run Gate 1 citation check + async Gate 2 groundedness scoring
     complete_text = "".join(full_text_parts)

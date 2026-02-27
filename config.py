@@ -28,6 +28,14 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.5-flash")
 VALIDATION_MODEL = os.getenv("VALIDATION_MODEL", "gemini-2.5-flash-lite")
 
+# --- TAMU AI API (OpenAI-compatible gateway; data privacy + institutional billing) ---
+TAMU_API_KEY = os.getenv("TAMU_API_KEY")
+TAMU_BASE_URL = os.getenv("TAMU_BASE_URL", "https://chat-api.tamu.ai/openai")
+TAMU_MODEL = os.getenv("TAMU_MODEL", "protected.gemini-2.5-flash")
+# When set, all RAG LLM calls route through TAMU API instead of direct Google API.
+# ingestion_pipeline/process_syllabi.py is excluded (uses PDF multimodal input).
+USE_TAMU_API: bool = bool(TAMU_API_KEY)
+
 # --- Thinking token budgets for Gemini 2.5 Flash ---
 # metadata_* functions use deterministic extraction (no thinking needed)
 THINKING_BUDGET_METADATA = 0
@@ -97,3 +105,16 @@ def get_genai_client():
         from google import genai
         _genai_client = genai.Client(api_key=GOOGLE_API_KEY)
     return _genai_client
+
+
+# --- Shared TAMU OpenAI-compatible client (lazy singleton) ---
+_tamu_client = None
+
+
+def get_tamu_client():
+    """Return a shared openai.OpenAI client pointed at the TAMU AI gateway."""
+    global _tamu_client
+    if _tamu_client is None:
+        from openai import OpenAI
+        _tamu_client = OpenAI(api_key=TAMU_API_KEY, base_url=TAMU_BASE_URL)
+    return _tamu_client

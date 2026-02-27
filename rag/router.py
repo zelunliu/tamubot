@@ -159,22 +159,39 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         query:       The raw user question.
         router_span: Optional Langfuse span to record router metadata into.
     """
-    client = config.get_genai_client()
-
     prompt = ROUTER_PROMPT.format(query=query)
 
     try:
-        response = client.models.generate_content(
-            model=config.MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
+        if config.USE_TAMU_API:
+            # Gateway always returns SSE; use stream=True and accumulate.
+            # max_tokens=4096 to leave room after thinking tokens consume budget.
+            tamu = config.get_tamu_client()
+            stream = tamu.chat.completions.create(
+                model=config.TAMU_MODEL,
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                response_mime_type="application/json",
-                max_output_tokens=1024,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
-        )
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+                stream=True,
+            )
+            raw_text = "".join(
+                chunk.choices[0].delta.content or ""
+                for chunk in stream
+            )
+        else:
+            client = config.get_genai_client()
+            response = client.models.generate_content(
+                model=config.MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                    max_output_tokens=1024,
+                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                ),
+            )
+            raw_text = response.text
     except Exception as e:
         if router_span is not None:
             try:
@@ -184,7 +201,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         raise
 
     try:
-        data = json.loads(response.text)
+        data = json.loads(raw_text)
     except (json.JSONDecodeError, ValueError, AttributeError):
         result = RouterResult(rewritten_query=query, category_confidence=0.0)
         if router_span is not None:
