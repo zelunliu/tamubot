@@ -133,6 +133,10 @@ tamu_data/raw/         tamu_data/raw/syllabi/*.pdf
   in `rag/` — always `import config`.
 - **Models**: `MODEL_NAME` = router, `GENERATION_MODEL` = generator (both `gemini-2.5-flash`),
   `VALIDATION_MODEL` = Gate 2 critic (`gemini-2.5-flash-lite`).
+- **TAMU AI API**: when `TAMU_API_KEY` is set, `USE_TAMU_API=True` and all `rag/` LLM calls route
+  through `https://chat-api.tamu.ai/openai` (`protected.gemini-2.5-flash`) via the `openai` SDK.
+  `ingestion_pipeline/process_syllabi.py` stays on direct `GOOGLE_API_KEY` (PDF multimodal).
+  Gateway quirk: always streams SSE — all calls use `stream=True` + chunk accumulation.
 
 ## Current Status (as of 2026-02-27)
 
@@ -144,6 +148,8 @@ tamu_data/raw/         tamu_data/raw/syllabi/*.pdf
 - **Citation rate**: 75%; 0 pipeline errors
 
 ### Recent Work
+- **2026-02-27**: TAMU AI API integration — all RAG LLM calls routed through institutional
+  OpenAI-compatible gateway (`protected.gemini-2.5-flash`); `openai>=1.0` added
 - **2026-02-27**: Module split (`rag/prompts.py`, `context_builder.py`, `gates.py`); directory
   renames (`db/` → `rag/`, `pipeline/` → `ingestion_pipeline/`); per-directory CLAUDE.md files
 - **2026-02-25**: Generator — primacy-recency bracketing, single-call comparison, streaming,
