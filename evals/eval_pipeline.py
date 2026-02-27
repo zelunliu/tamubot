@@ -29,8 +29,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from db import router as router_mod
-from db import generator as gen_mod
+from rag import router as router_mod
+from rag import generator as gen_mod
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +500,7 @@ def run_test(
 
     if do_ragas and not dry_run and chunks and response_text and not generation_error:
         try:
-            from db.observability import compute_ragas_metrics
+            from rag.observability import compute_ragas_metrics
             contexts = [c.get("content", "") for c in chunks if c.get("content")]
             scores = compute_ragas_metrics(
                 question=tc.query,
@@ -575,7 +575,7 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
     Mirrors the logic in router._retrieve_and_rerank() for use in the eval harness
     (avoids re-running the router LLM call).
     """
-    from db import search, reranker
+    from rag import search, reranker
 
     search_query = rr.rewritten_query or query
 

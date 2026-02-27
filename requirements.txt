@@ -24,3 +24,9 @@ scrapy
 trafilatura
 pymupdf
 pydantic>=2.0
+
+# Dev / testing
+pytest>=8.0
+pytest-asyncio>=0.23
+mypy>=1.8
+ruff>=0.3

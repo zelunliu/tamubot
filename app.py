@@ -3,7 +3,7 @@ import os
 import logging
 import traceback
 import config
-from db.observability import get_langfuse, run_ragas_background
+from rag.observability import get_langfuse, run_ragas_background
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tamubot")
@@ -33,8 +33,8 @@ if "messages" not in st.session_state:
 USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 
 if USE_MONGODB:
-    from db.router import route_retrieve_rerank
-    from db import generator
+    from rag.router import route_retrieve_rerank
+    from rag import generator
 else:
     import vertexai
     from vertexai.preview import rag

@@ -8,18 +8,16 @@ Provides:
     aggregate_query — count/comparison aggregations
 """
 
-import os
 from typing import Optional
 
 import voyageai
-from dotenv import load_dotenv
 from pymongo import MongoClient
 
-load_dotenv()
+import config
 
-MONGODB_URI = os.getenv("MONGODB_URI")
-DB_NAME = os.getenv("MONGODB_DB", "tamubot")
-VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
+MONGODB_URI = config.MONGODB_URI
+DB_NAME = config.MONGODB_DB
+VOYAGE_API_KEY = config.VOYAGE_API_KEY
 
 EMBEDDING_MODEL = "voyage-3"
 
@@ -338,6 +336,22 @@ def search_by_course_categories(
         )
     )
     return results
+
+
+def get_missing_sections(course_id: str) -> list[str]:
+    """Return categories documented as missing from the original syllabus for a course.
+
+    Derived by comparing VALID_CATEGORIES against categories_present stored in the
+    courses collection (populated during ingestion from completeness_check data).
+    Returns an empty list if the course is not found.
+    """
+    from rag.models import VALID_CATEGORIES
+    db = _get_db()
+    doc = db["courses"].find_one({"course_id": course_id}, {"categories_present": 1})
+    if not doc:
+        return []
+    categories_present = set(doc.get("categories_present", []))
+    return [c for c in VALID_CATEGORIES if c not in categories_present]
 
 
 def get_policy(policy_name: str) -> Optional[dict]:

@@ -39,7 +39,7 @@ else:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from db import router as router_mod
+from rag import router as router_mod
 
 
 # ---------------------------------------------------------------------------

@@ -153,7 +153,7 @@ def tier3_llm_judge(
         or {"error": str} on failure.
     """
     try:
-        from db.observability import compute_ragas_metrics
+        from rag.observability import compute_ragas_metrics
         scores = compute_ragas_metrics(question=question, contexts=contexts, answer=answer)
         return scores if scores else {"error": "RAGAS returned empty scores"}
     except Exception as e:
@@ -291,8 +291,8 @@ def evaluate_golden_set(
     Returns:
         Aggregate metrics dict.
     """
-    from db import router as router_mod
-    from db import generator as gen_mod
+    from rag import router as router_mod
+    from rag import generator as gen_mod
 
     item_results = []
     for i, item in enumerate(golden_set, 1):

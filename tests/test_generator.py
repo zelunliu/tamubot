@@ -1,18 +1,16 @@
-"""Unit tests for db/generator.py — Generator Stage of RAG pipeline.
+"""Unit tests for the Generator Stage of the RAG pipeline.
 
 Tests cover:
-  - Primacy-recency bracketing in context assembly
-  - Temperature routing for function-adaptive stochasticity
-  - Citation validation (Gate 1)
-  - Thinking token configuration
+  - Primacy-recency bracketing in context assembly (rag/context_builder.py)
+  - Temperature routing for function-adaptive stochasticity (rag/prompts.py)
+  - Citation validation (Gate 1) (rag/gates.py)
+  - Thinking token configuration (config.py)
 """
 
 import pytest
-from db.generator import (
-    format_context_xml,
-    validate_citations_gate1,
-    _FUNCTION_TEMPERATURES,
-)
+from rag.context_builder import format_context_xml
+from rag.gates import validate_citations_gate1
+from rag.prompts import _FUNCTION_TEMPERATURES
 import config
 
 
@@ -178,9 +176,9 @@ class TestThinkingBudgetConfiguration:
         """THINKING_BUDGET_METADATA should be 0."""
         assert config.THINKING_BUDGET_METADATA == 0
 
-    def test_thinking_budget_semantic_is_4096(self):
-        """THINKING_BUDGET_SEMANTIC should be 4096."""
-        assert config.THINKING_BUDGET_SEMANTIC == 4096
+    def test_thinking_budget_semantic_is_1024(self):
+        """THINKING_BUDGET_SEMANTIC should be 1024 (reduced from 4096 for latency)."""
+        assert config.THINKING_BUDGET_SEMANTIC == 1024
 
     def test_temperature_deterministic_constant(self):
         """TEMP_DETERMINISTIC should be 0.0."""

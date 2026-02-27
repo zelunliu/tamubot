@@ -230,7 +230,7 @@ def rrf_sweep(
     if k_values is None:
         k_values = [20, 40, 60, 80, 100]
 
-    from db import search as search_mod
+    from rag import search as search_mod
     import voyageai
 
     vo = voyageai.Client(api_key=config.VOYAGE_API_KEY)
@@ -295,9 +295,9 @@ def evaluate_retrieval_golden_set(
     Returns:
         Dict with per-item results and aggregate statistics.
     """
-    from db import router as router_mod
-    from db import search as search_mod
-    from db import reranker as reranker_mod
+    from rag import router as router_mod
+    from rag import search as search_mod
+    from rag import reranker as reranker_mod
 
     item_results = []
     for i, item in enumerate(golden_set, 1):
@@ -451,7 +451,7 @@ def main():
 
     elif args.query:
         print(f"Evaluating single query: '{args.query}'")
-        from db import search as search_mod, reranker as reranker_mod, router as router_mod
+        from rag import search as search_mod, reranker as reranker_mod, router as router_mod
 
         rr = router_mod.classify_query(args.query)
         print(f"  Router: fn={rr.function}, mode={rr.retrieval_mode}")

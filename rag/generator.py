@@ -4,180 +4,26 @@ Takes reranked retrieval results and generates a grounded, cited response
 using Gemini Flash with function-adaptive system prompts.
 """
 
-import html
+import json
 import re
 
 from google.genai import types
 
 import config
-
-# ---------------------------------------------------------------------------
-# Context formatting
-# ---------------------------------------------------------------------------
-
-def format_context_xml(results: list[dict]) -> str:
-    """Format retrieval results as XML-tagged chunks for the generator.
-
-    Implements primacy-recency bracketing to combat Lost-in-the-Middle attention degradation:
-    - Rank 1 chunk → Context start (primacy position)
-    - Rank 2 chunk → Context end (recency/nearest query position)
-    - Ranks 3–N → Middle (descending rank order)
-
-    Each chunk gets metadata attributes so the LLM can cite sources precisely.
-    """
-    if not results:
-        return "<context>\nNo relevant documents found.\n</context>"
-
-    # Apply primacy-recency reordering: [rank_1, ranks_3_to_N, rank_2]
-    if len(results) == 1:
-        ordered_results = results
-        rank_mapping = [1]
-    elif len(results) == 2:
-        ordered_results = [results[0], results[1]]
-        rank_mapping = [1, 2]
-    else:
-        # Rank 1 at start, Rank 2 at end, Ranks 3-N in middle (descending order)
-        ordered_results = [results[0]] + results[2:] + [results[1]]
-        rank_mapping = [1] + list(range(3, len(results) + 1)) + [2]
-
-    parts = ["<context>"]
-    for position, (rank, doc) in enumerate(zip(rank_mapping, ordered_results), 1):
-        # source= attribute uses original rank for citation purposes
-        attrs = [f'source="{rank}"', f'id="{rank}"']
-        if doc.get("course_id"):
-            attrs.append(f'course="{doc["course_id"]}"')
-        if doc.get("section"):
-            attrs.append(f'section="{doc["section"]}"')
-        if doc.get("category"):
-            attrs.append(f'category="{doc["category"]}"')
-        if doc.get("instructor_name"):
-            attrs.append(f'instructor="{doc["instructor_name"]}"')
-        if doc.get("term"):
-            attrs.append(f'term="{doc["term"]}"')
-
-        attr_str = " ".join(attrs)
-        title = doc.get("title", "")
-        content = doc.get("content", doc.get("policy_name", ""))
-
-        # XML escape special characters in content
-        content_escaped = html.escape(content)
-        title_escaped = html.escape(title) if title else ""
-
-        parts.append(f"<chunk {attr_str}>")
-        if title_escaped:
-            parts.append(f"<title>{title_escaped}</title>")
-        parts.append(f"<content>{content_escaped}</content>")
-        parts.append("</chunk>")
-    parts.append("</context>")
-    return "\n".join(parts)
+from rag.context_builder import format_context_xml, collapse_whitespace
+from rag.gates import validate_citations_with_trace
+from rag.prompts import (
+    _BASE_SYSTEM,
+    _FUNCTION_PROMPTS,
+    _SEMANTIC_TYPE_PROMPTS,
+    _FUNCTION_TEMPERATURES,
+    UNCERTAINTY_INJECTION,
+)
 
 
 # ---------------------------------------------------------------------------
-# Function-adaptive system prompts
+# Function-adaptive system prompt assembly
 # ---------------------------------------------------------------------------
-
-_BASE_SYSTEM = """\
-You are TamuBot, an academic assistant for Texas A&M University.
-You help students find information about courses, syllabi, policies, and schedules.
-
-RULES:
-1. Answer ONLY based on the provided <context>. Never invent information.
-2. Cite your sources using [Source N] notation matching the source numbers in the context.
-3. Chain-of-Verification (Quote-then-Paraphrase): Before answering, extract a verbatim quote \
-from the most relevant chunk into a <thinking> block. Then paraphrase that quote into your \
-student-facing answer with [Source N] citation. This ensures all claims are grounded in the provided text.
-4. Verification: Before answering, identify which chunk contains the answer. \
-If no chunk contains it, state "I cannot find that information in the provided context" \
-and do NOT use training data to fill the gap.
-5. Do NOT answer questions outside TAMU academics — politely decline.
-6. Be concise but thorough. Use markdown formatting for readability.
-7. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
-"""
-
-# Primary prompt per function — describes the factual framing of the response.
-_FUNCTION_PROMPTS: dict[str, str] = {
-    "metadata_default": (
-        "The user is asking for a general overview of a course. "
-        "Provide key facts about course overview, prerequisites, and learning outcomes. "
-        "Include the course ID and section. Label information by section where multiple sections are present."
-    ),
-    "metadata_specific": (
-        "The user is asking about specific course details. "
-        "Focus on the requested categories and be precise and complete. "
-        "Include the course ID and section. Name the instructor where relevant."
-    ),
-    "metadata_combined": (
-        "The user is asking about specific course details in the context of a broader overview. "
-        "Cover both the requested categories and the general course overview. "
-        "Include the course ID and section."
-    ),
-    "semantic_general": (
-        "The user has a broad question not tied to a specific course. "
-        "First define the relevant principle or framework underlying the question, "
-        "then apply that principle to the specific question using available context. "
-        "Provide a helpful answer based only on the available context. "
-        "If the evidence is insufficient to answer fully, state: "
-        "'I don't have enough data to answer this accurately based on the available syllabi.'"
-    ),
-    "hybrid_default": (
-        "The user is asking about a course with an advisory or subjective component. "
-        "First define the relevant principle or framework, then apply it to the course. "
-        "Provide factual information from the course content and address the advisory aspect "
-        "using only evidence from the context. "
-        "Limit all advisory statements to those grounded in specific course details."
-    ),
-    "hybrid_specific": (
-        "The user is asking about specific course categories with an advisory component. "
-        "First define the relevant principle or framework, then apply it to the specific categories. "
-        "Focus on the requested categories and use that evidence to address the advisory dimension. "
-        "Ground all advisory statements in specific facts from the context."
-    ),
-    "hybrid_combined": (
-        "The user is asking about specific course details and a broader overview with an advisory component. "
-        "First define the relevant principle or framework, then apply it to the courses. "
-        "Cover all relevant categories and use the evidence to address the advisory aspect. "
-        "Ground all advisory statements in specific facts from the context."
-    ),
-}
-
-# Advisory overlay appended when semantic_type is present (hybrid_* and semantic_general).
-_SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
-    "ACADEMIC": (
-        "Address the academic dimension: discuss learning outcomes, topics covered, and academic content."
-    ),
-    "CAREER": (
-        "Address the career relevance dimension: discuss how the course content relates to "
-        "industry applications and career paths."
-    ),
-    "DIFFICULTY": (
-        "Address the difficulty/workload dimension: use grading weights, prerequisites, and "
-        "attendance requirements as evidence of course rigor."
-    ),
-    "PLANNING": (
-        "Address the planning dimension: help the student understand how this course fits into "
-        "their academic progression."
-    ),
-    "GENERAL": (
-        "Address the advisory aspect of the question using evidence from the course context."
-    ),
-}
-
-# Per-function generation temperature (function-based stochasticity).
-# metadata_*: 0.0 (deterministic extraction, maximum fidelity to context).
-# semantic_general, hybrid_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
-# out_of_scope, administrative: 0.0 (high compliance/policy requirement, deterministic).
-_FUNCTION_TEMPERATURES: dict[str, float] = {
-    "metadata_default":  0.0,
-    "metadata_specific": 0.0,
-    "metadata_combined": 0.0,
-    "semantic_general":  0.2,
-    "hybrid_default":    0.2,
-    "hybrid_specific":   0.2,
-    "hybrid_combined":   0.2,
-    "out_of_scope":      0.0,
-    "administrative":    0.0,
-}
-
 
 def build_system_prompt(
     function: str,
@@ -201,11 +47,7 @@ def build_system_prompt(
 
     # Verbal Uncertainty Calibration: inject uncertainty language if confidence is low
     if category_confidence is not None and category_confidence < 0.7:
-        parts.append(
-            "NOTE: The extracted category is not high-confidence. "
-            "Based on the available, but potentially incomplete, data in the provided context, "
-            "provide your best answer. If the evidence is ambiguous or insufficient, acknowledge this limitation."
-        )
+        parts.append(UNCERTAINTY_INJECTION)
 
     # Multi-course comparison overlay
     if course_ids and len(course_ids) > 1:
@@ -260,12 +102,10 @@ def generate(
             "schedules, and university policies. What would you like to know?"
         )
 
-    # Route multi-course queries to two-call comparison architecture
+    # Route multi-course queries to single-call comparison architecture
     if course_ids and len(course_ids) > 1:
         return generate_comparison(results, question, course_ids, trace)
 
-    # format_context_xml handles primacy-recency bracketing:
-    # Rank 1 → start, Rank 2 → end, Ranks 3-N → middle
     context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(function, course_ids, semantic_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
@@ -290,12 +130,11 @@ def generate(
             generation_span = None
 
     # Determine thinking budget based on function type
-    # metadata_* → 0 (deterministic), hybrid_* and semantic_general → 4096 (complex reasoning)
-    thinking_budget = 0
-    if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]:
-        thinking_budget = config.THINKING_BUDGET_SEMANTIC
-    else:
-        thinking_budget = config.THINKING_BUDGET_METADATA
+    thinking_budget = (
+        config.THINKING_BUDGET_SEMANTIC
+        if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]
+        else config.THINKING_BUDGET_METADATA
+    )
 
     client = config.get_genai_client()
     try:
@@ -319,19 +158,16 @@ def generate(
         raise
 
     text = response.text or ""
-    # Gemini sometimes pads markdown table cells with excessive whitespace
-    text = re.sub(r' {3,}', ' ', text)
-    text = text.strip()
+    text = collapse_whitespace(text).strip()
 
     # Gate 1: Validate citations in response
     validate_citations_with_trace(text, function, trace)
 
     # Gate 2: Launch async groundedness scoring (fire-and-forget)
-    # Extract contexts from results for scoring
     contexts = [doc.get("content", "") for doc in results]
     trace_id = trace.id if trace is not None else None
     if trace_id:
-        from db.observability import run_groundedness_scoring_background
+        from rag.observability import run_groundedness_scoring_background
         run_groundedness_scoring_background(question, contexts, text, trace_id)
 
     if generation_span is not None:
@@ -420,8 +256,7 @@ def generate_comparison(
     Returns:
         Markdown comparison table + detailed comparison string.
     """
-    import json
-    from db.comparison_schemas import CourseComparisonTable
+    from rag.comparison_schemas import CourseComparisonTable
 
     context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(
@@ -448,7 +283,7 @@ def generate_comparison(
             extraction_span = None
 
     # Look up which categories are missing from each course's original syllabus
-    from db.search import get_missing_sections
+    from rag.search import get_missing_sections
     missing_per_course = {cid: get_missing_sections(cid) for cid in course_ids}
     missing_note_lines = []
     for cid, missing in missing_per_course.items():
@@ -549,8 +384,8 @@ def generate_stream(
 
     Single-course queries stream tokens directly from Gemini using
     generate_content_stream(). Multi-course comparison queries fall back to
-    blocking generate_comparison() (streaming is unavailable when Call 1 must
-    complete before the Markdown can be rendered).
+    blocking generate_comparison() (streaming is unavailable when the JSON
+    response must be fully received before Markdown can be rendered).
 
     Args:
         results:       Reranked retrieval results (list of chunk dicts).
@@ -610,73 +445,5 @@ def generate_stream(
         contexts = [doc.get("content", "") for doc in results]
         trace_id = trace.id
         if trace_id:
-            from db.observability import run_groundedness_scoring_background
+            from rag.observability import run_groundedness_scoring_background
             run_groundedness_scoring_background(question, contexts, complete_text, trace_id)
-
-
-# ---------------------------------------------------------------------------
-# Validation gates (post-generation)
-# ---------------------------------------------------------------------------
-
-
-def validate_citations_gate1(response_text: str) -> bool:
-    """Validate Gate 1: Check for presence of citations in response.
-
-    Gate 1 (Regex): Verify presence of at least one [Source N] or [N] citation.
-    Applied only to factual query types (metadata_*, hybrid_*).
-
-    Args:
-        response_text: Generated response text.
-
-    Returns:
-        True if at least one citation is found, False otherwise.
-    """
-    # Pattern matches [Source N], [Source N:], or [N] where N is a number
-    citation_pattern = r'\[(?:Source\s+)?(\d+)(?::\s*[^\]]*)?]'
-    match = re.search(citation_pattern, response_text)
-    return match is not None
-
-
-def validate_citations_with_trace(
-    response_text: str,
-    function: str,
-    trace=None,
-) -> bool:
-    """Validate citations and log result to Langfuse trace.
-
-    Args:
-        response_text: Generated response text.
-        function:      Retrieval function type.
-        trace:         Optional Langfuse trace object.
-
-    Returns:
-        True if citations are present or validation is skipped.
-    """
-    # Only apply Gate 1 to factual query types
-    factual_functions = [
-        "metadata_default",
-        "metadata_specific",
-        "metadata_combined",
-        "hybrid_default",
-        "hybrid_specific",
-        "hybrid_combined",
-    ]
-
-    if function not in factual_functions:
-        return True
-
-    # Run validation
-    citation_valid = validate_citations_gate1(response_text)
-
-    # Log result to trace metadata
-    if trace is not None:
-        try:
-            trace.score(
-                name="citation_gate1_pass",
-                value=1 if citation_valid else 0,
-                comment="Gate 1 validation: regex citation check",
-            )
-        except Exception:
-            pass
-
-    return citation_valid
