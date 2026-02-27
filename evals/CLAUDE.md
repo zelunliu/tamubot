@@ -1,5 +1,7 @@
 # evals/ — Evaluation Framework
 
+> **Maintenance**: Update this file when eval scripts, metrics, or known issues change.
+
 ## Eval Workflow
 
 ```

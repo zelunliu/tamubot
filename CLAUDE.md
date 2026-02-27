@@ -3,6 +3,8 @@
 This file provides guidance to Claude Code when working with this repository.
 For module-level detail, see the CLAUDE.md in each subdirectory.
 
+> **Maintenance**: Update this file (Recent Work, App Layer, Known Issues) after any architectural change, new dependency, or config addition. Update the relevant subdirectory CLAUDE.md too.
+
 ## Running the App
 
 ```bash

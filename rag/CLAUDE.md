@@ -1,5 +1,7 @@
 # rag/ — RAG Pipeline Modules
 
+> **Maintenance**: Update this file when public APIs, call signatures, gotchas, or config patterns change.
+
 ## Module Dependency Graph
 
 ```
@@ -30,10 +32,30 @@ from rag.generator import generate_comparison  # returns Markdown string (multi-
 
 ```python
 import config
-config.GENERATION_MODEL    # Gemini model name
-config.THINKING_BUDGET_SEMANTIC  # 1024
-config.get_genai_client()  # lazy singleton google.genai.Client
+config.GENERATION_MODEL         # Gemini model name (direct path)
+config.TAMU_MODEL               # protected.gemini-2.5-flash (TAMU gateway)
+config.USE_TAMU_API             # True when TAMU_API_KEY is set
+config.THINKING_BUDGET_SEMANTIC # 1024
+config.get_genai_client()       # lazy singleton google.genai.Client
+config.get_tamu_client()        # lazy singleton openai.OpenAI (TAMU gateway)
 ```
+
+## TAMU AI API
+
+When `config.USE_TAMU_API` is `True`, all LLM calls in this module route through the
+TAMU institutional gateway (`https://chat-api.tamu.ai/openai`) via the `openai` SDK.
+
+**Critical gotcha — gateway always streams**: the gateway returns `text/event-stream`
+for every request regardless of the `stream` parameter. All TAMU calls must use
+`stream=True` and accumulate chunks:
+```python
+stream = tamu.chat.completions.create(..., stream=True)
+text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
+```
+Use `max_tokens=4096` minimum — thinking tokens consume the budget first (20 tokens → empty response).
+
+Langfuse spans: use `config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL`
+for the model name; close with `span.end(output=text)` only (no token counts on TAMU path).
 
 ## Singleton Clients
 

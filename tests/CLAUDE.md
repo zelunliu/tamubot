@@ -1,5 +1,7 @@
 # tests/ — Unit Tests
 
+> **Maintenance**: Update this file when test patterns, file layout, or import paths change.
+
 ## Running
 
 ```bash

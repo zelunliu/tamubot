@@ -1,19 +1,24 @@
-# pipeline/ — Syllabus Data Pipeline
+# ingestion_pipeline/ — Syllabus Data Pipeline
+
+> **Maintenance**: Update this file when the parser schema, categories, or run commands change.
 
 ## Overview
 
 `process_syllabi.py` is the production PDF parser. It sends each syllabus PDF directly to
 Gemini 2.5 Flash (multimodal) and receives structured JSON back in a single API call.
 
+**Always uses `GOOGLE_API_KEY` directly** — not the TAMU AI gateway. PDF bytes (`Part.from_bytes`)
+are not supported by OpenAI-compatible APIs.
+
 ## Running
 
 ```bash
 # Always run from the repo root
-GOOGLE_API_KEY=... python pipeline/process_syllabi.py
+GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py
 
 # Options
-python pipeline/process_syllabi.py --department CSCE    # single department
-python pipeline/process_syllabi.py --retry-errors       # retry previously failed files
+python ingestion_pipeline/process_syllabi.py --department CSCE    # single department
+python ingestion_pipeline/process_syllabi.py --retry-errors       # retry previously failed files
 ```
 
 ## Resume Behavior
