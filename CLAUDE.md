@@ -77,9 +77,12 @@ tamubot/
 │   ├── process_syllabi.py        # Gemini 2.5 Flash PDF parser (resume-capable)
 │   └── legacy/                   # Superseded scripts
 ├── evals/                        # Eval framework (see evals/CLAUDE.md)
+│   └── run_probe.py              # Ad-hoc probe: run query → full pipeline → Langfuse trace URL
 ├── tests/                        # Unit tests (see tests/CLAUDE.md)
 ├── scripts/                      # One-off analysis artifacts
 ├── docs/                         # Reference docs (OBSERVABILITY.md, PROJECT_CONTEXT.md)
+├── .mcp.json                     # Langfuse MCP server (gitignored — fill in keys from .env)
+├── .claude/skills/probe-rag.md   # /probe Claude Code skill
 ├── tamu_data/
 │   ├── raw/catalog/              # Scraped catalog JSONL (gitignored)
 │   ├── raw/syllabi/              # Downloaded PDFs — 7,970 files (gitignored)
@@ -150,6 +153,10 @@ tamu_data/raw/         tamu_data/raw/syllabi/*.pdf
 - **Citation rate**: 75%; 0 pipeline errors
 
 ### Recent Work
+- **2026-02-27**: Langfuse observability workflow — `evals/run_probe.py` (push side: run any
+  query through the full pipeline, print trace URL + summary); `.mcp.json` with `@langfuse/mcp`
+  server (read side: Claude can query traces directly); `/probe` skill in
+  `.claude/skills/probe-rag.md`
 - **2026-02-27**: TAMU AI API integration — all RAG LLM calls routed through institutional
   OpenAI-compatible gateway (`protected.gemini-2.5-flash`); `openai>=1.0` added
 - **2026-02-27**: Module split (`rag/prompts.py`, `context_builder.py`, `gates.py`); directory

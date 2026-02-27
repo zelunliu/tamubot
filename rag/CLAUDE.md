@@ -26,6 +26,29 @@ app.py
 from rag.router import route_retrieve_rerank   # returns (reranked_results, RouterResult)
 from rag.generator import generate_stream      # yields text chunks (single-course)
 from rag.generator import generate_comparison  # returns Markdown string (multi-course)
+
+# Signatures — needed for scripts / evals / probes:
+reranked, router_result = route_retrieve_rerank(query: str, trace=None)
+# router_result fields: .function, .course_ids, .specific_categories,
+#   .semantic_intent, .semantic_type, .category_confidence, .rewritten_query
+
+answer: str = generate(
+    results: list[dict],   # reranked chunks
+    question: str,
+    function: str = "semantic_general",
+    course_ids: list[str] | None = None,
+    semantic_type: str | None = None,
+    trace=None,            # optional Langfuse LFTrace
+)
+# generate() calls Gate 1 (sync) and Gate 2 groundedness (async bg) internally.
+# Use generate() in scripts; generate_stream() is for the Streamlit UI only.
+
+# Observability (scripts / evals):
+from rag.observability import get_langfuse, run_ragas_background
+lf = get_langfuse()        # returns MinimalLangfuseClient or None
+trace = lf.trace(name, input, metadata)   # → LFTrace
+lf.flush()                 # send buffered events — call after each query in scripts
+# Trace URL: f"{config.LANGFUSE_BASE_URL}/trace/{trace.id}"
 ```
 
 ## Config Access Pattern

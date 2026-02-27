@@ -2,7 +2,31 @@
 
 > **Maintenance**: Update this file when eval scripts, metrics, or known issues change.
 
-## Eval Workflow
+## Probe Workflow (interactive iteration)
+
+```bash
+# Ad-hoc query — runs full pipeline + prints trace URL
+python evals/run_probe.py --query "What is the grading breakdown for CSCE 638?"
+
+# Named test cases from TEST_SUITE (1-based IDs)
+python evals/run_probe.py --test-ids 1 3 7
+
+# Full TEST_SUITE with a comparison tag
+python evals/run_probe.py --suite all --tag "generator_v2"
+
+# Include async RAGAS faithfulness+relevancy (~30s, appears in Langfuse)
+python evals/run_probe.py --test-ids 1 --ragas
+```
+
+`run_probe.py` reuses `TEST_SUITE` from `eval_pipeline.py`. Each run creates a Langfuse trace
+named `Probe_<YYYYMMDD_HHMMSS>_<query_slug>`, tagged `probe` (+ optional `--tag`), and grouped
+under a `probe_<timestamp>` session. Calls `lf.flush()` after each query so traces appear
+immediately. Gate 2 groundedness fires automatically (it's inside `generate()`).
+
+Claude Code `/probe` skill (`evals/run_probe.py` via `.claude/skills/probe-rag.md`) wraps this
+with automatic Langfuse MCP trace inspection when the MCP server is active.
+
+## Eval Workflow (systematic evaluation)
 
 ```
 1. generate_golden_set.py    → tamu_data/logs/golden_set.jsonl
@@ -33,6 +57,25 @@ python evals/adjudicate_golden_set.py \
   --router-results tamu_data/logs/router_metrics.json \
   --output tamu_data/logs/golden_set_v2.jsonl
 ```
+
+## Key Exports (for scripting / probing)
+
+`eval_pipeline.py` exports — import directly, do not duplicate:
+
+```python
+from evals.eval_pipeline import TEST_SUITE, TestCase
+
+# TEST_SUITE: list[TestCase]  (not TEST_CASES — that name does not exist)
+# TestCase fields:
+#   query, function_expected, description
+#   expected_course_ids: list[str]
+#   expected_specific_categories: list[str]
+#   expected_semantic_intent: bool
+#   notes, source_crn, source_category, reference_answer
+```
+
+`run_probe.py` exports `run_probe(query, tag, session_id, ragas, index, total) -> dict`
+for use in other scripts.
 
 ## Metrics Reference
 
