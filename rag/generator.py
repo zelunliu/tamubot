@@ -7,11 +7,10 @@ using Gemini Flash with function-adaptive system prompts.
 import json
 import re
 
-from google.genai import types
-
 import config
 from rag.context_builder import format_context_xml, collapse_whitespace
 from rag.gates import validate_citations_with_trace
+from rag.llm_client import call_llm, stream_llm
 from rag.prompts import (
     _BASE_SYSTEM,
     _FUNCTION_PROMPTS,
@@ -136,35 +135,18 @@ def generate(
         else config.THINKING_BUDGET_METADATA
     )
 
+    llm_result = None
     try:
-        if config.USE_TAMU_API:
-            # Gateway always returns SSE; use stream=True and accumulate.
-            tamu = config.get_tamu_client()
-            stream = tamu.chat.completions.create(
-                model=config.TAMU_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-                max_tokens=4096,
-                stream=True,
-            )
-            text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
-        else:
-            client = config.get_genai_client()
-            response = client.models.generate_content(
-                model=config.GENERATION_MODEL,
-                contents=user_message,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-                    max_output_tokens=4096,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
-                ),
-            )
-            text = response.text or ""
+        llm_result = call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
+            max_tokens=4096,
+            thinking_budget=thinking_budget,
+        )
+        text = llm_result.text
     except Exception as e:
         if generation_span is not None:
             try:
@@ -186,19 +168,17 @@ def generate(
 
     if generation_span is not None:
         try:
-            if config.USE_TAMU_API:
-                generation_span.end(output=text)
-            else:
-                usage = response.usage_metadata
-                thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
+            if llm_result is not None and llm_result.input_tokens is not None:
                 generation_span.end(
                     output=text,
                     usage={
-                        "input": getattr(usage, "prompt_token_count", None),
-                        "output": getattr(usage, "candidates_token_count", None),
+                        "input": llm_result.input_tokens,
+                        "output": llm_result.output_tokens,
                     },
-                    metadata={"thinking_tokens": thinking_tokens},
+                    metadata={"thinking_tokens": llm_result.thinking_tokens},
                 )
+            else:
+                generation_span.end(output=text)
         except Exception:
             pass
 
@@ -330,43 +310,23 @@ For each course provide:
 
 {missing_note}""".strip()
 
+    llm_result = None
     try:
-        if config.USE_TAMU_API:
-            # Gateway always returns SSE; use stream=True and accumulate.
-            tamu = config.get_tamu_client()
-            stream = tamu.chat.completions.create(
-                model=config.TAMU_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": extraction_prompt},
-                ],
-                temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
-                max_tokens=4096,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "CourseComparisonTable",
-                        "schema": CourseComparisonTable.model_json_schema(),
-                        "strict": True,
-                    },
-                },
-                stream=True,
-            )
-            extraction_text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
-        else:
-            client = config.get_genai_client()
-            extraction_response = client.models.generate_content(
-                model=config.GENERATION_MODEL,
-                contents=extraction_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
-                    max_output_tokens=4096,
-                    response_mime_type="application/json",
-                    response_schema=CourseComparisonTable,
-                ),
-            )
-            extraction_text = extraction_response.text or "{}"
+        llm_result = call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": extraction_prompt},
+            ],
+            temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+            max_tokens=4096,
+            json_schema={
+                "name": "CourseComparisonTable",
+                "schema": CourseComparisonTable.model_json_schema(),
+                "strict": True,
+            },
+            response_schema=CourseComparisonTable,
+        )
+        extraction_text = llm_result.text
     except Exception as e:
         if extraction_span is not None:
             try:
@@ -386,17 +346,16 @@ For each course provide:
 
     if extraction_span is not None:
         try:
-            if config.USE_TAMU_API:
-                extraction_span.end(output=table_text)
-            else:
-                usage = extraction_response.usage_metadata
+            if llm_result is not None and llm_result.input_tokens is not None:
                 extraction_span.end(
                     output=table_text,
                     usage={
-                        "input": getattr(usage, "prompt_token_count", None),
-                        "output": getattr(usage, "candidates_token_count", None),
+                        "input": llm_result.input_tokens,
+                        "output": llm_result.output_tokens,
                     },
                 )
+            else:
+                extraction_span.end(output=table_text)
         except Exception:
             pass
 
@@ -463,39 +422,17 @@ def generate_stream(
 
     full_text_parts: list[str] = []
 
-    if config.USE_TAMU_API:
-        tamu = config.get_tamu_client()
-        stream = tamu.chat.completions.create(
-            model=config.TAMU_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-            max_tokens=4096,
-            stream=True,
-        )
-        for chunk in stream:
-            token = chunk.choices[0].delta.content
-            if token:
-                full_text_parts.append(token)
-                yield token
-    else:
-        client = config.get_genai_client()
-        for chunk in client.models.generate_content_stream(
-            model=config.GENERATION_MODEL,
-            contents=user_message,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
-                max_output_tokens=4096,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
-            ),
-        ):
-            if chunk.text:
-                full_text_parts.append(chunk.text)
-                yield chunk.text
+    for token in stream_llm(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
+        max_tokens=4096,
+        thinking_budget=thinking_budget,
+    ):
+        full_text_parts.append(token)
+        yield token
 
     # Post-stream: run Gate 1 citation check + async Gate 2 groundedness scoring
     complete_text = "".join(full_text_parts)

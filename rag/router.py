@@ -10,12 +10,11 @@ mechanically from the extracted variables — there is no intent classification 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Optional
-
-from google.genai import types
+from typing import Callable, Optional
 
 import config
 from rag import search, reranker
+from rag.llm_client import call_llm
 from rag.prompts import ROUTER_PROMPT
 
 
@@ -149,6 +148,33 @@ def _normalize_course_id(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Retrieval category registry (pure Python, no LLM)
+# ---------------------------------------------------------------------------
+
+def _get_combined_categories(router_result: "RouterResult") -> list[str]:
+    """DEFAULT_SUMMARY + specific categories, deduped, order preserved."""
+    seen: set[str] = set()
+    cats: list[str] = []
+    for c in config.DEFAULT_SUMMARY_CATEGORIES + router_result.specific_categories:
+        if c not in seen:
+            seen.add(c)
+            cats.append(c)
+    return cats
+
+
+# Maps each retrieval function to a callable that returns the categories to fetch.
+# Adding a new retrieval function = adding one entry here; no logic change elsewhere.
+_FUNCTION_CATEGORY_STRATEGIES: dict[str, Callable[["RouterResult"], list[str]]] = {
+    "metadata_default":  lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "metadata_specific": lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "metadata_combined": _get_combined_categories,
+    "hybrid_default":    lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "hybrid_specific":   lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "hybrid_combined":   _get_combined_categories,
+}
+
+
+# ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
 
@@ -161,37 +187,16 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     """
     prompt = ROUTER_PROMPT.format(query=query)
 
+    llm_result = None
     try:
-        if config.USE_TAMU_API:
-            # Gateway always returns SSE; use stream=True and accumulate.
-            # max_tokens=4096 to leave room after thinking tokens consume budget.
-            tamu = config.get_tamu_client()
-            stream = tamu.chat.completions.create(
-                model=config.TAMU_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-                stream=True,
-            )
-            raw_text = "".join(
-                chunk.choices[0].delta.content or ""
-                for chunk in stream
-            )
-        else:
-            client = config.get_genai_client()
-            response = client.models.generate_content(
-                model=config.MODEL_NAME,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    response_mime_type="application/json",
-                    max_output_tokens=1024,
-                    thinking_config=types.ThinkingConfig(thinking_budget=512),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                ),
-            )
-            raw_text = response.text
+        llm_result = call_llm(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=4096,
+            json_mode=True,
+            thinking_budget=512,
+        )
+        raw_text = llm_result.text
     except Exception as e:
         if router_span is not None:
             try:
@@ -252,8 +257,6 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     # Record router metadata into the span
     if router_span is not None:
         try:
-            usage = response.usage_metadata
-            thinking_tokens = getattr(usage, "thoughts_token_count", None) or 0
             router_span.update(
                 output=data,
                 metadata={
@@ -265,9 +268,9 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
                     "semantic_type": result.semantic_type,
                     "category_confidence": result.category_confidence,
                     "rewritten_query": result.rewritten_query,
-                    "input_tokens": getattr(usage, "prompt_token_count", None),
-                    "output_tokens": getattr(usage, "candidates_token_count", None),
-                    "thinking_tokens": thinking_tokens,
+                    "input_tokens": llm_result.input_tokens if llm_result else None,
+                    "output_tokens": llm_result.output_tokens if llm_result else None,
+                    "thinking_tokens": llm_result.thinking_tokens if llm_result else None,
                 },
             )
         except Exception:
@@ -390,7 +393,6 @@ def _retrieve_and_rerank(
     rerank_k = dk["rerank_k"]
 
     course_ids = router_result.course_ids
-    specific_cats = router_result.specific_categories
 
     # ── semantic_general: no course ID, pure corpus-wide vector search ──────
     if fn == "semantic_general":
@@ -401,21 +403,9 @@ def _retrieve_and_rerank(
     if fn == "out_of_scope" or not course_ids:
         return []
 
-    # ── Determine which categories to fetch ─────────────────────────────────
-    if fn in ("metadata_default", "hybrid_default"):
-        categories = config.DEFAULT_SUMMARY_CATEGORIES
-    elif fn in ("metadata_specific", "hybrid_specific"):
-        categories = specific_cats or config.DEFAULT_SUMMARY_CATEGORIES
-    elif fn in ("metadata_combined", "hybrid_combined"):
-        # DEFAULT_SUMMARY + specific, deduped, order preserved
-        seen_cats: set[str] = set()
-        categories = []
-        for c in (config.DEFAULT_SUMMARY_CATEGORIES + specific_cats):
-            if c not in seen_cats:
-                seen_cats.add(c)
-                categories.append(c)
-    else:
-        categories = config.DEFAULT_SUMMARY_CATEGORIES
+    # ── Determine which categories to fetch (registry lookup) ───────────────
+    strategy = _FUNCTION_CATEGORY_STRATEGIES.get(fn)
+    categories = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
     # ── Per-course fetch helper ──────────────────────────────────────────────
     def fetch_course(cid: str) -> list[dict]:

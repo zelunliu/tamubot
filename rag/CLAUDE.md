@@ -7,9 +7,11 @@
 ```
 app.py
   └── rag/router.py          (route_retrieve_rerank — Stage 1+2 orchestrator)
+        ├── rag/llm_client.py (call_llm, stream_llm — unified LLM backend)
         ├── rag/search.py    (hybrid_search, search_semantic, search_by_course_categories)
         ├── rag/reranker.py  (rerank, rerank_multi_course)
         └── rag/generator.py (generate_stream, generate_comparison — Stage 3)
+              ├── rag/llm_client.py       (call_llm, stream_llm — unified LLM backend)
               ├── rag/prompts.py          (ROUTER_PROMPT, _FUNCTION_PROMPTS, _FUNCTION_TEMPERATURES)
               ├── rag/context_builder.py  (format_context_xml)
               ├── rag/gates.py            (validate_citations_gate1, validate_citations_with_trace)
@@ -40,22 +42,30 @@ config.get_genai_client()       # lazy singleton google.genai.Client
 config.get_tamu_client()        # lazy singleton openai.OpenAI (TAMU gateway)
 ```
 
-## TAMU AI API
+## TAMU AI API / LLM Client
 
-When `config.USE_TAMU_API` is `True`, all LLM calls in this module route through the
-TAMU institutional gateway (`https://chat-api.tamu.ai/openai`) via the `openai` SDK.
+All LLM calls in `router.py` and `generator.py` go through `rag/llm_client.py`:
 
-**Critical gotcha — gateway always streams**: the gateway returns `text/event-stream`
-for every request regardless of the `stream` parameter. All TAMU calls must use
-`stream=True` and accumulate chunks:
 ```python
-stream = tamu.chat.completions.create(..., stream=True)
-text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
+from rag.llm_client import call_llm, stream_llm, LLMResult
+
+result = call_llm(messages, temperature=0, max_tokens=4096, json_mode=True, thinking_budget=512)
+text = result.text
+# result.input_tokens / output_tokens / thinking_tokens — None on TAMU path
+
+for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_budget=1024):
+    ...
 ```
-Use `max_tokens=4096` minimum — thinking tokens consume the budget first (20 tokens → empty response).
+
+`llm_client.py` selects the backend automatically via `config.USE_TAMU_API`:
+- **TAMU path**: OpenAI-compat gateway, always `stream=True` (SSE quirk), no token counts
+- **Gemini path**: google-genai SDK, token counts returned in `LLMResult`
+
+Do **not** call `config.get_tamu_client()` or `config.get_genai_client()` directly in
+`router.py` or `generator.py` — always go through `llm_client`.
 
 Langfuse spans: use `config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL`
-for the model name; close with `span.end(output=text)` only (no token counts on TAMU path).
+for the model name.  Token counts from `LLMResult` are None on TAMU path — check before logging.
 
 ## Singleton Clients
 
@@ -116,6 +126,7 @@ Reranked results are reordered before feeding to Gemini to combat Lost-in-the-Mi
 | File | Responsibility |
 |------|---------------|
 | `router.py` | Stage 1: LLM variable extraction + pure-Python routing + retrieval orchestration |
+| `llm_client.py` | Unified LLM backend: `call_llm()` (blocking) + `stream_llm()` (streaming) |
 | `search.py` | MongoDB Atlas vector + hybrid + metadata search |
 | `reranker.py` | Voyage AI rerank-2 cross-encoder reranking |
 | `generator.py` | Stage 3: single-course `generate_stream()`, multi-course `generate_comparison()` |
