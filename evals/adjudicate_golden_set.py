@@ -198,14 +198,14 @@ def adjudicate_case(
 
 def run_router_on_golden_set(items: list[dict]) -> list[dict]:
     """Run the router on each golden set question and return per-case result dicts."""
-    from rag import router as router_mod
+    from rag import classify_query
     results = []
     for i, item in enumerate(items, 1):
         q = item.get("question", item.get("query", ""))
         print(f"  [{i:2d}/{len(items)}] {q[:70]}...")
         sys.stdout.flush()
         try:
-            rr = router_mod.classify_query(q)
+            rr = classify_query(q)
             results.append({
                 "query": q,
                 "function_actual": rr.function,

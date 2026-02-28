@@ -39,7 +39,7 @@ else:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from rag import router as router_mod
+from rag import classify_query, RouterResult
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +287,10 @@ def run_router_on_suite(
 
         t0 = time.perf_counter()
         try:
-            rr = router_mod.classify_query(query)
+            rr = classify_query(query)
             error = None
         except Exception as e:
-            rr = router_mod.RouterResult(rewritten_query=query, category_confidence=0.0)
+            rr = RouterResult(rewritten_query=query, category_confidence=0.0)
             error = str(e)
         latency_ms = (time.perf_counter() - t0) * 1000
 

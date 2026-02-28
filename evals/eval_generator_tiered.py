@@ -153,7 +153,7 @@ def tier3_llm_judge(
         or {"error": str} on failure.
     """
     try:
-        from rag.observability import compute_ragas_metrics
+        from rag import compute_ragas_metrics
         scores = compute_ragas_metrics(question=question, contexts=contexts, answer=answer)
         return scores if scores else {"error": "RAGAS returned empty scores"}
     except Exception as e:
@@ -291,8 +291,7 @@ def evaluate_golden_set(
     Returns:
         Aggregate metrics dict.
     """
-    from rag import router as router_mod
-    from rag import generator as gen_mod
+    from rag import route_retrieve_rerank, generate
 
     item_results = []
     for i, item in enumerate(golden_set, 1):
@@ -306,8 +305,8 @@ def evaluate_golden_set(
 
         if run_full_pipeline:
             try:
-                chunks, rr = router_mod.route_retrieve_rerank(question)
-                answer = gen_mod.generate(
+                chunks, rr = route_retrieve_rerank(question)
+                answer = generate(
                     chunks, question,
                     function=rr.function,
                     course_ids=rr.course_ids,

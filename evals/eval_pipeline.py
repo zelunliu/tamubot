@@ -29,8 +29,10 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from rag import router as router_mod
-from rag import generator as gen_mod
+from rag import (
+    classify_query, RouterResult, compute_dynamic_k,
+    deduplicate_chunks, FUNCTION_CATEGORY_STRATEGIES, generate,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -474,10 +476,10 @@ def run_test(
     # ── Stage 1: Router ──────────────────────────────────────────────────
     t_router_start = time.perf_counter()
     try:
-        rr = router_mod.classify_query(tc.query)
+        rr = classify_query(tc.query)
         router_error = None
     except Exception as e:
-        rr = router_mod.RouterResult(rewritten_query=tc.query, category_confidence=0.0)
+        rr = RouterResult(rewritten_query=tc.query, category_confidence=0.0)
         router_error = str(e)
     latency_router_ms = (time.perf_counter() - t_router_start) * 1000
 
@@ -503,10 +505,10 @@ def run_test(
     generation_skipped = dry_run or (rr.function == "out_of_scope")
 
     if generation_skipped and rr.function == "out_of_scope":
-        response_text = gen_mod.generate([], tc.query, function="out_of_scope")
+        response_text = generate([], tc.query, function="out_of_scope")
     elif not dry_run and not retrieval_error:
         try:
-            response_text = gen_mod.generate(
+            response_text = generate(
                 chunks, tc.query,
                 function=rr.function,
                 course_ids=rr.course_ids,
@@ -534,7 +536,7 @@ def run_test(
 
     if do_ragas and not dry_run and chunks and response_text and not generation_error:
         try:
-            from rag.observability import compute_ragas_metrics
+            from rag import compute_ragas_metrics
             contexts = [c.get("content", "") for c in chunks if c.get("content")]
             scores = compute_ragas_metrics(
                 question=tc.query,
@@ -605,7 +607,7 @@ def run_test(
     )
 
 
-def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
+def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
     """Re-execute only the retrieval+rerank stages given a pre-classified RouterResult.
 
     Mirrors the logic in router._retrieve_and_rerank() for use in the eval harness
@@ -620,7 +622,7 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
 
     fn = rr.function
     mode = rr.retrieval_mode
-    dk = router_mod._compute_dynamic_k(fn, len(rr.course_ids))
+    dk = compute_dynamic_k(fn, len(rr.course_ids))
     retrieve_k = dk["retrieve_k"]
     rerank_k = dk["rerank_k"]
 
@@ -631,13 +633,13 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
     if fn == "semantic_general":
         results = search.search_semantic(search_query, top_k=retrieve_k)
         reranked = reranker.rerank(search_query, results, top_k=rerank_k)
-        return router_mod._deduplicate_chunks(reranked)
+        return deduplicate_chunks(reranked)
 
     if fn == "out_of_scope" or not course_ids:
         return []
 
     # Determine categories via the canonical registry (single source of truth)
-    strategy = router_mod._FUNCTION_CATEGORY_STRATEGIES.get(fn)
+    strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
     categories = strategy(rr) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
     # recurrent_* path: two-stage anchor fetch → corpus-wide discovery
@@ -653,18 +655,18 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
         anchor_ids = set(course_ids)
         discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
         discovery_reranked = reranker.rerank(search_query, discovery_chunks, top_k=rerank_k)
-        return router_mod._deduplicate_chunks(anchor_chunks + discovery_reranked)
+        return deduplicate_chunks(anchor_chunks + discovery_reranked)
 
     # metadata_* path: exact lookup per course, no reranking
     if len(course_ids) == 1:
-        return router_mod._deduplicate_chunks(
+        return deduplicate_chunks(
             search.search_by_course_categories(course_ids[0], categories)
         )
 
     combined: list[dict] = []
     for cid in course_ids:
         combined.extend(search.search_by_course_categories(cid, categories))
-    return router_mod._deduplicate_chunks(combined)
+    return deduplicate_chunks(combined)
 
 
 # ---------------------------------------------------------------------------

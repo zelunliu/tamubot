@@ -75,7 +75,7 @@ FUNCTION_RETRIEVAL_CONFIG: dict[str, dict[str, int]] = {
     "recurrent_combined":  {"retrieve_k": 18, "rerank_k": 6},
 }
 
-# Alias used by router._compute_dynamic_k for per-course scaling.
+# Alias used by router.compute_dynamic_k for per-course scaling.
 PER_COURSE_K = FUNCTION_RETRIEVAL_CONFIG
 
 # Global caps for scaled multi-course retrieval.

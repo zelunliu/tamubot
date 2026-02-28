@@ -3,10 +3,13 @@
 ## Public API
 
 ```python
-from rag.router import route_retrieve_rerank   # → (reranked_results, RouterResult)
-from rag.generator import generate             # → str; use in scripts/evals (Gate 1 + Gate 2)
-from rag.generator import generate_stream      # yields chunks; Streamlit only
-from rag.generator import generate_comparison  # → Markdown string; multi-course
+# Import everything from the package root — never from submodules
+from rag import route_retrieve_rerank, classify_query, RouterResult
+from rag import generate, generate_stream, generate_comparison
+from rag import hybrid_search, search_semantic, search_by_course_categories, get_missing_sections
+from rag import rerank, rerank_multi_course
+from rag import get_langfuse, run_ragas_background, compute_ragas_metrics
+from rag import compute_dynamic_k, deduplicate_chunks, FUNCTION_CATEGORY_STRATEGIES
 
 reranked, router_result = route_retrieve_rerank(query, trace=None)
 # router_result: .function, .course_ids, .specific_categories,

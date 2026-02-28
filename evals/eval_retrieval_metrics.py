@@ -230,7 +230,7 @@ def rrf_sweep(
     if k_values is None:
         k_values = [20, 40, 60, 80, 100]
 
-    from rag import search as search_mod
+    from rag import hybrid_search
     import voyageai
 
     vo = voyageai.Client(api_key=config.VOYAGE_API_KEY)
@@ -239,7 +239,7 @@ def rrf_sweep(
     sweep_results: dict[int, dict] = {}
     for k_param in k_values:
         try:
-            results = search_mod.hybrid_search(
+            results = hybrid_search(
                 query,
                 filters=filters,
                 k=20,
@@ -247,7 +247,7 @@ def rrf_sweep(
             )
         except TypeError:
             # hybrid_search may not accept rrf_k — fall back to default
-            results = search_mod.hybrid_search(query, filters=filters, k=20)
+            results = hybrid_search(query, filters=filters, k=20)
 
         if not results:
             sweep_results[k_param] = {"ndcg": 0.0, "n_results": 0}
@@ -295,9 +295,7 @@ def evaluate_retrieval_golden_set(
     Returns:
         Dict with per-item results and aggregate statistics.
     """
-    from rag import router as router_mod
-    from rag import search as search_mod
-    from rag import reranker as reranker_mod
+    from rag import classify_query, compute_dynamic_k, hybrid_search, search_semantic, rerank
 
     item_results = []
     for i, item in enumerate(golden_set, 1):
@@ -309,7 +307,7 @@ def evaluate_retrieval_golden_set(
 
         # Router
         try:
-            rr = router_mod.classify_query(query)
+            rr = classify_query(query)
         except Exception as e:
             print(f"    Router error: {e}")
             continue
@@ -319,7 +317,7 @@ def evaluate_retrieval_golden_set(
 
         fn = rr.function
         mode = rr.retrieval_mode
-        dk = router_mod._compute_dynamic_k(fn, len(rr.course_ids))
+        dk = compute_dynamic_k(fn, len(rr.course_ids))
         retrieve_k = dk["retrieve_k"]
         rerank_k = dk["rerank_k"]
 
@@ -328,9 +326,9 @@ def evaluate_retrieval_golden_set(
         # Pre-rerank retrieval
         try:
             if fn == "semantic_general":
-                pre_results = search_mod.search_semantic(search_query, top_k=retrieve_k)
+                pre_results = search_semantic(search_query, top_k=retrieve_k)
             elif rr.course_ids and mode == "hybrid":
-                pre_results = search_mod.hybrid_search(
+                pre_results = hybrid_search(
                     search_query, filters={"course_id": rr.course_ids[0]}, k=retrieve_k
                 )
             else:
@@ -342,7 +340,7 @@ def evaluate_retrieval_golden_set(
 
         # Post-rerank
         try:
-            post_results = reranker_mod.rerank(search_query, pre_results, top_k=rerank_k)
+            post_results = rerank(search_query, pre_results, top_k=rerank_k)
         except Exception as e:
             print(f"    Reranker error: {e}")
             post_results = pre_results[:rerank_k]
@@ -451,14 +449,14 @@ def main():
 
     elif args.query:
         print(f"Evaluating single query: '{args.query}'")
-        from rag import search as search_mod, reranker as reranker_mod, router as router_mod
+        from rag import classify_query, hybrid_search, rerank
 
-        rr = router_mod.classify_query(args.query)
+        rr = classify_query(args.query)
         print(f"  Router: fn={rr.function}, mode={rr.retrieval_mode}")
         search_query = rr.rewritten_query or args.query
 
-        pre = search_mod.hybrid_search(search_query, filters={"course_id": args.course_id}, k=20)
-        post = reranker_mod.rerank(search_query, pre, top_k=args.k)
+        pre = hybrid_search(search_query, filters={"course_id": args.course_id}, k=20)
+        post = rerank(search_query, pre, top_k=args.k)
 
         labels = label_relevant(args.query, post, threshold=args.threshold)
         recall = recall_at_k(labels, args.k)

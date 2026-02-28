@@ -22,7 +22,7 @@ from rag.prompts import ROUTER_PROMPT
 # Dynamic-k helper (pure Python, no LLM)
 # ---------------------------------------------------------------------------
 
-def _compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
+def compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
     """Compute retrieve_k and rerank_k scaled by the number of courses in the query.
 
     semantic_general is corpus-wide — do not scale by course count.
@@ -162,7 +162,7 @@ def _get_combined_categories(router_result: "RouterResult") -> list[str]:
 # Maps each retrieval function to a callable that returns the categories to fetch.
 # For recurrent_* functions, categories are used for the anchor course metadata fetch (Stage 1).
 # Adding a new retrieval function = adding one entry here; no logic change elsewhere.
-_FUNCTION_CATEGORY_STRATEGIES: dict[str, Callable[["RouterResult"], list[str]]] = {
+FUNCTION_CATEGORY_STRATEGIES: dict[str, Callable[["RouterResult"], list[str]]] = {
     "metadata_default":   lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
     "metadata_specific":  lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
     "metadata_combined":  _get_combined_categories,
@@ -335,7 +335,7 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
             retrieval_span = None
 
     try:
-        reranked = _deduplicate_chunks(
+        reranked = deduplicate_chunks(
             _retrieve_and_rerank(query, search_query, router_result, retrieval_span)
         )
     except Exception as e:
@@ -355,7 +355,7 @@ def route_retrieve_rerank(query: str, trace=None) -> tuple[list[dict], "RouterRe
     return reranked, router_result
 
 
-def _deduplicate_chunks(results: list[dict]) -> list[dict]:
+def deduplicate_chunks(results: list[dict]) -> list[dict]:
     """Keep only the highest-scored chunk per (course_id, category) pair.
 
     The reranker returns results sorted best-first, so the first occurrence
@@ -388,7 +388,7 @@ def _retrieve_and_rerank(
                                           corpus-wide hybrid discovery + reranking
     """
     fn = router_result.function
-    dk = _compute_dynamic_k(fn, len(router_result.course_ids))
+    dk = compute_dynamic_k(fn, len(router_result.course_ids))
     retrieve_k = dk["retrieve_k"]
     rerank_k = dk["rerank_k"]
 
@@ -404,7 +404,7 @@ def _retrieve_and_rerank(
         return []
 
     # ── Determine which categories to fetch (registry lookup) ───────────────
-    strategy = _FUNCTION_CATEGORY_STRATEGIES.get(fn)
+    strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
     categories = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
     # ── recurrent_* path: two-stage retrieval ───────────────────────────────
