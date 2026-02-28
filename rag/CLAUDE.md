@@ -1,106 +1,42 @@
-# rag/ — RAG Pipeline Modules
+# rag/ — RAG Pipeline
 
-> **Maintenance**: Update this file when public APIs, call signatures, gotchas, or config patterns change.
-
-## Module Dependency Graph
-
-```
-app.py
-  └── rag/router.py          (route_retrieve_rerank — Stage 1+2 orchestrator)
-        ├── rag/llm_client.py (call_llm, stream_llm — unified LLM backend)
-        ├── rag/search.py    (hybrid_search, search_semantic, search_by_course_categories)
-        ├── rag/reranker.py  (rerank, rerank_multi_course)
-        └── rag/generator.py (generate_stream, generate_comparison — Stage 3)
-              ├── rag/llm_client.py       (call_llm, stream_llm — unified LLM backend)
-              ├── rag/prompts.py          (ROUTER_PROMPT, _FUNCTION_PROMPTS, _FUNCTION_TEMPERATURES)
-              ├── rag/context_builder.py  (format_context_xml)
-              ├── rag/gates.py            (validate_citations_gate1, validate_citations_with_trace)
-              ├── rag/comparison_schemas.py (CourseComparisonTable Pydantic schema)
-              └── rag/observability.py    (run_groundedness_scoring_background — Gate 2)
-```
-
-## Public API Entry Points
+## Public API
 
 ```python
-# Full pipeline (app.py calls these)
-from rag.router import route_retrieve_rerank   # returns (reranked_results, RouterResult)
-from rag.generator import generate_stream      # yields text chunks (single-course)
-from rag.generator import generate_comparison  # returns Markdown string (multi-course)
+from rag.router import route_retrieve_rerank   # → (reranked_results, RouterResult)
+from rag.generator import generate             # → str; use in scripts/evals (Gate 1 + Gate 2)
+from rag.generator import generate_stream      # yields chunks; Streamlit only
+from rag.generator import generate_comparison  # → Markdown string; multi-course
 
-# Signatures — needed for scripts / evals / probes:
-reranked, router_result = route_retrieve_rerank(query: str, trace=None)
-# router_result fields: .function, .course_ids, .specific_categories,
+reranked, router_result = route_retrieve_rerank(query, trace=None)
+# router_result: .function, .course_ids, .specific_categories,
 #   .semantic_intent, .semantic_type, .category_confidence, .rewritten_query
 
-answer: str = generate(
-    results: list[dict],   # reranked chunks
-    question: str,
-    function: str = "semantic_general",
-    course_ids: list[str] | None = None,
-    semantic_type: str | None = None,
-    trace=None,            # optional Langfuse LFTrace
-)
-# generate() calls Gate 1 (sync) and Gate 2 groundedness (async bg) internally.
-# Use generate() in scripts; generate_stream() is for the Streamlit UI only.
-
-# Observability (scripts / evals):
-from rag.observability import get_langfuse, run_ragas_background
-lf = get_langfuse()        # returns MinimalLangfuseClient or None
-trace = lf.trace(name, input, metadata)   # → LFTrace
-lf.flush()                 # send buffered events — call after each query in scripts
+# Observability
+lf = get_langfuse()                           # MinimalLangfuseClient or None
+trace = lf.trace(name, input, metadata)
+lf.flush()                                    # call after each query in scripts
 # Trace URL: f"{config.LANGFUSE_BASE_URL}/trace/{trace.id}"
 ```
 
-## Config Access Pattern
+## LLM Client
 
-**Always import from `config.py`**. Never call `os.getenv()` directly in rag/ modules.
-
-```python
-import config
-config.GENERATION_MODEL         # Gemini model name (direct path)
-config.TAMU_MODEL               # protected.gemini-2.5-flash (TAMU gateway)
-config.USE_TAMU_API             # True when TAMU_API_KEY is set
-config.THINKING_BUDGET_SEMANTIC # 1024
-config.get_genai_client()       # lazy singleton google.genai.Client
-config.get_tamu_client()        # lazy singleton openai.OpenAI (TAMU gateway)
-```
-
-## TAMU AI API / LLM Client
-
-All LLM calls in `router.py` and `generator.py` go through `rag/llm_client.py`:
+All LLM calls go through `rag/llm_client.py` — do NOT call `config.get_tamu_client()` / `config.get_genai_client()` directly in router/generator:
 
 ```python
-from rag.llm_client import call_llm, stream_llm, LLMResult
-
 result = call_llm(messages, temperature=0, max_tokens=4096, json_mode=True, thinking_budget=512)
-text = result.text
-# result.input_tokens / output_tokens / thinking_tokens — None on TAMU path
-
 for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_budget=1024):
-    ...
 ```
 
-`llm_client.py` selects the backend automatically via `config.USE_TAMU_API`:
-- **TAMU path**: OpenAI-compat gateway, always `stream=True` (SSE quirk), no token counts
-- **Gemini path**: google-genai SDK, token counts returned in `LLMResult`
+- `result.input_tokens / output_tokens` — None on TAMU path (SSE, no token counts exposed)
+- Langfuse model name: `config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL`
 
-Do **not** call `config.get_tamu_client()` or `config.get_genai_client()` directly in
-`router.py` or `generator.py` — always go through `llm_client`.
+## 8-Function Routing Matrix
 
-Langfuse spans: use `config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL`
-for the model name.  Token counts from `LLMResult` are None on TAMU path — check before logging.
-
-## Singleton Clients
-
-`search.py` uses `_get_db()` and `_get_voyage()` module-level singletons.
-Do not instantiate `MongoClient` or `voyageai.Client` directly in new code.
-
-## 8-Function Decision Matrix
-
-Derived by pure Python in `_derive_function()` — no LLM judgment:
+Pure Python in `_derive_function()` — no LLM judgment:
 
 ```
-course_ids  semantic_intent  specific_categories  specific_only  → function           retrieval_mode
+course_ids  semantic_intent  specific_categories  specific_only  → function           mode
 empty       true             any                  any            → semantic_general    semantic
 empty       false            any                  any            → out_of_scope        —
 present     false            empty                —              → metadata_default    metadata
@@ -111,51 +47,11 @@ present     true             populated            true           → hybrid_spec
 present     true             populated            false          → hybrid_combined     hybrid
 ```
 
-Note: `*_combined` always uses hybrid retrieval regardless of `category_confidence`.
+`*_combined` always hybrid. Thinking budget: `metadata_*` = 0, `hybrid_*`/`semantic` = 1024. Temps: `metadata_*` = 0.0, others = 0.2.
 
-## Thinking Budgets
+## Gotchas
 
-- `THINKING_BUDGET_METADATA = 0` — metadata_* functions (deterministic extraction)
-- `THINKING_BUDGET_SEMANTIC = 1024` — hybrid_* and semantic_general (complex reasoning)
-
-## Per-Function Temperatures
-
-- `metadata_*` → 0.0  (deterministic, maximum context fidelity)
-- `hybrid_*` → 0.2    (advisory reasoning, linguistic synthesis)
-- `semantic_general` → 0.2
-- `out_of_scope` → 0.0
-
-## Critical Gotchas
-
-### Gemini JSON Mode
-When using `response_mime_type="application/json"` + `response_schema`, Gemini reliably fills
-typed fields (`str`, `list`) but does **NOT** reliably populate a free-form Markdown `str` field.
-→ Always render Markdown in Python from structured data (`_render_comparison_markdown()`).
-
-### Primacy-Recency Bracketing (`format_context_xml`)
-Reranked results are reordered before feeding to Gemini to combat Lost-in-the-Middle degradation:
-- Rank 1 → context **start** (primacy position)
-- Rank 2 → context **end** (recency/nearest-to-query position)
-- Ranks 3–N → middle (descending order)
-
-### Gates
-- **Gate 1** (regex, synchronous): `validate_citations_with_trace()` fires immediately after
-  generation; checks for `[Source N]` presence in factual responses.
-- **Gate 2** (LLM, asynchronous): `run_groundedness_scoring_background()` in `observability.py`
-  fires in a background thread via RAGAS `ResponseGroundedness`; score uploaded to Langfuse.
-
-## Key Files Quick Reference
-
-| File | Responsibility |
-|------|---------------|
-| `router.py` | Stage 1: LLM variable extraction + pure-Python routing + retrieval orchestration |
-| `llm_client.py` | Unified LLM backend: `call_llm()` (blocking) + `stream_llm()` (streaming) |
-| `search.py` | MongoDB Atlas vector + hybrid + metadata search |
-| `reranker.py` | Voyage AI rerank-2 cross-encoder reranking |
-| `generator.py` | Stage 3: single-course `generate_stream()`, multi-course `generate_comparison()` |
-| `prompts.py` | All prompt strings: router, function prompts, semantic overlays, temperatures |
-| `context_builder.py` | `format_context_xml()` — primacy-recency XML context assembly |
-| `gates.py` | Gate 1 citation validation (regex + Langfuse scoring) |
-| `models.py` | Pydantic v2 models: ChunkDoc, PolicyDoc, CourseDoc |
-| `comparison_schemas.py` | CourseComparisonTable schema for single-call extraction |
-| `observability.py` | Langfuse tracing + RAGAS eval + Gate 2 groundedness scoring |
+- **Gemini JSON mode**: free-form Markdown fields silently return empty → always render Markdown in Python (`_render_comparison_markdown()`)
+- **Primacy-recency** (`format_context_xml`): rank 1 → context start, rank 2 → context end, ranks 3–N → middle
+- **Gate 1** (sync, regex): `validate_citations_with_trace()` — checks `[Source N]` presence after generation
+- **Gate 2** (async, LLM): `run_groundedness_scoring_background()` — RAGAS groundedness in background thread, score → Langfuse
