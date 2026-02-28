@@ -45,6 +45,7 @@ class TestCase:
     expected_course_ids: list[str] = field(default_factory=list)
     expected_specific_categories: list[str] = field(default_factory=list)
     expected_semantic_intent: bool = False
+    expected_recurrent_search: bool = False
     notes: str = ""
     # Golden set provenance — used for recall@k
     source_crn: str = ""
@@ -162,73 +163,103 @@ TEST_SUITE: list[TestCase] = [
         notes="specific_only=False expected. This is the canonical metadata_combined case.",
     ),
 
-    # ── hybrid_specific ──────────────────────────────────────────────────
-    # Specific category + advisory/subjective component (specific_only=True).
+    # ── metadata_specific (evaluative with explicit category) ────────────
+    # Evaluative/advisory question about a KNOWN course with specific category.
+    # recurrent_search=False → metadata path (bypass vector search).
     TestCase(
         query="Is CSCE 638 strict about its AI policy?",
-        function_expected="hybrid_specific",
-        description="AI_POLICY + evaluative ('strict') — tests semantic_intent=True with specific category",
+        function_expected="metadata_specific",
+        description="AI_POLICY + evaluative ('strict') — known course, specific category → metadata_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["AI_POLICY"],
         expected_semantic_intent=True,
+        notes="recurrent_search=False: question is about the known course, not discovering others.",
     ),
     TestCase(
         query="Is the grading for CSCE 670 fair?",
-        function_expected="hybrid_specific",
-        description="GRADING + evaluative ('fair') — tests advisory overlay on factual category",
+        function_expected="metadata_specific",
+        description="GRADING + evaluative ('fair') — known course, specific category → metadata_specific",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["GRADING"],
         expected_semantic_intent=True,
     ),
 
-    # ── hybrid_default ───────────────────────────────────────────────────
-    # Advisory/subjective question about a course, no specific category.
+    # ── metadata_default (evaluative, no specific category) ──────────────
+    # Advisory/subjective question about a KNOWN course — metadata bypass.
     TestCase(
         query="Is CSCE 638 a good course for machine learning research?",
-        function_expected="hybrid_default",
-        description="Advisory + CAREER semantic type — no specific category",
+        function_expected="metadata_default",
+        description="Advisory + CAREER semantic type — known course, no specific category → metadata_default",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
     ),
     TestCase(
         query="Is CSCE 670 worth taking?",
-        function_expected="hybrid_default",
-        description="Evaluative ('worth taking') — GENERAL semantic type, no specific category",
+        function_expected="metadata_default",
+        description="Evaluative ('worth taking') — known course, GENERAL semantic type → metadata_default",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
     ),
     TestCase(
         query="How hard is CSCE 638?",
-        function_expected="hybrid_default",
-        description="DIFFICULTY semantic type — broad difficulty question, no specific category",
+        function_expected="metadata_default",
+        description="DIFFICULTY semantic type — known course, no specific category → metadata_default",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
     ),
 
-    # ── hybrid_specific (explicit-category advisory) ─────────────────────
-    # The category is explicitly named as the subject ("based on the grading structure",
-    # "given its learning outcomes") — router correctly sets specific_only=True.
-    # hybrid_specific = factual category retrieval + semantic advisory overlay.
+    # ── metadata_specific (evaluative with explicit category, continued) ──
     TestCase(
         query="Does CSCE 638 have a heavy workload based on the grading structure?",
-        function_expected="hybrid_specific",
-        description="DIFFICULTY + GRADING — 'based on the grading structure' names the category explicitly → specific_only=True → hybrid_specific",
+        function_expected="metadata_specific",
+        description="DIFFICULTY + GRADING explicit — known course → metadata_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["GRADING"],
         expected_semantic_intent=True,
-        notes="Router correctly sets specific_only=True: the grading structure is the explicit subject, not just background context. hybrid_specific fetches GRADING + applies DIFFICULTY overlay.",
+        notes="specific_only=True: 'based on the grading structure' explicitly names the category.",
     ),
     TestCase(
         query="Is CSCE 670 good preparation for a PhD in information retrieval, given its learning outcomes?",
-        function_expected="hybrid_specific",
-        description="CAREER + LEARNING_OUTCOMES — 'given its learning outcomes' names the category explicitly → specific_only=True → hybrid_specific",
+        function_expected="metadata_specific",
+        description="CAREER + LEARNING_OUTCOMES explicit — known course → metadata_specific",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["LEARNING_OUTCOMES"],
         expected_semantic_intent=True,
-        notes="Router correctly sets specific_only=True: learning outcomes are the explicit subject of evaluation. hybrid_specific fetches LEARNING_OUTCOMES + applies CAREER overlay.",
+        notes="specific_only=True: 'given its learning outcomes' explicitly names the category.",
+    ),
+
+    # ── recurrent_* — two-stage: anchor course → corpus discovery ────────
+    TestCase(
+        query="What course should I take with CSCE 638?",
+        function_expected="recurrent_default",
+        description="Course pairing discovery — known anchor, no specific category → recurrent_default",
+        expected_course_ids=["CSCE 638"],
+        expected_specific_categories=[],
+        expected_semantic_intent=True,
+        expected_recurrent_search=True,
+        notes="Two-stage: metadata fetch CSCE 638 default categories → corpus-wide hybrid discovery.",
+    ),
+    TestCase(
+        query="What courses are similar to CSCE 670?",
+        function_expected="recurrent_default",
+        description="Course similarity discovery — anchor course, no specific category → recurrent_default",
+        expected_course_ids=["CSCE 670"],
+        expected_specific_categories=[],
+        expected_semantic_intent=True,
+        expected_recurrent_search=True,
+    ),
+    TestCase(
+        query="What TAMU course follows CSCE 638, given its learning outcomes?",
+        function_expected="recurrent_specific",
+        description="Course sequencing discovery anchored on LEARNING_OUTCOMES → recurrent_specific",
+        expected_course_ids=["CSCE 638"],
+        expected_specific_categories=["LEARNING_OUTCOMES"],
+        expected_semantic_intent=True,
+        expected_recurrent_search=True,
+        notes="specific_only=True: 'given its learning outcomes' is the explicit anchor category.",
     ),
 
     # ── metadata_specific (multi-course comparisons) ──────────────────────
@@ -258,20 +289,21 @@ TEST_SUITE: list[TestCase] = [
         expected_semantic_intent=False,
     ),
 
-    # ── hybrid_default (multi-course advisory) ────────────────────────────
+    # ── metadata_default (multi-course advisory) ──────────────────────────
+    # Both courses are known → metadata regardless of semantic_intent.
     TestCase(
         query="Is CSCE 638 harder than CSCE 670?",
-        function_expected="hybrid_default",
-        description="Multi-course DIFFICULTY comparison — advisory, no specific category",
+        function_expected="metadata_default",
+        description="Multi-course DIFFICULTY comparison — both known, no specific category → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
-        notes="Router should extract both course IDs and semantic_intent=True, semantic_type=DIFFICULTY",
+        notes="recurrent_search=False: user is comparing two KNOWN courses, not discovering new ones.",
     ),
     TestCase(
         query="Which course, CSCE 638 or CSCE 670, is better for an ML career?",
-        function_expected="hybrid_default",
-        description="Multi-course CAREER advisory — tests CAREER semantic type extraction",
+        function_expected="metadata_default",
+        description="Multi-course CAREER advisory — both known → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
@@ -279,8 +311,8 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Should I take CSCE 638 or CSCE 670 first?",
-        function_expected="hybrid_default",
-        description="Multi-course PLANNING advisory — course sequencing question",
+        function_expected="metadata_default",
+        description="Multi-course PLANNING advisory — both known, course sequencing → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
         expected_semantic_intent=True,
@@ -376,6 +408,7 @@ class EvalResult:
     course_ids_expected: list[str]
     specific_categories_expected: list[str]
     semantic_intent_expected: bool
+    recurrent_search_expected: bool
 
     # Router — actual
     function_actual: str
@@ -384,6 +417,7 @@ class EvalResult:
     semantic_intent_actual: bool
     semantic_type_actual: str | None
     category_confidence: float
+    recurrent_search_actual: bool
     retrieval_mode_actual: str
     rewritten_query: str
 
@@ -537,12 +571,14 @@ def run_test(
         course_ids_expected=tc.expected_course_ids,
         specific_categories_expected=tc.expected_specific_categories,
         semantic_intent_expected=tc.expected_semantic_intent,
+        recurrent_search_expected=tc.expected_recurrent_search,
         function_actual=rr.function,
         course_ids_extracted=rr.course_ids,
         specific_categories_extracted=rr.specific_categories,
         semantic_intent_actual=rr.semantic_intent,
         semantic_type_actual=rr.semantic_type,
         category_confidence=round(rr.category_confidence, 3),
+        recurrent_search_actual=rr.recurrent_search,
         retrieval_mode_actual=rr.retrieval_mode,
         rewritten_query=rr.rewritten_query,
         function_correct=(rr.function == tc.function_expected),
@@ -600,45 +636,35 @@ def _do_retrieval(rr: router_mod.RouterResult, query: str) -> list[dict]:
     if fn == "out_of_scope" or not course_ids:
         return []
 
-    # Determine categories
-    if fn in ("metadata_default", "hybrid_default"):
-        categories = config.DEFAULT_SUMMARY_CATEGORIES
-    elif fn in ("metadata_specific", "hybrid_specific"):
-        categories = specific_cats or config.DEFAULT_SUMMARY_CATEGORIES
-    elif fn in ("metadata_combined", "hybrid_combined"):
-        seen_cats: set[str] = set()
-        categories = []
-        for c in (config.DEFAULT_SUMMARY_CATEGORIES + specific_cats):
-            if c not in seen_cats:
-                seen_cats.add(c)
-                categories.append(c)
-    else:
-        categories = config.DEFAULT_SUMMARY_CATEGORIES
+    # Determine categories via the canonical registry (single source of truth)
+    strategy = router_mod._FUNCTION_CATEGORY_STRATEGIES.get(fn)
+    categories = strategy(rr) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
-    def fetch_course(cid: str) -> list[dict]:
-        if mode == "metadata":
-            return search.search_by_course_categories(cid, categories)
-        filters: dict = {"course_id": cid}
-        return search.hybrid_search(search_query, filters=filters, k=retrieve_k)
-
-    if len(course_ids) == 1:
-        results = fetch_course(course_ids[0])
-        if mode == "metadata":
-            return router_mod._deduplicate_chunks(results)
-        reranked = reranker.rerank(search_query, results, top_k=rerank_k)
-        return router_mod._deduplicate_chunks(reranked)
-
-    # Multi-course
-    course_groups: dict[str, list[dict]] = {cid: fetch_course(cid) for cid in course_ids}
-
-    if mode == "metadata":
-        combined: list[dict] = []
+    # recurrent_* path: two-stage anchor fetch → corpus-wide discovery
+    if fn.startswith("recurrent_"):
+        anchor_chunks: list[dict] = []
         for cid in course_ids:
-            combined.extend(course_groups[cid])
-        return router_mod._deduplicate_chunks(combined)
+            anchor_chunks.extend(search.search_by_course_categories(cid, categories))
+        anchor_text = " ".join(
+            f"{c.get('title', '')} {c.get('content', '')}" for c in anchor_chunks
+        )[:1500]
+        anchor_query = f"{anchor_text} {search_query}".strip()
+        all_results = search.hybrid_search(anchor_query, filters=None, k=retrieve_k)
+        anchor_ids = set(course_ids)
+        discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
+        discovery_reranked = reranker.rerank(search_query, discovery_chunks, top_k=rerank_k)
+        return router_mod._deduplicate_chunks(anchor_chunks + discovery_reranked)
 
-    reranked = reranker.rerank_multi_course(search_query, course_groups, top_k_per_course=rerank_k)
-    return router_mod._deduplicate_chunks(reranked)
+    # metadata_* path: exact lookup per course, no reranking
+    if len(course_ids) == 1:
+        return router_mod._deduplicate_chunks(
+            search.search_by_course_categories(course_ids[0], categories)
+        )
+
+    combined: list[dict] = []
+    for cid in course_ids:
+        combined.extend(search.search_by_course_categories(cid, categories))
+    return router_mod._deduplicate_chunks(combined)
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +691,7 @@ def write_markdown_report(
 
     functions = [
         "metadata_default", "metadata_specific", "metadata_combined",
-        "hybrid_default", "hybrid_specific", "hybrid_combined",
+        "recurrent_default", "recurrent_specific", "recurrent_combined",
         "semantic_general", "out_of_scope",
     ]
 
@@ -723,22 +749,21 @@ def write_markdown_report(
         "",
         "Functions are derived mechanically from extracted variables (no intent classification).",
         "",
-        "| course_ids | semantic_intent | specific_categories | specific_only | function |",
-        "|---|---|---|---|---|",
-        "| empty | True | any | any | `semantic_general` |",
-        "| empty | False | any | any | `out_of_scope` |",
-        "| present | False | empty | — | `metadata_default` |",
-        "| present | False | populated | True | `metadata_specific` |",
-        "| present | False | populated | False | `metadata_combined` |",
-        "| present | True | empty | — | `hybrid_default` |",
-        "| present | True | populated | True | `hybrid_specific` |",
-        "| present | True | populated | False | `hybrid_combined` |",
+        "| course_ids | recurrent_search | semantic_intent | specific_categories | specific_only | function |",
+        "|---|---|---|---|---|---|",
+        "| empty | any | True | any | any | `semantic_general` |",
+        "| empty | any | False | any | any | `out_of_scope` |",
+        "| present | True | any | empty | — | `recurrent_default` |",
+        "| present | True | any | populated | True | `recurrent_specific` |",
+        "| present | True | any | populated | False | `recurrent_combined` |",
+        "| present | False | any | empty | — | `metadata_default` |",
+        "| present | False | any | populated | True | `metadata_specific` |",
+        "| present | False | any | populated | False | `metadata_combined` |",
         "",
-        "**Retrieval mode derivation:** `metadata` if category_confidence ≥ "
-        f"{config.CATEGORY_CONFIDENCE_THRESHOLD}, else `hybrid`; `semantic` if no course_ids.",
+        "**Retrieval mode:** `recurrent_search=True` → `hybrid` (2-stage); known courses → `metadata`; no IDs → `semantic`.",
         "",
         "**No reranking on metadata path** — exact index lookups, already correct.",
-        "**Reranking applies on hybrid and semantic paths.**",
+        "**Recurrent path:** anchor metadata fetch → corpus-wide hybrid → rerank discovery chunks.",
         "",
         "---",
         "",
@@ -913,14 +938,15 @@ def write_markdown_report(
         "",
         "### 3. Multi-Course Advisory Queries",
         "Queries like 'Is CSCE 638 harder than CSCE 670?' extract both course_ids and",
-        "semantic_intent=True, routing to `hybrid_default` with parallel per-course fetches.",
+        "semantic_intent=True. With recurrent_search=False (both courses are known),",
+        "routing is `metadata_default` — parallel metadata fetch, no vector search.",
         "The generator receives balanced context from both courses and applies the",
         "DIFFICULTY semantic type overlay.",
         "",
-        "### 4. category_confidence Threshold",
-        f"The threshold is {config.CATEGORY_CONFIDENCE_THRESHOLD}. When the router is uncertain",
-        "about category extraction (e.g. ambiguous questions), retrieval_mode falls back",
-        "to 'hybrid', running hybrid_search without a category filter.",
+        "### 4. Recurrent Search Path",
+        "Queries like 'What course should I take with CSCE 638?' set recurrent_search=True,",
+        "routing to `recurrent_default`. Stage 1: metadata fetch for CSCE 638 anchor chunks.",
+        "Stage 2: corpus-wide hybrid search using anchor content as query, excluding CSCE 638.",
         "This prevents incorrect category filters from missing relevant chunks.",
         "",
         "### 5. No Reranking on Metadata Path",

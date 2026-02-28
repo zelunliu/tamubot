@@ -45,29 +45,24 @@ def _compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
 
 def _derive_retrieval_mode(
     course_ids: list[str],
-    category_confidence: float,
-    function: str = "",
+    recurrent_search: bool,
 ) -> str:
-    """Derive retrieval_mode from course presence, category confidence, and function.
+    """Derive retrieval_mode from course presence and recurrent_search flag.
 
-    - No course IDs → "semantic" (full-corpus vector search)
-    - *_combined functions → always "hybrid" regardless of confidence.
-      Broad framing ("what should I know about X, especially Y") benefits from
-      the semantic component even when the named category has high confidence.
-    - course IDs + high confidence → "metadata" (exact index lookup)
-    - course IDs + low confidence → "hybrid" (RRF of vector + text)
+    - No course IDs → "semantic" (full-corpus vector search, no anchor)
+    - recurrent_search=True → "hybrid" (two-stage: anchor metadata fetch + corpus hybrid)
+    - course IDs, no recurrent_search → "metadata" (exact index lookup, bypass vector)
     """
     if not course_ids:
         return "semantic"
-    if function.endswith("_combined"):
+    if recurrent_search:
         return "hybrid"
-    if category_confidence >= config.CATEGORY_CONFIDENCE_THRESHOLD:
-        return "metadata"
-    return "hybrid"
+    return "metadata"
 
 
 def _derive_function(
     course_ids: list[str],
+    recurrent_search: bool,
     semantic_intent: bool,
     specific_categories: list[str],
     specific_only: bool,
@@ -75,27 +70,27 @@ def _derive_function(
     """Derive the retrieval function name from extracted variables.
 
     Function matrix:
-    course_ids  semantic_intent  specific_categories  specific_only  → function
-    empty       True             any                  any            → semantic_general
-    empty       False            any                  any            → out_of_scope
-    present     False            empty                —              → metadata_default
-    present     False            populated            True           → metadata_specific
-    present     False            populated            False          → metadata_combined
-    present     True             empty                —              → hybrid_default
-    present     True             populated            True           → hybrid_specific
-    present     True             populated            False          → hybrid_combined
+    course_ids  recurrent_search  semantic_intent  specific_categories  specific_only  → function
+    empty       any               True             any                  any            → semantic_general
+    empty       any               False            any                  any            → out_of_scope
+    present     True              any              empty                —              → recurrent_default
+    present     True              any              populated            True           → recurrent_specific
+    present     True              any              populated            False          → recurrent_combined
+    present     False             any              empty                —              → metadata_default
+    present     False             any              populated            True           → metadata_specific
+    present     False             any              populated            False          → metadata_combined
     """
     if not course_ids:
         return "semantic_general" if semantic_intent else "out_of_scope"
 
-    if not semantic_intent:
+    if recurrent_search:
+        if not specific_categories:
+            return "recurrent_default"
+        return "recurrent_specific" if specific_only else "recurrent_combined"
+    else:
         if not specific_categories:
             return "metadata_default"
         return "metadata_specific" if specific_only else "metadata_combined"
-    else:
-        if not specific_categories:
-            return "hybrid_default"
-        return "hybrid_specific" if specific_only else "hybrid_combined"
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +108,7 @@ class RouterResult:
     semantic_intent: bool = False
     semantic_type: Optional[str] = None
     category_confidence: float = 0.0
+    recurrent_search: bool = False
     rewritten_query: str = ""
     section: Optional[str] = None
 
@@ -124,13 +120,14 @@ class RouterResult:
         if not self.function:
             self.function = _derive_function(
                 self.course_ids,
+                self.recurrent_search,
                 self.semantic_intent,
                 self.specific_categories,
                 self.specific_only,
             )
         if not self.retrieval_mode:
             self.retrieval_mode = _derive_retrieval_mode(
-                self.course_ids, self.category_confidence, self.function
+                self.course_ids, self.recurrent_search
             )
 
     @property
@@ -163,14 +160,15 @@ def _get_combined_categories(router_result: "RouterResult") -> list[str]:
 
 
 # Maps each retrieval function to a callable that returns the categories to fetch.
+# For recurrent_* functions, categories are used for the anchor course metadata fetch (Stage 1).
 # Adding a new retrieval function = adding one entry here; no logic change elsewhere.
 _FUNCTION_CATEGORY_STRATEGIES: dict[str, Callable[["RouterResult"], list[str]]] = {
-    "metadata_default":  lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "metadata_specific": lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "metadata_combined": _get_combined_categories,
-    "hybrid_default":    lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "hybrid_specific":   lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "hybrid_combined":   _get_combined_categories,
+    "metadata_default":   lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "metadata_specific":  lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "metadata_combined":  _get_combined_categories,
+    "recurrent_default":  lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "recurrent_specific": lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
+    "recurrent_combined": _get_combined_categories,
 }
 
 
@@ -249,6 +247,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         semantic_intent=bool(data.get("semantic_intent", False)),
         semantic_type=semantic_type,
         category_confidence=float(data.get("category_confidence", 0.0)),
+        recurrent_search=bool(data.get("recurrent_search", False)),
         rewritten_query=data.get("rewritten_query", query),
         section=data.get("section"),
         # function and retrieval_mode auto-derived in __post_init__
@@ -267,6 +266,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
                     "semantic_intent": result.semantic_intent,
                     "semantic_type": result.semantic_type,
                     "category_confidence": result.category_confidence,
+                    "recurrent_search": result.recurrent_search,
                     "rewritten_query": result.rewritten_query,
                     "input_tokens": llm_result.input_tokens if llm_result else None,
                     "output_tokens": llm_result.output_tokens if llm_result else None,
@@ -382,12 +382,12 @@ def _retrieve_and_rerank(
     """Internal helper: run the function-specific retrieval + optional reranking.
 
     Retrieval strategy:
-    - metadata path (retrieval_mode="metadata"): search_by_course_categories, no reranking
-    - hybrid path (retrieval_mode="hybrid"):     hybrid_search per course + reranking
-    - semantic path (retrieval_mode="semantic"): search_semantic + reranking
+    - semantic path  (semantic_general):  search_semantic corpus-wide + reranking
+    - metadata path  (metadata_*):        search_by_course_categories, no reranking
+    - recurrent path (recurrent_*):       two-stage — metadata anchor fetch then
+                                          corpus-wide hybrid discovery + reranking
     """
     fn = router_result.function
-    mode = router_result.retrieval_mode
     dk = _compute_dynamic_k(fn, len(router_result.course_ids))
     retrieve_k = dk["retrieve_k"]
     rerank_k = dk["rerank_k"]
@@ -407,33 +407,39 @@ def _retrieve_and_rerank(
     strategy = _FUNCTION_CATEGORY_STRATEGIES.get(fn)
     categories = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
-    # ── Per-course fetch helper ──────────────────────────────────────────────
-    def fetch_course(cid: str) -> list[dict]:
-        if mode == "metadata":
-            return search.search_by_course_categories(cid, categories)
-        # hybrid path
-        filters: dict = {"course_id": cid}
-        return search.hybrid_search(
-            search_query, filters=filters, k=retrieve_k, parent_span=retrieval_span
-        )
-
-    # ── Single-course path ───────────────────────────────────────────────────
-    if len(course_ids) == 1:
-        results = fetch_course(course_ids[0])
-        if mode == "metadata":
-            return results  # exact lookup — no reranking needed
-        return reranker.rerank(search_query, results, top_k=rerank_k, parent_span=retrieval_span)
-
-    # ── Multi-course path ────────────────────────────────────────────────────
-    course_groups: dict[str, list[dict]] = {cid: fetch_course(cid) for cid in course_ids}
-
-    if mode == "metadata":
-        # No reranking — interleave results across courses
-        combined: list[dict] = []
+    # ── recurrent_* path: two-stage retrieval ───────────────────────────────
+    # Stage 1: fetch anchor course(s) chunks via metadata (no vector overhead)
+    # Stage 2: build query from anchor content → corpus-wide hybrid discovery
+    if fn.startswith("recurrent_"):
+        anchor_chunks: list[dict] = []
         for cid in course_ids:
-            combined.extend(course_groups[cid])
-        return combined
+            anchor_chunks.extend(search.search_by_course_categories(cid, categories))
 
-    return reranker.rerank_multi_course(
-        search_query, course_groups, top_k_per_course=rerank_k, parent_span=retrieval_span
-    )
+        # Build hybrid query from anchor content, capped to avoid token bloat
+        anchor_text = " ".join(
+            f"{c.get('title', '')} {c.get('content', '')}" for c in anchor_chunks
+        )[:1500]
+        anchor_query = f"{anchor_text} {search_query}".strip()
+
+        # Corpus-wide hybrid search (no course_id filter) then exclude anchor course(s)
+        all_results = search.hybrid_search(
+            anchor_query, filters=None, k=retrieve_k, parent_span=retrieval_span
+        )
+        anchor_ids = set(course_ids)
+        discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
+
+        discovery_reranked = reranker.rerank(
+            search_query, discovery_chunks, top_k=rerank_k, parent_span=retrieval_span
+        )
+        # Anchor chunks first (primacy) so the generator has the reference course context
+        return anchor_chunks + discovery_reranked
+
+    # ── metadata_* path: exact lookup per course, no reranking ──────────────
+    if len(course_ids) == 1:
+        return search.search_by_course_categories(course_ids[0], categories)
+
+    # Multi-course: interleave results across courses
+    combined: list[dict] = []
+    for cid in course_ids:
+        combined.extend(search.search_by_course_categories(cid, categories))
+    return combined

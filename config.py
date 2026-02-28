@@ -39,7 +39,7 @@ USE_TAMU_API: bool = bool(TAMU_API_KEY)
 # --- Thinking token budgets for Gemini 2.5 Flash ---
 # metadata_* functions use deterministic extraction (no thinking needed)
 THINKING_BUDGET_METADATA = 0
-# hybrid_* and semantic_general functions use thinking for complex reasoning
+# recurrent_* and semantic_general functions use thinking for complex reasoning
 THINKING_BUDGET_SEMANTIC = 1024
 
 # --- Temperature constants for function-based stochasticity ---
@@ -65,13 +65,14 @@ CATEGORY_CONFIDENCE_THRESHOLD: float = 0.7
 # rerank_k = final results kept after reranking (ignored on metadata path).
 # For multi-course functions these are *per course*.
 FUNCTION_RETRIEVAL_CONFIG: dict[str, dict[str, int]] = {
-    "metadata_default":  {"retrieve_k": 10, "rerank_k": 0},
-    "metadata_specific": {"retrieve_k": 10, "rerank_k": 0},
-    "metadata_combined": {"retrieve_k": 10, "rerank_k": 0},
-    "semantic_general":  {"retrieve_k": 30, "rerank_k": 10},
-    "hybrid_default":    {"retrieve_k": 12, "rerank_k": 3},
-    "hybrid_specific":   {"retrieve_k": 10, "rerank_k": 3},
-    "hybrid_combined":   {"retrieve_k": 15, "rerank_k": 4},
+    "metadata_default":    {"retrieve_k": 10, "rerank_k": 0},
+    "metadata_specific":   {"retrieve_k": 10, "rerank_k": 0},
+    "metadata_combined":   {"retrieve_k": 10, "rerank_k": 0},
+    "semantic_general":    {"retrieve_k": 30, "rerank_k": 10},
+    # Two-stage: metadata anchor fetch → corpus-wide hybrid discovery
+    "recurrent_default":   {"retrieve_k": 15, "rerank_k": 5},
+    "recurrent_specific":  {"retrieve_k": 12, "rerank_k": 4},
+    "recurrent_combined":  {"retrieve_k": 18, "rerank_k": 6},
 }
 
 # Alias used by router._compute_dynamic_k for per-course scaling.

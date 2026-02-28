@@ -10,7 +10,7 @@ from rag.generator import generate_comparison  # → Markdown string; multi-cour
 
 reranked, router_result = route_retrieve_rerank(query, trace=None)
 # router_result: .function, .course_ids, .specific_categories,
-#   .semantic_intent, .semantic_type, .category_confidence, .rewritten_query
+#   .semantic_intent, .semantic_type, .category_confidence, .recurrent_search, .rewritten_query
 
 # Observability
 lf = get_langfuse()                           # MinimalLangfuseClient or None
@@ -36,18 +36,19 @@ for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_bud
 Pure Python in `_derive_function()` — no LLM judgment:
 
 ```
-course_ids  semantic_intent  specific_categories  specific_only  → function           mode
-empty       true             any                  any            → semantic_general    semantic
-empty       false            any                  any            → out_of_scope        —
-present     false            empty                —              → metadata_default    metadata
-present     false            populated            true           → metadata_specific   metadata
-present     false            populated            false          → metadata_combined   hybrid
-present     true             empty                —              → hybrid_default      hybrid
-present     true             populated            true           → hybrid_specific     hybrid
-present     true             populated            false          → hybrid_combined     hybrid
+course_ids  recurrent_search  semantic_intent  specific_categories  specific_only  → function            mode
+empty       any               true             any                  any            → semantic_general     semantic
+empty       any               false            any                  any            → out_of_scope         —
+present     true              any              empty                —              → recurrent_default    hybrid (2-stage)
+present     true              any              populated            true           → recurrent_specific   hybrid (2-stage)
+present     true              any              populated            false          → recurrent_combined   hybrid (2-stage)
+present     false             any              empty                —              → metadata_default     metadata
+present     false             any              populated            true           → metadata_specific    metadata
+present     false             any              populated            false          → metadata_combined    metadata
 ```
 
-`*_combined` always hybrid. Thinking budget: `metadata_*` = 0, `hybrid_*`/`semantic` = 1024. Temps: `metadata_*` = 0.0, others = 0.2.
+`recurrent_*` = two-stage: (1) metadata fetch anchor course → (2) corpus-wide hybrid discovery.
+Thinking budget: `metadata_*` = 0, `recurrent_*`/`semantic_general` = 1024. Temps: `metadata_*` = 0.0, others = 0.2.
 
 ## Gotchas
 

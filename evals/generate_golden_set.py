@@ -10,7 +10,8 @@ Each golden item carries ground truth for ALL pipeline stages:
     expected_function          — one of the 8 router functions
     expected_course_ids        — [] for no-category strata / semantic_general
     expected_specific_categories — [] for default/general strata
-    expected_semantic_intent   — True for hybrid_* and semantic_general
+    expected_semantic_intent   — True for recurrent_*, metadata_default_advisory, semantic_general
+    expected_recurrent_search  — True only for recurrent_* strata
 
   Retrieval stage:
     source_crn                 — CRN of the chunk that grounded the question
@@ -88,11 +89,11 @@ def weighted_sample_categories(n: int, rng: random.Random | None = None) -> list
 # Each stratum defines: how many questions, a framing prompt for synthesis,
 # and whether questions should name a specific course ID.
 #
-# No-category strata (metadata_default, hybrid_default, semantic_general)
-# make up ~56% of the set — broad queries that reflect how students actually
+# No-category strata (metadata_default, metadata_default_advisory, semantic_general, recurrent_default)
+# make up ~64% of the set — broad queries that reflect how students actually
 # approach a course assistant before diving into specifics.
 #
-# Category-specific strata (metadata_specific, hybrid_specific, hybrid_combined)
+# Category-specific strata (metadata_specific, metadata_specific_evaluative, metadata_combined)
 # draw from the weighted pool above so high-value categories dominate.
 # ---------------------------------------------------------------------------
 
@@ -112,11 +113,15 @@ STRATUM_MAP: dict[str, dict] = {
         ),
         "use_course_id":       True,
     },
-    "hybrid_default": {
+    "metadata_default_advisory": {
+        # Evaluative question about a KNOWN course — metadata path (no vector search).
+        # Formerly 'hybrid_default'; expected_function now metadata_default per new routing.
+        "expected_function":   "metadata_default",
         "n_questions":         10,
         "has_category":        False,
         "expected_semantic_intent": True,
-        "description":         "Advisory question about the course overall — no specific category",
+        "expected_recurrent_search": False,
+        "description":         "Advisory question about a known course — no specific category → metadata_default",
         "framing": (
             "Ask a subjective or advisory question about the course WITHOUT naming "
             "a specific syllabus category. Use evaluative or career-oriented language. "
@@ -162,11 +167,15 @@ STRATUM_MAP: dict[str, dict] = {
         ),
         "use_course_id":       True,
     },
-    "hybrid_specific": {
+    "metadata_specific_evaluative": {
+        # Evaluative question about a KNOWN course with explicit category — metadata path.
+        # Formerly 'hybrid_specific'; expected_function now metadata_specific per new routing.
+        "expected_function":   "metadata_specific",
         "n_questions":         6,
         "has_category":        True,
         "expected_semantic_intent": True,
-        "description":         "Evaluative question that explicitly names a specific category",
+        "expected_recurrent_search": False,
+        "description":         "Evaluative question that explicitly names a specific category → metadata_specific",
         "framing": (
             "Ask an evaluative or advisory question that explicitly names the category "
             "from the excerpt as the subject. Use evaluative language. "
@@ -178,11 +187,13 @@ STRATUM_MAP: dict[str, dict] = {
         ),
         "use_course_id":       True,
     },
-    "hybrid_combined": {
+    "metadata_combined": {
+        "expected_function":   "metadata_combined",
         "n_questions":         4,
         "has_category":        True,
         "expected_semantic_intent": False,
-        "description":         "General overview with a specific category as emphasis",
+        "expected_recurrent_search": False,
+        "description":         "General overview with a specific category as emphasis → metadata_combined",
         "framing": (
             "Ask a general question about the course that mentions the category from "
             "the excerpt as background context — not as the exclusive focus. "
@@ -191,6 +202,24 @@ STRATUM_MAP: dict[str, dict] = {
             "Examples: 'Tell me about CSCE 638, especially the grading', "
             "'Give me an overview of CSCE 670 with a focus on learning outcomes', "
             "'What should I know about CSCE 638, including its AI policy?'"
+        ),
+        "use_course_id":       True,
+    },
+    "recurrent_default": {
+        "expected_function":   "recurrent_default",
+        "n_questions":         4,
+        "has_category":        False,
+        "expected_semantic_intent": True,
+        "expected_recurrent_search": True,
+        "description":         "Course discovery/pairing — known anchor course, seeking complementary courses",
+        "framing": (
+            "Ask a question that seeks to find OTHER courses that pair with, follow, or "
+            "complement the course in the excerpt. Use the course ID from the excerpt as the anchor. "
+            "Do NOT name a second course — the user is looking for unknown courses. "
+            "Examples: 'What course should I take with CSCE 638?', "
+            "'What courses are similar to CSCE 670?', "
+            "'What should I take after CSCE 638?', "
+            "'What goes well with CSCE 638?'"
         ),
         "use_course_id":       True,
     },
@@ -251,10 +280,11 @@ def _derive_router_ground_truth(
         expected_specific_categories = []
 
     return {
-        "expected_function":             stratum,
+        "expected_function":             spec.get("expected_function", stratum),
         "expected_course_ids":           expected_course_ids,
         "expected_specific_categories":  expected_specific_categories,
         "expected_semantic_intent":      spec["expected_semantic_intent"],
+        "expected_recurrent_search":     spec.get("expected_recurrent_search", False),
     }
 
 
@@ -548,8 +578,8 @@ def generate_golden_set(
     else:
         stratum_counts = {k: v["n_questions"] for k, v in STRATUM_MAP.items()}
 
-    no_cat_n  = sum(stratum_counts[s] for s in ("metadata_default", "hybrid_default", "semantic_general"))
-    with_cat_n = sum(stratum_counts[s] for s in ("metadata_specific", "hybrid_specific", "hybrid_combined"))
+    no_cat_n  = sum(stratum_counts[s] for s in ("metadata_default", "metadata_default_advisory", "semantic_general", "recurrent_default"))
+    with_cat_n = sum(stratum_counts[s] for s in ("metadata_specific", "metadata_specific_evaluative", "metadata_combined"))
 
     print(f"\n{'=' * 60}")
     print(f"  TamuBot Golden Set Generation")

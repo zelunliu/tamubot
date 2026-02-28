@@ -109,14 +109,14 @@ class TestTemperatureRouting:
         """semantic_general should use 0.2 temperature (synthesis)."""
         assert _FUNCTION_TEMPERATURES["semantic_general"] == 0.2
 
-    def test_hybrid_functions_synthesis_temperature(self):
-        """All hybrid_* functions should use 0.2 temperature (synthesis)."""
-        hybrid_functions = [
-            "hybrid_default",
-            "hybrid_specific",
-            "hybrid_combined",
+    def test_recurrent_functions_synthesis_temperature(self):
+        """All recurrent_* functions should use 0.2 temperature (synthesis)."""
+        recurrent_functions = [
+            "recurrent_default",
+            "recurrent_specific",
+            "recurrent_combined",
         ]
-        for func in hybrid_functions:
+        for func in recurrent_functions:
             assert (
                 _FUNCTION_TEMPERATURES[func] == 0.2
             ), f"{func} should be 0.2"

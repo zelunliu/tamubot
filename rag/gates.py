@@ -12,9 +12,9 @@ _FACTUAL_FUNCTIONS = frozenset([
     "metadata_default",
     "metadata_specific",
     "metadata_combined",
-    "hybrid_default",
-    "hybrid_specific",
-    "hybrid_combined",
+    "recurrent_default",
+    "recurrent_specific",
+    "recurrent_combined",
 ])
 
 

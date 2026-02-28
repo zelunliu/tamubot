@@ -101,8 +101,9 @@ def generate(
             "schedules, and university policies. What would you like to know?"
         )
 
-    # Route multi-course queries to single-call comparison architecture
-    if course_ids and len(course_ids) > 1:
+    # Route multi-course known-course queries to single-call comparison architecture.
+    # Recurrent queries may have multiple anchor course IDs but need pairing framing, not comparison.
+    if course_ids and len(course_ids) > 1 and not function.startswith("recurrent_"):
         return generate_comparison(results, question, course_ids, trace)
 
     context_xml = format_context_xml(results)
@@ -131,7 +132,7 @@ def generate(
     # Determine thinking budget based on function type
     thinking_budget = (
         config.THINKING_BUDGET_SEMANTIC
-        if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]
+        if function in ["recurrent_default", "recurrent_specific", "recurrent_combined", "semantic_general"]
         else config.THINKING_BUDGET_METADATA
     )
 
@@ -257,7 +258,7 @@ def generate_comparison(
 
     context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(
-        function="hybrid_combined",
+        function="metadata_combined",
         course_ids=course_ids,
         semantic_type="GENERAL",
     )
@@ -270,7 +271,7 @@ def generate_comparison(
                 model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
                 input=question,
                 metadata={
-                    "function": "hybrid_combined",
+                    "function": "metadata_combined",
                     "course_ids": course_ids,
                     "n_sources": len(results),
                     "call": "single_call",
@@ -317,7 +318,7 @@ For each course provide:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": extraction_prompt},
             ],
-            temperature=_FUNCTION_TEMPERATURES.get("hybrid_combined", 0.2),
+            temperature=0.2,  # comparison always needs synthesis temperature
             max_tokens=4096,
             json_schema={
                 "name": "CourseComparisonTable",
@@ -404,9 +405,10 @@ def generate_stream(
         yield _OUT_OF_SCOPE_RESPONSE
         return
 
-    # Multi-course comparison: fall back to blocking generate_comparison()
+    # Multi-course known-course comparison: fall back to blocking generate_comparison()
     # (streaming unsupported until single-call JSON response is fully received)
-    if course_ids and len(course_ids) > 1:
+    # Recurrent queries with multiple anchors stream normally using their own prompts.
+    if course_ids and len(course_ids) > 1 and not function.startswith("recurrent_"):
         yield generate_comparison(results, question, course_ids, trace)
         return
 
@@ -416,7 +418,7 @@ def generate_stream(
 
     thinking_budget = (
         config.THINKING_BUDGET_SEMANTIC
-        if function in ["hybrid_default", "hybrid_specific", "hybrid_combined", "semantic_general"]
+        if function in ["recurrent_default", "recurrent_specific", "recurrent_combined", "semantic_general"]
         else config.THINKING_BUDGET_METADATA
     )
 

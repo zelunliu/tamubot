@@ -52,29 +52,30 @@ from google.genai import types
 
 MATRIX_DESCRIPTION = """\
 Function derivation matrix (pure Python rules, no LLM):
-  course_ids  semantic_intent  specific_categories  specific_only  → function
-  empty       True             any                  any            → semantic_general
-  empty       False            any                  any            → out_of_scope
-  present     False            empty                —              → metadata_default
-  present     False            populated            True           → metadata_specific
-  present     False            populated            False          → metadata_combined
-  present     True             empty                —              → hybrid_default
-  present     True             populated            True           → hybrid_specific
-  present     True             populated            False          → hybrid_combined
+  course_ids  recurrent_search  semantic_intent  specific_categories  specific_only  → function
+  empty       any               True             any                  any            → semantic_general
+  empty       any               False            any                  any            → out_of_scope
+  present     True              any              empty                —              → recurrent_default
+  present     True              any              populated            True           → recurrent_specific
+  present     True              any              populated            False          → recurrent_combined
+  present     False             any              empty                —              → metadata_default
+  present     False             any              populated            True           → metadata_specific
+  present     False             any              populated            False          → metadata_combined
 
 Key variables:
-  course_ids           — course(s) the student is asking about ([] if none named)
-  semantic_intent      — True if question is evaluative, advisory, opinion-based,
-                         or a TAMU discovery query with no course_id
-  specific_categories  — syllabus categories explicitly targeted ([] for general overview)
-  specific_only        — True if the question asks ONLY about those categories;
-                         False if broad overview with a category as emphasis
+  course_ids        — course(s) the student is asking about ([] if none named)
+  recurrent_search  — True ONLY when user wants to discover unknown courses using a named course as anchor
+                      ("What course should I take with CS 638?")
+  semantic_intent   — True if question is evaluative, advisory, opinion-based,
+                      or a TAMU discovery query with no course_id
+  specific_categories — syllabus categories explicitly targeted ([] for general overview)
+  specific_only     — True if the question asks ONLY about those categories;
+                      False if broad overview with a category as emphasis
 
 Retrieval mode (separate from function):
-  metadata  — exact index lookup (conf ≥ 0.7, not *_combined)
-  hybrid    — RRF of vector + text search
-  semantic  — full-corpus vector search (no course_ids)
-  Note: *_combined always uses hybrid regardless of confidence (as of 2026-02-23 fix)
+  metadata  — exact index lookup, no vector search (all metadata_* functions)
+  hybrid    — two-stage: anchor metadata fetch + corpus-wide hybrid (recurrent_* functions)
+  semantic  — full-corpus vector search (semantic_general, no course_ids)
 """
 
 # ---------------------------------------------------------------------------

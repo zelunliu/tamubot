@@ -92,6 +92,22 @@ If semantic_intent = true, set semantic_type to one of:
 
 If semantic_intent = false, set semantic_type = null.
 
+RECURRENT SEARCH
+Set recurrent_search = true ONLY when the user wants to discover or find unknown courses
+using one or more named courses as an anchor/reference point.
+
+Set recurrent_search = true when:
+- The user asks what courses pair with, complement, follow, or are similar to a named course
+  ("What should I take with CS 638?", "What courses are like CS 638?", "What follows CS 638?")
+- The user asks for course recommendations anchored to a known course
+  ("Given CS 638, what else should I take?", "What goes well with CS 638?")
+
+Set recurrent_search = false when:
+- The question is about named courses only — factual, evaluative, or comparative
+  ("How hard is CS 638?", "Compare CS 638 and CS 670", "What is the grading in CS 638?")
+- No course ID is mentioned (recurrent_search requires at least one anchor course)
+- The user is asking a general TAMU academic question with no course anchor
+
 QUERY REWRITING
 Rewrite the query with expanded synonyms for optimal retrieval:
 - "late work" → "attendance makeup deadline extensions late submission"
@@ -109,7 +125,8 @@ Output ONLY a JSON object with these fields:
   "specific_only": true or false,
   "category_confidence": float 0.0–1.0,
   "semantic_intent": true or false,
-  "semantic_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"GENERAL" or null,
+  "semantic_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"ADMINISTRATIVE"|"GENERAL" or null,
+  "recurrent_search": true or false,
   "rewritten_query": "expanded query string for retrieval"
 }}
 
@@ -166,28 +183,25 @@ _FUNCTION_PROMPTS: dict[str, str] = {
         "If the evidence is insufficient to answer fully, state: "
         "'I don't have enough data to answer this accurately based on the available syllabi.'"
     ),
-    "hybrid_default": (
-        "The user is asking about a course with an advisory or subjective component. "
-        "First define the relevant principle or framework, then apply it to the course. "
-        "Provide factual information from the course content and address the advisory aspect "
-        "using only evidence from the context. "
-        "Limit all advisory statements to those grounded in specific course details."
+    "recurrent_default": (
+        "The user wants to find courses that pair well with or complement a specific course. "
+        "The context includes the anchor course's overview and the most relevant discovered courses. "
+        "Explain what makes each discovered course a good complement, grounding your reasoning "
+        "in the anchor course's content (prerequisites, learning outcomes, covered topics)."
     ),
-    "hybrid_specific": (
-        "The user is asking about specific course categories with an advisory component. "
-        "First define the relevant principle or framework, then apply it to the specific categories. "
-        "Focus on the requested categories and use that evidence to address the advisory dimension. "
-        "Ground all advisory statements in specific facts from the context."
+    "recurrent_specific": (
+        "The user wants to find courses that complement a specific course, with focus on particular categories. "
+        "Use the category-specific evidence from both the anchor course and the discovered courses "
+        "to explain the pairing rationale. Ground all recommendations in the provided context."
     ),
-    "hybrid_combined": (
-        "The user is asking about specific course details and a broader overview with an advisory component. "
-        "First define the relevant principle or framework, then apply it to the courses. "
-        "Cover all relevant categories and use the evidence to address the advisory aspect. "
-        "Ground all advisory statements in specific facts from the context."
+    "recurrent_combined": (
+        "The user wants course recommendations complementing a specific course, with both a "
+        "broad overview and category-specific focus. Use all available evidence from the anchor "
+        "and discovered courses to explain why each recommendation fits."
     ),
 }
 
-# Advisory overlay appended when semantic_type is present (hybrid_* and semantic_general).
+# Advisory overlay appended when semantic_type is present (recurrent_* and semantic_general).
 _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     "ACADEMIC": (
         "Address the academic dimension: discuss learning outcomes, topics covered, and academic content."
@@ -218,16 +232,16 @@ UNCERTAINTY_INJECTION = (
 
 # Per-function generation temperature (function-based stochasticity).
 # metadata_*: 0.0 (deterministic extraction, maximum fidelity to context).
-# semantic_general, hybrid_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
+# semantic_general, recurrent_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
 # out_of_scope, administrative: 0.0 (high compliance/policy requirement, deterministic).
 _FUNCTION_TEMPERATURES: dict[str, float] = {
-    "metadata_default":  0.0,
-    "metadata_specific": 0.0,
-    "metadata_combined": 0.0,
-    "semantic_general":  0.2,
-    "hybrid_default":    0.2,
-    "hybrid_specific":   0.2,
-    "hybrid_combined":   0.2,
-    "out_of_scope":      0.0,
-    "administrative":    0.0,
+    "metadata_default":   0.0,
+    "metadata_specific":  0.0,
+    "metadata_combined":  0.0,
+    "semantic_general":   0.2,
+    "recurrent_default":  0.2,
+    "recurrent_specific": 0.2,
+    "recurrent_combined": 0.2,
+    "out_of_scope":       0.0,
+    "administrative":     0.0,
 }
