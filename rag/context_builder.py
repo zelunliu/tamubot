@@ -72,3 +72,13 @@ def collapse_whitespace(text: str) -> str:
     Gemini sometimes pads markdown table cells with excessive whitespace.
     """
     return re.sub(r' {3,}', ' ', text)
+
+
+def strip_thinking_blocks(text: str) -> str:
+    """Remove <thinking>...</thinking> blocks from generated text.
+
+    The system prompt instructs the model to write a Chain-of-Verification
+    quote into a <thinking> block before answering. These blocks must be
+    stripped before the response is shown to the user.
+    """
+    return re.sub(r'<thinking>.*?</thinking>\s*', '', text, flags=re.DOTALL).strip()

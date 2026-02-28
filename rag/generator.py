@@ -8,7 +8,7 @@ import json
 import re
 
 import config
-from rag.context_builder import format_context_xml, collapse_whitespace
+from rag.context_builder import format_context_xml, collapse_whitespace, strip_thinking_blocks
 from rag.gates import validate_citations_with_trace
 from rag.llm_client import call_llm, stream_llm
 from rag.prompts import (
@@ -21,13 +21,63 @@ from rag.prompts import (
 
 
 # ---------------------------------------------------------------------------
+# Eval Pass — context-aware search string for recurrent discovery
+# ---------------------------------------------------------------------------
+
+def generate_eval_search_string(
+    anchor_chunks: list[dict],
+    original_query: str,
+    intent_type: str,
+) -> str:
+    """Recurrent Eval Pass: generate a context-aware vector search string.
+
+    Given anchor chunks (already retrieved) and the user's original query,
+    produce a concise 1-2 sentence search string for the corpus-wide
+    discovery step. Uses temperature=0 for determinism.
+
+    Args:
+        anchor_chunks:  Chunks from the anchor course(s) metadata fetch.
+        original_query: The user's original question (or rewritten_query).
+        intent_type:    Advisory dimension (e.g. "PLANNING", "ACADEMIC").
+
+    Returns:
+        A concise search string for the hybrid discovery step.
+    """
+    # Summarize anchor content, capped to avoid token bloat
+    anchor_text = " ".join(
+        f"{c.get('title', '')} {c.get('content', '')}" for c in anchor_chunks
+    )[:2000]
+
+    eval_prompt = (
+        f"You are helping a student find related courses at Texas A&M University.\n\n"
+        f"The student asked: {original_query}\n\n"
+        f"Intent dimension: {intent_type}\n\n"
+        f"Here is content from the anchor course(s) they mentioned:\n{anchor_text}\n\n"
+        f"Based on the anchor course content and the student's question, write a concise "
+        f"search string (1-2 sentences) that captures what additional courses or content "
+        f"to search for. Output ONLY the search string, no other text."
+    )
+
+    try:
+        result = call_llm(
+            messages=[{"role": "user", "content": eval_prompt}],
+            temperature=0,
+            max_tokens=4096,  # TAMU gateway requires min 4096 or response is empty
+        )
+        return result.text.strip() or original_query
+    except Exception:
+        # Fallback to original query if eval pass fails
+        return original_query
+
+
+# ---------------------------------------------------------------------------
 # Function-adaptive system prompt assembly
 # ---------------------------------------------------------------------------
 
 def build_system_prompt(
     function: str,
     course_ids: list[str] | None = None,
-    semantic_type: str | None = None,
+    intent_type: str | None = None,
     category_confidence: float | None = None,
 ) -> str:
     """Build a function-adaptive system prompt.
@@ -35,7 +85,7 @@ def build_system_prompt(
     Args:
         function: Router function type (e.g., "metadata_specific").
         course_ids: List of course IDs referenced in the query.
-        semantic_type: Advisory semantic type (e.g., "CAREER").
+        intent_type: Advisory intent type from the router (e.g., "CAREER").
         category_confidence: Router's confidence in category extraction (0.0-1.0).
                             If < 0.7, injects Verbal Uncertainty Calibration (VUC).
     """
@@ -59,8 +109,8 @@ def build_system_prompt(
         )
 
     # Advisory overlay for hybrid/semantic functions
-    if semantic_type and semantic_type in _SEMANTIC_TYPE_PROMPTS:
-        parts.append(_SEMANTIC_TYPE_PROMPTS[semantic_type])
+    if intent_type and intent_type in _SEMANTIC_TYPE_PROMPTS:
+        parts.append(_SEMANTIC_TYPE_PROMPTS[intent_type])
 
     if course_ids:
         parts.append(f"Courses referenced: {', '.join(course_ids)}")
@@ -77,18 +127,22 @@ def generate(
     question: str,
     function: str = "semantic_general",
     course_ids: list[str] | None = None,
-    semantic_type: str | None = None,
+    intent_type: str | None = None,
+    data_gaps: list[tuple[str, str]] | None = None,
+    data_integrity: bool = True,
     trace=None,
 ) -> str:
     """Generate a grounded response with citations using Gemini 2.0 Flash.
 
     Args:
-        results:       Reranked retrieval results (list of chunk dicts).
-        question:      The user's original question.
-        function:      Retrieval function from the router (e.g. "metadata_specific").
-        course_ids:    Extracted course IDs for context.
-        semantic_type: Advisory semantic type from the router (e.g. "CAREER").
-        trace:         Optional Langfuse trace; creates a Generator_Stage span.
+        results:        Reranked retrieval results (list of chunk dicts).
+        question:       The user's original question.
+        function:       Retrieval function from the router (e.g. "metadata_specific").
+        course_ids:     Extracted course IDs for context.
+        intent_type:    Advisory intent type from the router (e.g. "CAREER").
+        data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
+        data_integrity: False if any data gaps were found; triggers disclaimer.
+        trace:          Optional Langfuse trace; creates a Generator_Stage span.
 
     Returns:
         Generated answer string with [Source N] citations.
@@ -107,7 +161,7 @@ def generate(
         return generate_comparison(results, question, course_ids, trace)
 
     context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(function, course_ids, semantic_type)
+    system_prompt = build_system_prompt(function, course_ids, intent_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
     # Generator_Stage generation span
@@ -120,10 +174,12 @@ def generate(
                 input=user_message,
                 metadata={
                     "function": function,
-                    "semantic_type": semantic_type,
+                    "intent_type": intent_type,
                     "course_ids": course_ids or [],
                     "n_sources": len(results),
                     "system_prompt_length": len(system_prompt),
+                    "data_integrity": data_integrity,
+                    "n_data_gaps": len(data_gaps) if data_gaps else 0,
                 },
             )
         except Exception:
@@ -155,7 +211,15 @@ def generate(
             except Exception:
                 pass
         raise
-    text = collapse_whitespace(text).strip()
+    text = strip_thinking_blocks(collapse_whitespace(text))
+
+    # Prepend data integrity disclaimer when DB chunks are missing
+    if not data_integrity and data_gaps:
+        gap_lines = "\n".join(f"- {cid} / {cat}" for cid, cat in data_gaps)
+        disclaimer = (
+            f"⚠️ Note: The following data was not found in the syllabus database:\n{gap_lines}\n\n"
+        )
+        text = disclaimer + text
 
     # Gate 1: Validate citations in response
     validate_citations_with_trace(text, function, trace)
@@ -260,7 +324,7 @@ def generate_comparison(
     system_prompt = build_system_prompt(
         function="metadata_combined",
         course_ids=course_ids,
-        semantic_type="GENERAL",
+        intent_type="GENERAL",
     )
 
     extraction_span = None
@@ -379,7 +443,9 @@ def generate_stream(
     question: str,
     function: str = "semantic_general",
     course_ids: list[str] | None = None,
-    semantic_type: str | None = None,
+    intent_type: str | None = None,
+    data_gaps: list[tuple[str, str]] | None = None,
+    data_integrity: bool = True,
     trace=None,
 ):
     """Streaming variant of generate(). Yields text chunks as they arrive.
@@ -390,12 +456,14 @@ def generate_stream(
     response must be fully received before Markdown can be rendered).
 
     Args:
-        results:       Reranked retrieval results (list of chunk dicts).
-        question:      The user's original question.
-        function:      Retrieval function from the router.
-        course_ids:    Extracted course IDs for context.
-        semantic_type: Advisory semantic type from the router.
-        trace:         Optional Langfuse trace.
+        results:        Reranked retrieval results (list of chunk dicts).
+        question:       The user's original question.
+        function:       Retrieval function from the router.
+        course_ids:     Extracted course IDs for context.
+        intent_type:    Advisory intent type from the router (e.g. "CAREER").
+        data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
+        data_integrity: False if any data gaps were found; triggers disclaimer.
+        trace:          Optional Langfuse trace.
 
     Yields:
         str: Text chunks as they arrive from the model.
@@ -412,8 +480,16 @@ def generate_stream(
         yield generate_comparison(results, question, course_ids, trace)
         return
 
+    # Prepend data integrity disclaimer before streaming begins
+    if not data_integrity and data_gaps:
+        gap_lines = "\n".join(f"- {cid} / {cat}" for cid, cat in data_gaps)
+        disclaimer = (
+            f"⚠️ Note: The following data was not found in the syllabus database:\n{gap_lines}\n\n"
+        )
+        yield disclaimer
+
     context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(function, course_ids, semantic_type)
+    system_prompt = build_system_prompt(function, course_ids, intent_type)
     user_message = f"{context_xml}\n\nQuestion: {question}"
 
     thinking_budget = (
@@ -423,6 +499,10 @@ def generate_stream(
     )
 
     full_text_parts: list[str] = []
+    # Buffer to detect and suppress <thinking>...</thinking> blocks at stream start
+    think_buf = ""
+    in_thinking = False
+    thinking_done = False
 
     for token in stream_llm(
         messages=[
@@ -434,10 +514,41 @@ def generate_stream(
         thinking_budget=thinking_budget,
     ):
         full_text_parts.append(token)
-        yield token
+
+        if thinking_done:
+            yield token
+            continue
+
+        think_buf += token
+        if not in_thinking:
+            if "<thinking>" in think_buf:
+                in_thinking = True
+                # Yield anything before the <thinking> tag
+                before = think_buf.split("<thinking>", 1)[0]
+                if before:
+                    yield before
+                think_buf = ""
+            elif len(think_buf) > 20:
+                # No thinking tag incoming — flush buffer and stop monitoring
+                thinking_done = True
+                yield think_buf
+                think_buf = ""
+        else:
+            if "</thinking>" in think_buf:
+                # Discard thinking block; yield what follows
+                after = think_buf.split("</thinking>", 1)[1].lstrip("\n")
+                thinking_done = True
+                in_thinking = False
+                think_buf = ""
+                if after:
+                    yield after
+
+    # Flush any remaining buffer (shouldn't happen, but be safe)
+    if think_buf and not in_thinking:
+        yield think_buf
 
     # Post-stream: run Gate 1 citation check + async Gate 2 groundedness scoring
-    complete_text = "".join(full_text_parts)
+    complete_text = strip_thinking_blocks("".join(full_text_parts))
     validate_citations_with_trace(complete_text, function, trace)
 
     if trace is not None:

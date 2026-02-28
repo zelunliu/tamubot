@@ -416,8 +416,8 @@ class EvalResult:
     function_actual: str
     course_ids_extracted: list[str]
     specific_categories_extracted: list[str]
-    semantic_intent_actual: bool
-    semantic_type_actual: str | None
+    semantic_intent_actual: bool  # derived: intent_type is not None
+    intent_type_actual: str | None
     category_confidence: float
     recurrent_search_actual: bool
     retrieval_mode_actual: str
@@ -512,7 +512,7 @@ def run_test(
                 chunks, tc.query,
                 function=rr.function,
                 course_ids=rr.course_ids,
-                semantic_type=rr.semantic_type,
+                intent_type=rr.intent_type,
             )
         except Exception as e:
             generation_error = str(e)
@@ -577,8 +577,8 @@ def run_test(
         function_actual=rr.function,
         course_ids_extracted=rr.course_ids,
         specific_categories_extracted=rr.specific_categories,
-        semantic_intent_actual=rr.semantic_intent,
-        semantic_type_actual=rr.semantic_type,
+        semantic_intent_actual=rr.intent_type is not None,
+        intent_type_actual=rr.intent_type,
         category_confidence=round(rr.category_confidence, 3),
         recurrent_search_actual=rr.recurrent_search,
         retrieval_mode_actual=rr.retrieval_mode,
@@ -642,19 +642,18 @@ def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
     strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
     categories = strategy(rr) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
 
-    # recurrent_* path: two-stage anchor fetch → corpus-wide discovery
+    # recurrent_* path: 5-step deterministic cardinality pipeline
     if fn.startswith("recurrent_"):
-        anchor_chunks: list[dict] = []
-        for cid in course_ids:
-            anchor_chunks.extend(search.search_by_course_categories(cid, categories))
-        anchor_text = " ".join(
-            f"{c.get('title', '')} {c.get('content', '')}" for c in anchor_chunks
-        )[:1500]
-        anchor_query = f"{anchor_text} {search_query}".strip()
-        all_results = search.hybrid_search(anchor_query, filters=None, k=retrieve_k)
+        from rag.search import fetch_anchor_chunks
+        from rag.generator import generate_eval_search_string
+        anchor_chunks, _, _ = fetch_anchor_chunks(course_ids, categories)
+        eval_query = generate_eval_search_string(
+            anchor_chunks, search_query, rr.intent_type or "GENERAL"
+        )
+        all_results = search.hybrid_search(eval_query, filters=None, k=retrieve_k)
         anchor_ids = set(course_ids)
         discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
-        discovery_reranked = reranker.rerank(search_query, discovery_chunks, top_k=rerank_k)
+        discovery_reranked = reranker.rerank(eval_query, discovery_chunks, top_k=rerank_k)
         return deduplicate_chunks(anchor_chunks + discovery_reranked)
 
     # metadata_* path: exact lookup per course, no reranking
@@ -856,7 +855,7 @@ def write_markdown_report(
                 f"| Categories extracted | `{r.specific_categories_extracted}` |",
                 f"| Semantic intent expected | `{r.semantic_intent_expected}` |",
                 f"| Semantic intent actual | `{r.semantic_intent_actual}` |",
-                f"| Semantic type | `{r.semantic_type_actual}` |",
+                f"| Intent type | `{r.intent_type_actual}` |",
                 f"| Rewritten query | _{r.rewritten_query}_ |",
                 f"| Chunks retrieved (post-dedup) | {r.chunks_retrieved} |",
                 f"| Unique courses in results | `{r.unique_courses_in_results}` |",

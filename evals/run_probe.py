@@ -108,7 +108,7 @@ def run_probe(
 
     # --- Stage 1+2: route → retrieve → rerank ---
     t0 = time.time()
-    reranked, router_result = route_retrieve_rerank(query, trace=trace)
+    reranked, router_result, data_gaps, data_integrity = route_retrieve_rerank(query, trace=trace)
     retrieval_elapsed = time.time() - t0
 
     # --- Stage 3: generate (blocking) ---
@@ -118,7 +118,9 @@ def run_probe(
         question=query,
         function=router_result.function,
         course_ids=router_result.course_ids or None,
-        semantic_type=router_result.semantic_type,
+        intent_type=router_result.intent_type,
+        data_gaps=data_gaps,
+        data_integrity=data_integrity,
         trace=trace,
     )
     generation_elapsed = time.time() - t1
@@ -203,7 +205,11 @@ def main() -> None:
         metavar="N",
         help="1-based test case IDs from TEST_SUITE in eval_pipeline.py",
     )
-    group.add_argument("--suite", choices=["all"], help="Run the full TEST_SUITE")
+    group.add_argument(
+        "--suite",
+        choices=["smoke", "all"],
+        help="'smoke' = 3-query sanity check (metadata + recurrent + comparison); 'all' = full TEST_SUITE",
+    )
 
     parser.add_argument(
         "--tag",
@@ -218,9 +224,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Smoke suite — fast sanity check covering the three main paths
+    SMOKE_QUERIES = [
+        "tell me about CSCE 638",                       # metadata_default
+        "what should I take alongside CSCE 638?",       # recurrent_default (5-step pipeline)
+        "compare CSCE 638 and CSCE 670",                # metadata_default → generate_comparison
+    ]
+
     # Build the list of queries to run
     if args.query:
         queries: list[str] = [args.query]
+    elif args.suite == "smoke":
+        queries = SMOKE_QUERIES
     elif args.suite == "all":
         queries = [tc.query for tc in TEST_SUITE]
     else:

@@ -310,8 +310,8 @@ def run_router_on_suite(
             "specific_categories_expected": expected_cats,
             # Actual
             "function_actual": rr.function,
-            "semantic_intent_actual": rr.semantic_intent,
-            "semantic_type_actual": rr.semantic_type,
+            "semantic_intent_actual": rr.intent_type is not None,
+            "intent_type_actual": rr.intent_type,
             "specific_categories_actual": rr.specific_categories,
             "category_confidence": rr.category_confidence,
             "retrieval_mode_actual": rr.retrieval_mode,

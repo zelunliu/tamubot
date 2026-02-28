@@ -338,6 +338,39 @@ def search_by_course_categories(
     return results
 
 
+def fetch_anchor_chunks(
+    course_ids: list[str],
+    categories: list[str],
+) -> tuple[list[dict], list[tuple[str, str]], bool]:
+    """Fetch anchor chunks for recurrent queries, tracking data completeness.
+
+    For each (course_id, category) pair, retrieves all matching chunks.
+    Pairs with zero results are recorded as DataGaps.
+
+    Args:
+        course_ids:  Anchor course IDs (e.g. ["CSCE 638"]).
+        categories:  Effective categories to fetch (specific or DEFAULT_SUMMARY).
+
+    Returns:
+        chunks            — all retrieved anchor docs
+        data_gaps         — [(course_id, category), ...] pairs with 0 results
+        data_integrity    — True if len(data_gaps) == 0
+    """
+    chunks: list[dict] = []
+    data_gaps: list[tuple[str, str]] = []
+
+    for course_id in course_ids:
+        for category in categories:
+            results = search_by_course_categories(course_id, [category])
+            if results:
+                chunks.extend(results)
+            else:
+                data_gaps.append((course_id, category))
+
+    integrity = len(data_gaps) == 0
+    return chunks, data_gaps, integrity
+
+
 def get_missing_sections(course_id: str) -> list[str]:
     """Return categories documented as missing from the original syllabus for a course.
 

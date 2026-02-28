@@ -209,7 +209,7 @@ def run_router_on_golden_set(items: list[dict]) -> list[dict]:
             results.append({
                 "query": q,
                 "function_actual": rr.function,
-                "semantic_intent_actual": rr.semantic_intent,
+                "semantic_intent_actual": rr.intent_type is not None,
                 "specific_categories_actual": rr.specific_categories,
                 "category_confidence": rr.category_confidence,
                 "function_correct": rr.function == item.get("expected_function", ""),

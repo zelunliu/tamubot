@@ -1,5 +1,5 @@
 .PHONY: run scrape-catalog scrape-classes convert standardize ingest \
-        test typecheck lint format eval-router
+        test typecheck lint format eval-router probe probe-full
 
 # --- App ---
 run:
@@ -37,3 +37,9 @@ format:
 
 eval-router:
 	python evals/eval_router_metrics.py
+
+probe:
+	python evals/run_probe.py --suite smoke
+
+probe-full:
+	python evals/run_probe.py --suite all

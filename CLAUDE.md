@@ -6,7 +6,7 @@
 
 ```bash
 source .venv/Scripts/activate && streamlit run app.py   # Windows Git Bash
-make test | lint | typecheck | format | eval-router
+make test | lint | typecheck | format | eval-router | probe | probe-full
 ```
 
 Pipeline (always from repo root):

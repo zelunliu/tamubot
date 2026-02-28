@@ -52,13 +52,13 @@ Examples:
 - "What materials and grading does CSCE 638 require?"
   → specific_categories=["MATERIALS","GRADING"], specific_only=true, category_confidence=0.9
 
-SEMANTIC INTENT
-Determine if the question has a subjective, advisory, or opinion component.
-IMPORTANT: semantic_intent only applies to TAMU academic questions. Non-TAMU questions
+INTENT TYPE
+Determine the advisory or discovery dimension of the question.
+IMPORTANT: intent_type only applies to TAMU academic questions. Non-TAMU questions
 (weather, restaurants, cover letters, coding tasks unrelated to courses) must use
-semantic_intent = false regardless of phrasing.
+intent_type = null regardless of phrasing.
 
-Set semantic_intent = true ONLY when the question is about TAMU academics AND:
+Set intent_type to a non-null value ONLY when the question is about TAMU academics AND:
 - Asks for opinions, evaluations, or difficulty comparisons about specific courses
 - Asks about career relevance or skill building ("good for ML career?", "worth taking?")
 - Uses clearly evaluative language about a course: "hard", "strict", "fair", "useful", "worth it"
@@ -66,31 +66,30 @@ Set semantic_intent = true ONLY when the question is about TAMU academics AND:
   (e.g. "what courses cover ML?", "what is the TAMU academic integrity policy?",
    "what campus resources are available?")
 
-Set semantic_intent = false for:
+Set intent_type = null for:
 - Purely factual questions (what, when, who, list, how many) — even when comparing two courses
 - Factual side-by-side comparisons of course policies, schedules, or grading structures
 - Questions NOT about TAMU academics (weather, restaurants, non-academic tasks)
 - Greetings and off-topic requests
 
 Examples:
-- "Compare the grading of CSCE 638 and CSCE 670" → semantic_intent=false (factual comparison)
-- "Is CSCE 638 harder than CSCE 670?" → semantic_intent=true (evaluative/opinion)
-- "What is the TAMU academic integrity policy?" → semantic_intent=true (TAMU discovery, no course_id)
-- "If I don't access Perusall through Canvas, will my grades show up?" → semantic_intent=true, semantic_type=ADMINISTRATIVE (TAMU tool, no course_id)
-- "What are the best restaurants near TAMU?" → semantic_intent=false (NOT TAMU academic)
-- "Can you write a cover letter?" → semantic_intent=false (NOT TAMU academic)
+- "Compare the grading of CSCE 638 and CSCE 670" → intent_type=null (factual comparison)
+- "Is CSCE 638 harder than CSCE 670?" → intent_type="DIFFICULTY" (evaluative/opinion)
+- "What is the TAMU academic integrity policy?" → intent_type="ACADEMIC" (TAMU discovery, no course_id)
+- "If I don't access Perusall through Canvas, will my grades show up?" → intent_type="ADMINISTRATIVE" (TAMU tool, no course_id)
+- "What are the best restaurants near TAMU?" → intent_type=null (NOT TAMU academic)
+- "Can you write a cover letter?" → intent_type=null (NOT TAMU academic)
 
-If semantic_intent = true, set semantic_type to one of:
-- ACADEMIC: Learning outcomes, topics covered, academic content, policies, campus resources
-- CAREER: Job relevance, skill building, industry applications
-- DIFFICULTY: Workload, how hard is it, grading rigor
-- PLANNING: Which course to take, course sequence, scheduling
-- ADMINISTRATIVE: Questions about TAMU tools and systems (Canvas, Perusall, grade tracking,
+Valid values for intent_type:
+- "ACADEMIC": Learning outcomes, topics covered, academic content, policies, campus resources
+- "CAREER": Job relevance, skill building, industry applications
+- "DIFFICULTY": Workload, how hard is it, grading rigor
+- "PLANNING": Which course to take, course sequence, scheduling
+- "ADMINISTRATIVE": Questions about TAMU tools and systems (Canvas, Perusall, grade tracking,
   course logistics) with no specific course ID — or questions about how a platform/tool
   interacts with grades/assignments when no course is named
-- GENERAL: Any other advisory/subjective component about a TAMU course
-
-If semantic_intent = false, set semantic_type = null.
+- "GENERAL": Any other advisory/subjective component about a TAMU course
+- null: factual questions, off-topic requests, non-TAMU questions
 
 RECURRENT SEARCH
 Set recurrent_search = true ONLY when the user wants to discover or find unknown courses
@@ -124,8 +123,7 @@ Output ONLY a JSON object with these fields:
   "specific_categories": list of category strings or [],
   "specific_only": true or false,
   "category_confidence": float 0.0–1.0,
-  "semantic_intent": true or false,
-  "semantic_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"ADMINISTRATIVE"|"GENERAL" or null,
+  "intent_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"ADMINISTRATIVE"|"GENERAL"|null,
   "recurrent_search": true or false,
   "rewritten_query": "expanded query string for retrieval"
 }}
@@ -201,7 +199,7 @@ _FUNCTION_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Advisory overlay appended when semantic_type is present (recurrent_* and semantic_general).
+# Advisory overlay appended when intent_type is present (recurrent_* and semantic_general).
 _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     "ACADEMIC": (
         "Address the academic dimension: discuss learning outcomes, topics covered, and academic content."

@@ -305,12 +305,14 @@ def evaluate_golden_set(
 
         if run_full_pipeline:
             try:
-                chunks, rr = route_retrieve_rerank(question)
+                chunks, rr, data_gaps, data_integrity = route_retrieve_rerank(question)
                 answer = generate(
                     chunks, question,
                     function=rr.function,
                     course_ids=rr.course_ids,
-                    semantic_type=rr.semantic_type,
+                    intent_type=rr.intent_type,
+                    data_gaps=data_gaps,
+                    data_integrity=data_integrity,
                 )
                 contexts = [c.get("content", "") for c in chunks]
                 n_sources = len(chunks)

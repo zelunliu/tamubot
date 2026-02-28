@@ -166,9 +166,11 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
 
             source_docs = []
             router_result = None
+            data_gaps: list = []
+            data_integrity = True
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    source_docs, router_result = route_retrieve_rerank(prompt, trace=lf_trace)
+                    source_docs, router_result, data_gaps, data_integrity = route_retrieve_rerank(prompt, trace=lf_trace)
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
@@ -183,7 +185,9 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     question=prompt,
                     function=router_result.function if router_result else "semantic_general",
                     course_ids=router_result.course_ids if router_result else None,
-                    semantic_type=router_result.semantic_type if router_result else None,
+                    intent_type=router_result.intent_type if router_result else None,
+                    data_gaps=data_gaps,
+                    data_integrity=data_integrity,
                     trace=lf_trace,
                 )
                 for token in stream:
@@ -224,7 +228,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                 with st.expander("View Source Documents", expanded=False):
                     if router_result:
                         mode_label = router_result.retrieval_mode
-                        sem = f" | Semantic: {router_result.semantic_type}" if router_result.semantic_type else ""
+                        sem = f" | Intent: {router_result.intent_type}" if router_result.intent_type else ""
                         st.caption(
                             f"Function: **{router_result.function}** | "
                             f"Mode: {mode_label} | "

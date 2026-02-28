@@ -15,7 +15,7 @@ flowchart LR
 
     subgraph S1["Stage 1 — Router · Gemini 2.5 Flash"]
         direction TB
-        Router["Gemini 2.5 Flash<br/>Variable Extraction<br/>course_ids · categories<br/>semantic_intent"]
+        Router["Gemini 2.5 Flash<br/>Variable Extraction<br/>course_ids · categories<br/>intent_type · recurrent_search"]
         FD["Function Derivation<br/>Pure Python"]
         Router --> FD
     end
@@ -80,7 +80,7 @@ flowchart LR
     subgraph ROUTER["Router — Gemini 2.5 Flash · temp=0 · thinking_budget=512"]
         direction TB
         LLM["Gemini 2.5 Flash<br/>JSON · max_output_tokens=1024"]
-        VARS["course_ids · specific_categories<br/>category_confidence · specific_only<br/>semantic_intent · semantic_type<br/>rewritten_query"]
+        VARS["course_ids · specific_categories<br/>category_confidence · specific_only<br/>intent_type · recurrent_search<br/>rewritten_query"]
         FN{"function\n+ retrieval_mode"}
         LLM --> VARS --> FN
     end
@@ -106,7 +106,7 @@ flowchart LR
     subgraph GENERATOR["Generator — Gemini 2.0 Flash"]
         direction TB
         CTX["XML Context Builder<br/>Source N tags · recency ordered"]
-        PROMPT["System Prompt Assembly<br/>function-adaptive + semantic_type overlay"]
+        PROMPT["System Prompt Assembly<br/>function-adaptive + intent_type overlay"]
         GEN["Gemini 2.0 Flash<br/>temp: metadata→0.0 · hybrid→0.1"]
         ANS[Response + Citations]
         CTX --> PROMPT --> GEN --> ANS
@@ -160,37 +160,37 @@ The router is a single Gemini 2.5 Flash call that **extracts structured facts** 
 | `specific_categories` | `list[str]` | Syllabus categories being asked about (e.g. `["GRADING", "AI_POLICY"]`) |
 | `category_confidence` | `float 0–1` | Confidence in the category extraction |
 | `specific_only` | `bool` | `True` → the query asks *only* about those categories (not a broad overview) |
-| `semantic_intent` | `bool` | `True` → question has advisory/evaluative/opinion component |
-| `semantic_type` | `str \| None` | `ACADEMIC · CAREER · DIFFICULTY · PLANNING · GENERAL` |
+| `intent_type` | `str \| None` | Advisory/evaluative dimension: `ACADEMIC · CAREER · DIFFICULTY · PLANNING · ADMINISTRATIVE · GENERAL`; `null` for factual/off-topic |
+| `recurrent_search` | `bool` | `True` → user wants to discover unknown courses anchored to a named course |
 | `rewritten_query` | `str` | Expanded for retrieval (synonyms, slang expansion) |
 | `section` | `str \| None` | Section number if mentioned |
 
 ### Function Derivation Matrix (pure Python)
 
-| `course_ids` | `semantic_intent` | `specific_categories` | `specific_only` | **function** |
-|---|---|---|---|---|
-| empty | `True` | any | any | `semantic_general` |
-| empty | `False` | any | any | `out_of_scope` |
-| present | `False` | empty | — | `metadata_default` |
-| present | `False` | populated | `True` | `metadata_specific` |
-| present | `False` | populated | `False` | `metadata_combined` |
-| present | `True` | empty | — | `hybrid_default` |
-| present | `True` | populated | `True` | `hybrid_specific` |
-| present | `True` | populated | `False` | `hybrid_combined` |
+| `course_ids` | `recurrent_search` | `intent_type` | `specific_categories` | `specific_only` | **function** |
+|---|---|---|---|---|---|
+| empty | any | not `null` | any | any | `semantic_general` |
+| empty | any | `null` | any | any | `out_of_scope` |
+| present | `True` | any | empty | — | `recurrent_default` |
+| present | `True` | any | populated | `True` | `recurrent_specific` |
+| present | `True` | any | populated | `False` | `recurrent_combined` |
+| present | `False` | any | empty | — | `metadata_default` |
+| present | `False` | any | populated | `True` | `metadata_specific` |
+| present | `False` | any | populated | `False` | `metadata_combined` |
 
 ### Retrieval Mode Derivation (pure Python)
 
 ```
 retrieval_mode = "semantic"  if course_ids is empty
-               = "metadata"  if category_confidence >= 0.7
-               = "hybrid"    otherwise
+               = "hybrid"    if recurrent_search = True
+               = "metadata"  otherwise
 ```
 
 **Metadata path** → `search_by_course_categories()` — exact index lookup, no embedding, no reranking.
-**Hybrid path** → `hybrid_search()` — RRF of `$vectorSearch` + `$search`, Voyage voyage-3, then rerank-2.
+**Recurrent path (5-step)** → anchor metadata fetch → LLM eval pass → corpus hybrid discovery → rerank → combine.
 **Semantic path** → `search_semantic()` — `$vectorSearch` over full corpus, then rerank-2.
 
-**Multi-course** (`len(course_ids) > 1`): all functions run parallel per-course fetch, then `rerank_multi_course()` with round-robin interleaving.
+**Multi-course** (`len(course_ids) > 1`, non-recurrent): parallel per-course fetch → `generate_comparison()` (single structured LLM call + Python Markdown render).
 
 ### Retrieval Config Per Function
 
@@ -200,9 +200,9 @@ retrieval_mode = "semantic"  if course_ids is empty
 | `metadata_specific` | 10 | 0 | No reranking (exact lookup) |
 | `metadata_combined` | 10 | 0 | No reranking (exact lookup) |
 | `semantic_general` | 30 | 10 | Full corpus search |
-| `hybrid_default` | 12 | 3 | Per course |
-| `hybrid_specific` | 10 | 3 | Per course |
-| `hybrid_combined` | 15 | 4 | Per course |
+| `recurrent_default` | 12 | 3 | 5-step pipeline, per anchor course |
+| `recurrent_specific` | 10 | 3 | 5-step pipeline, per anchor course |
+| `recurrent_combined` | 15 | 4 | 5-step pipeline, per anchor course |
 
 ### Default Summary Categories
 
@@ -228,7 +228,7 @@ Course IDs are normalized: `csce638` → `CSCE 638`, `CSCE-670` → `CSCE 670`.
 
 ## Generator Behavior
 
-Each function gets a tailored system prompt and temperature. An advisory overlay from `semantic_type` is appended for `hybrid_*` and `semantic_general` functions.
+Each function gets a tailored system prompt and temperature. An advisory overlay from `intent_type` is appended for `recurrent_*` and `semantic_general` functions.
 
 ### Function Prompts
 
@@ -237,22 +237,30 @@ Each function gets a tailored system prompt and temperature. An advisory overlay
 | `metadata_default` | 0.0 | General course overview — covers overview, prerequisites, learning outcomes |
 | `metadata_specific` | 0.0 | Focused on requested categories — precise and complete |
 | `metadata_combined` | 0.0 | Specific categories in context of full overview |
-| `semantic_general` | 0.0 | Broad question — search-based answer, flags insufficient evidence |
-| `hybrid_default` | 0.1 | Advisory question — grounds all opinions in course-context facts |
-| `hybrid_specific` | 0.1 | Advisory + specific category — uses category evidence for opinion |
-| `hybrid_combined` | 0.1 | Advisory + overview — covers all categories, advisory synthesis |
+| `semantic_general` | 0.2 | Broad question — search-based answer, flags insufficient evidence |
+| `recurrent_default` | 0.2 | Course discovery — explains what makes each discovered course a complement |
+| `recurrent_specific` | 0.2 | Discovery + specific category — uses category evidence for pairing rationale |
+| `recurrent_combined` | 0.2 | Discovery + overview — broad anchor context + pairing reasoning |
 
-### Semantic Type Advisory Overlays
+### Intent Type Advisory Overlays
 
-Appended to the system prompt for `hybrid_*` and `semantic_general` functions:
+Appended to the system prompt for `recurrent_*` and `semantic_general` functions:
 
-| `semantic_type` | Advisory instruction |
+| `intent_type` | Advisory instruction |
 |---|---|
 | `ACADEMIC` | Discuss learning outcomes, topics covered, academic content |
 | `CAREER` | Discuss how course content relates to industry applications and career paths |
 | `DIFFICULTY` | Use grading weights, prerequisites, attendance requirements as evidence of rigor |
 | `PLANNING` | Help the student understand course fit in their academic progression |
 | `GENERAL` | Address the advisory aspect using evidence from the course context |
+
+### Data Integrity Disclaimer
+
+When a `recurrent_*` query finds missing (course_id, category) pairs in the DB (`DataGaps`), the generator prepends:
+```
+⚠️ Note: The following data was not found in the syllabus database:
+- CSCE 638 / PREREQUISITES
+```
 
 **Multi-course overlay:** when `len(course_ids) > 1`, a comparison instruction is automatically appended (Markdown table, no alignment padding, `[Source N]` citations per cell).
 
@@ -268,7 +276,7 @@ Appended to the system prompt for `hybrid_*` and `semantic_general` functions:
 
 **Function accuracy: 34/34 (100%)** after two prompt fixes:
 1. Increased `max_output_tokens` from 512 → 1024 (JSON was truncating mid-response when thinking budget consumed tokens)
-2. Tightened `semantic_intent` rules to require TAMU-academic scope and distinguish factual comparisons from evaluative queries
+2. Tightened `intent_type` rules to require TAMU-academic scope and distinguish factual comparisons from evaluative queries
 
 ### Results by Function
 
@@ -277,8 +285,8 @@ Appended to the system prompt for `hybrid_*` and `semantic_general` functions:
 | `metadata_specific` | 10 | 10/10 | 0.95 | metadata |
 | `metadata_default` | 3 | 3/3 | 1.00 | metadata |
 | `metadata_combined` | 2 | 2/2 | 0.85–0.90 | metadata |
-| `hybrid_specific` | 4 | 4/4 | 0.95 | metadata |
-| `hybrid_default` | 6 | 6/6 | 0.0–1.0 | hybrid/metadata |
+| `recurrent_specific` | 4 | 4/4 | 0.95 | hybrid (5-step) |
+| `recurrent_default` | 6 | 6/6 | 0.0–1.0 | hybrid (5-step) |
 | `semantic_general` | 5 | 5/5 | 0.0–0.95 | semantic |
 | `out_of_scope` | 4 | 4/4 | 0.00 | — |
 
@@ -286,12 +294,12 @@ Appended to the system prompt for `hybrid_*` and `semantic_general` functions:
 
 | Query type | Behavior | Explanation |
 |---|---|---|
-| `"Is CSCE 638 strict about its AI policy?"` | `hybrid_specific` · `semantic_type=ACADEMIC` | Evaluative word ("strict") triggers `semantic_intent=True`; explicit category → `specific_only=True` |
-| `"Compare the AI policies of CSCE 638 and CSCE 670"` | `metadata_specific` (multi-course) | Factual comparison → `semantic_intent=False`; parallel per-course fetch |
-| `"Is CSCE 638 harder than CSCE 670?"` | `hybrid_default` · `semantic_type=DIFFICULTY` | Opinion → `semantic_intent=True`; no specific category → `hybrid_default` |
-| `"Does CSCE 638 have heavy workload based on the grading structure?"` | `hybrid_specific` · `semantic_type=DIFFICULTY` | Category explicitly named ("based on grading structure") → `specific_only=True` → `hybrid_specific`, not `hybrid_combined` |
-| `"What is the TAMU academic integrity policy?"` | `semantic_general` · `semantic_type=ACADEMIC` | No course_id; TAMU-academic discovery → `semantic_intent=True` |
-| `"What are the best restaurants near TAMU?"` | `out_of_scope` | Non-TAMU topic → `semantic_intent=False` → `out_of_scope` |
+| `"Is CSCE 638 strict about its AI policy?"` | `recurrent_specific` · `intent_type=ACADEMIC` | Evaluative word ("strict") + explicit category → `specific_only=True` |
+| `"Compare the AI policies of CSCE 638 and CSCE 670"` | `metadata_specific` (multi-course) | Factual comparison → `intent_type=null`; parallel per-course fetch |
+| `"Is CSCE 638 harder than CSCE 670?"` | `recurrent_default` · `intent_type=DIFFICULTY` | Opinion → `intent_type=DIFFICULTY`; no specific category |
+| `"What should I take alongside CSCE 638?"` | `recurrent_default` · `intent_type=PLANNING` | Course discovery → `recurrent_search=True`; 5-step pipeline |
+| `"What is the TAMU academic integrity policy?"` | `semantic_general` · `intent_type=ACADEMIC` | No course_id; TAMU-academic discovery → `intent_type` not null |
+| `"What are the best restaurants near TAMU?"` | `out_of_scope` | Non-TAMU topic → `intent_type=null` → `out_of_scope` |
 
 ---
 
@@ -301,9 +309,9 @@ Appended to the system prompt for `hybrid_*` and `semantic_general` functions:
 |---|---|---|
 | `"What is the grading breakdown for CSCE 638?"` | `metadata_specific` | GRADING chunk fetched by index, cited answer, temp=0.0 |
 | `"Tell me about CSCE 670"` | `metadata_default` | COURSE_OVERVIEW + PREREQUISITES + LEARNING_OUTCOMES fetched |
-| `"Compare the AI policies of CSCE 638 and CSCE 670"` | `metadata_specific` (×2) | Parallel per-course index lookup, comparison table generated |
-| `"Is CSCE 638 strict about its AI policy?"` | `hybrid_specific` | AI_POLICY chunk + ACADEMIC advisory overlay |
-| `"Is CSCE 638 harder than CSCE 670?"` | `hybrid_default` | Parallel hybrid search, DIFFICULTY overlay, opinion synthesis |
+| `"Compare CSCE 638 and CSCE 670"` | `metadata_default` → `generate_comparison` | Parallel per-course fetch, structured extraction, Python-rendered Markdown table |
+| `"What should I take alongside CSCE 638?"` | `recurrent_default` | 5-step: anchor fetch → eval pass (LLM search string) → hybrid discovery → rerank → combine |
+| `"Is CSCE 638 harder than CSCE 670?"` | `recurrent_default` + DIFFICULTY overlay | Recurrent discovery with difficulty-framed synthesis |
 | `"Which courses will help me become an AI engineer?"` | `semantic_general` | Full-corpus vector search, CAREER overlay |
 | `"What is the TAMU academic integrity policy?"` | `semantic_general` | Full-corpus search surfaces UNIVERSITY_POLICIES chunk |
 | `"Howdy!"` | `out_of_scope` | Canned response, no DB call |
@@ -480,7 +488,7 @@ tamubot/
 
 ---
 
-## Current Status (as of 2026-02-23)
+## Current Status (as of 2026-02-28)
 
 ### Completed
 
@@ -489,23 +497,32 @@ tamubot/
 - Gemini PDF parsing — 259/259 CSCE + ISEN files parsed
 - MongoDB Atlas integration: models, indexes, ingestion, hybrid search
 - **3-stage RAG pipeline** (Router → Retrieval+Rerank → Generator) with XML context and `[Source N]` citations
-- **New router schema** — structured variable extraction replaces intent classification; function derived mechanically from variables; 34-case dry-run eval at 100% function accuracy
-- **`search_by_course_categories()`** — no-embedding exact index lookup for high-confidence metadata paths
-- **Observability stack** (Phase 1): Langfuse tracing + RAGAS automated evaluation
+- **Router schema** — `intent_type` (replaces `semantic_intent`+`semantic_type`); `recurrent_search` flag; function derived mechanically in pure Python; 34-case dry-run eval at 100% function accuracy
+- **`metadata_*` path** — `search_by_course_categories()`, no embedding, no reranking
+- **`recurrent_*` path (5-step deterministic cardinality pipeline)**:
+  1. `fetch_anchor_chunks()` — per `(course_id, category)` fetch, tracks `DataGaps`
+  2. `generate_eval_search_string()` — LLM eval pass generates context-aware search string from anchor content
+  3. `hybrid_search()` — corpus-wide RRF discovery, excludes anchor courses
+  4. `rerank()` — Voyage rerank-2 on discovery chunks
+  5. combine anchor + reranked discovery; disclaimer prepended if `DataGaps` exist
+- **`generate_comparison()`** — single structured LLM call + Python-rendered Markdown table for multi-course factual queries
+- **`<thinking>` block stripping** — `strip_thinking_blocks()` removes Chain-of-Verification quotes before display (both blocking and streaming)
+- **Observability stack**: Langfuse tracing + RAGAS automated evaluation; `intent_type` in router span metadata
 
 ### Known Issues
 
-- **`hybrid_combined` requires very specific phrasing**: When a category is explicitly named in a query ("based on the grading structure"), the router correctly extracts `specific_only=True` → `hybrid_specific`. Only queries that request a broad overview *and* mention a category as background context produce `specific_only=False` → `hybrid_combined`.
-- **Langfuse SDK incompatible with Python 3.14**: Workaround in `db/observability.py` (direct REST). Revert to official SDK when fixed upstream.
-- **Router token budget**: With `thinking_budget=512` and `max_output_tokens=1024`, the router uses ~600–900 total output tokens per call. Long rewritten queries in `hybrid_combined` cases may approach the limit.
+- **Bare course numbers route to `out_of_scope`**: "compare 638 and 670" fails normalization (needs dept prefix: "CSCE 638"). Router requires full IDs.
+- **`recurrent_*` PREREQUISITES data gap**: `DEFAULT_SUMMARY_CATEGORIES` includes PREREQUISITES; courses missing that chunk trigger disclaimer.
+- **Langfuse SDK incompatible with Python 3.14**: Workaround in `rag/observability.py` (direct REST). Revert to official SDK when fixed upstream.
+- **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — watch if prompt grows.
+- **Recall@k 36%**: CRN-exact matching counts cross-section hits as misses → redefine hit as `course_id + category`.
 
 ### Next Steps
 
-1. Expand parsing to all departments (`python process_syllabi.py` without `--department`)
+1. Expand parsing to all departments (`python ingestion_pipeline/process_syllabi.py` without `--department`)
 2. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
-3. Add latency percentile tracking (p50/p95 per function) in Langfuse dashboards
-4. Set up Langfuse score alerts (faithfulness < 0.5)
-5. Observability Phase 2 — prompt management via Langfuse, A/B testing router variables
+3. Re-run router eval after `intent_type` migration to verify accuracy holds
+4. Add latency percentile tracking (p50/p95 per function) in Langfuse dashboards
 
 ---
 
