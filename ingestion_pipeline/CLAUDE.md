@@ -29,23 +29,6 @@ Resume: skips already-parsed files in `OUTPUT_DIR`. Errors logged to `tamu_data/
 Per-file reports: `tamu_data/logs/per_file/<stem>.txt` (written for every PDF, success and failure).
 Progress sheet: `tamu_data/processed/gem_parsed_YYYYMMDD/parsing_progress.csv` — updates after each file.
 
-## Output Schema
 
-```json
-{
-  "course_metadata": { "course_id", "section", "term", "crn", "instructor", "tas", "meeting_times", "location", "course_url" },
-  "chunks": [{"category": "GRADING", "title": "...", "content": "...", "has_table": false}],
-  "boilerplate_policies": [...],
-  "completeness_check": {"missing_sections": ["SCHEDULE"], "warnings": [...]},
-  "_source_file": "202611_CSCE_670_600_46627.pdf",
-  "_parsed_at": "2026-03-04T10:00:00"
-}
 ```
 
-## 13 Categories
-
-`COURSE_OVERVIEW` · `INSTRUCTOR` · `PREREQUISITES` · `LEARNING_OUTCOMES` · `MATERIALS` · `GRADING` · `SCHEDULE` · `ATTENDANCE_AND_MAKEUP` · `AI_POLICY` · `UNIVERSITY_POLICIES` · `SUPPORT_SERVICES` · `COURSE_SUMMARY` · `SAFETY`
-
-**`COURSE_SUMMARY`** — always generated; RAG keyword-dense format (Topics / Methods / Prerequisites / Tools / Niche). Target 200–280 tokens. No narrative prose.
-
-**`SAFETY`** — lab/hands-on courses only. PPE, chemical handling, emergency procedures, equipment rules. Never use for generic academic integrity content.

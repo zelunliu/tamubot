@@ -36,6 +36,7 @@ OUTPUT_DIR = Path(f"tamu_data/processed/gem_parsed_{datetime.now().strftime('%Y%
 LOG_DIR = Path("tamu_data/logs")
 REPORT_DIR = Path("tamu_data/logs/per_file")
 PROGRESS_CSV = OUTPUT_DIR / "parsing_progress.csv"
+PROGRESS_JSONL = OUTPUT_DIR / "parsing_progress.jsonl"
 
 DEPARTMENTS = ["CSCE", "ISEN"]
 MAX_RETRIES = 2
@@ -59,7 +60,7 @@ CSV_FIELDS = [
 ]
 
 TOKEN_THRESHOLDS: dict[str, tuple[int, int]] = {
-    "COURSE_SUMMARY":        (150, 500),
+    "COURSE_SUMMARY":        (200, 500),
     "GRADING":               (50, 5000),
     "SCHEDULE":              (50, 8000),
     "default":               (20, 3000),
@@ -145,19 +146,23 @@ COURSE_SUMMARY GENERATION RULES (category 12):
 Generate exactly one COURSE_SUMMARY chunk using this strict format:
 
   <DEPT> <NUM> [/ <crosslist>] | <Full Course Title> | <Term>
-  Topics: <comma-separated specific concepts, named theorems, biological organisms, algorithms, protocols — no vague generalities>
-  Methods: <specific procedures, computational methods, lab techniques, analytical frameworks>
-  Prerequisites: <exact course codes and standing; omit this line entirely if none stated in the syllabus>
-  Tools/Platforms: <named software, instruments, platforms; omit if none stated>
-  Niche: <specialized sub-topics, industry-specific terms, long-tail subjects worth indexing>
+  Instructor: <Full Name> | <email>
+  Meets: <days and times> | <location>
+  Topics: <ALL named concepts, techniques, algorithms, models, and skills from the ENTIRE syllabus — course description, learning outcomes, AND weekly schedule — merged into one comma-separated list. Rare/specialized terms first, broader ones last. No duplicates.>
+  Tools: <software, instruments, or platforms students are required or encouraged to USE for coursework (assignments, labs, projects); omit if none. Do NOT include tools merely permitted or mentioned in AI/academic integrity policies.>
+  Prerequisites: <exact course codes and standing; omit if none stated>
 
 Rules for COURSE_SUMMARY content:
-- Retain ALL proper nouns, species names (e.g. "S. cerevisiae"), theorem names (e.g. "Stokes' Theorem", "Green's Theorem"), algorithm names, drug names, and tool names verbatim.
-- NEVER write: "students will learn", "designed to", "upon completion", "this course", "is ideal for", "you will", "gain experience", "understand", or any narrative framing.
-- Use declarative noun phrases only. Be dense — prefer "spot plate analysis, yeast strain construction, mutagenesis assay" over "hands-on lab techniques".
-- If a field has no data in the source text, omit that line entirely. Do not infer prerequisites, difficulty, or audience.
-- Preserve niche sub-topics that satisfy long-tail queries (e.g. "crisis communication", "manuscript preparation", "Bayesian Personalized Ranking").
-- Target 200-280 tokens total.
+- GROUNDING: Use ONLY terms and phrases that appear explicitly in the source text. Do NOT add domain knowledge or infer anything not written. If "Python" is not in the text, it is not in the summary.
+- TOPICS IS EVERYTHING: Topics is the single comprehensive concept list — merge what would otherwise be topics, methods, skills, and niche into Topics. Do not create separate fields for these.
+- NO DUPLICATION: No term appears twice anywhere in the summary. Tools must not repeat terms already in Topics.
+- RARE TERMS FIRST: List specialized/rare terms before generic ones in Topics. Rare terms provide stronger keyword signal for search.
+- BE THOROUGH: Extract ALL named algorithms, models, techniques, tools, and skills from the entire syllabus — do not truncate.
+- Retain ALL proper nouns, theorem names, algorithm names, drug names, and tool names verbatim.
+- NEVER write narrative: "students will learn", "designed to", "upon completion", "this course", "you will", "gain experience", or any similar framing.
+- Use declarative noun phrases only.
+- If a field has no data in the source text, omit that line entirely.
+- Target 300–450 tokens total.
 """
 
 
@@ -274,6 +279,54 @@ def collapse_chunks_by_category(chunks: list[dict]) -> list[dict]:
             if new_title and new_title not in existing_title:
                 grouped[cat]["title"] = existing_title + " / " + new_title
     return list(grouped.values())
+
+
+def dedup_course_summary(content: str) -> str:
+    """Remove duplicate terms in COURSE_SUMMARY after generation.
+
+    - Deduplicates within Topics itself (removes repeated terms).
+    - Strips any Tools terms already present in Topics.
+    - Drops any other legacy fields (Skills, Methods, Niche, Schedule) if the model emitted them.
+    """
+    def parse_terms(s: str) -> list[str]:
+        return [t.strip() for t in s.split(",") if t.strip()]
+
+    def norm(t: str) -> str:
+        return t.lower().strip()
+
+    lines = content.split("\n")
+    result_lines = []
+    topics_seen: set[str] = set()
+
+    for line in lines:
+        # Deduplicate within Topics
+        m = re.match(r"^(\s*)(Topics):\s*(.*)", line)
+        if m:
+            indent, _, terms_str = m.groups()
+            unique = []
+            for t in parse_terms(terms_str):
+                if norm(t) not in topics_seen:
+                    topics_seen.add(norm(t))
+                    unique.append(t)
+            result_lines.append(f"{indent}Topics: {', '.join(unique)}")
+            continue
+
+        # Strip Tools terms already in Topics
+        m = re.match(r"^(\s*)(Tools):\s*(.*)", line)
+        if m:
+            indent, _, terms_str = m.groups()
+            unique = [t for t in parse_terms(terms_str) if norm(t) not in topics_seen]
+            if unique:
+                result_lines.append(f"{indent}Tools: {', '.join(unique)}")
+            continue
+
+        # Drop legacy fields the model might still emit
+        if re.match(r"^\s*(Skills|Methods|Tools/Platforms|Niche|Schedule):", line):
+            continue
+
+        result_lines.append(line)
+
+    return "\n".join(result_lines)
 
 
 def write_per_file_report(pdf_path: Path, result: dict):
@@ -396,6 +449,13 @@ def write_progress_csv(rows: list[dict]):
         writer.writerows(rows)
 
 
+def append_progress_jsonl(row: dict):
+    """Append one row to the live-tail-able JSONL sidecar (append-only, no lock conflicts)."""
+    PROGRESS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    with open(PROGRESS_JSONL, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+
 def parse_pdf(client, pdf_path: Path) -> dict:
     """Send a PDF to Gemini and get structured JSON. Retries on failure."""
     pdf_bytes = pdf_path.read_bytes()
@@ -426,6 +486,16 @@ def parse_pdf(client, pdf_path: Path) -> dict:
 
             # Collapse duplicate-category chunks → at most 13 chunks per file
             parsed["chunks"] = collapse_chunks_by_category(parsed.get("chunks", []))
+
+            # Strip has_table when false — only keep the field when a table is present
+            for chunk in parsed["chunks"]:
+                if not chunk.get("has_table"):
+                    chunk.pop("has_table", None)
+
+            # Deterministically remove cross-field duplicates from COURSE_SUMMARY
+            for chunk in parsed["chunks"]:
+                if chunk.get("category") == "COURSE_SUMMARY":
+                    chunk["content"] = dedup_course_summary(chunk["content"])
 
             # Inject source filename into metadata for traceability
             parsed["_source_file"] = pdf_path.name
@@ -527,6 +597,7 @@ def main():
             progress_index[pdf_path.name] = len(progress_rows)
             progress_rows.append(row)
         write_progress_csv(progress_rows)
+        append_progress_jsonl(row)
 
         # Save immediately
         out_path = OUTPUT_DIR / pdf_path.name.replace(".pdf", ".json")

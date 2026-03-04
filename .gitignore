@@ -39,5 +39,6 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Claude Code internal
-.claude/
+# Claude Code internal (keep skills — they're project-specific)
+.claude/*
+!.claude/skills/
