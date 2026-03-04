@@ -4,6 +4,7 @@
 
 ```python
 # Import everything from the package root — never from submodules
+from rag import ChunkDoc, CourseDoc, PolicyDoc, VALID_CATEGORIES
 from rag import route_retrieve_rerank, classify_query, RouterResult
 from rag import generate, generate_stream, generate_comparison
 from rag import hybrid_search, search_semantic, search_by_course_categories, get_missing_sections

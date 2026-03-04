@@ -2,147 +2,302 @@
 
 A RAG-based chatbot that answers questions about TAMU courses, syllabi, grading policies, schedules, and university policies. Built on MongoDB Atlas, Voyage AI, and Gemini.
 
-**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.0 Flash (generator) · Langfuse (observability) · RAGAS (evaluation) · Scrapy · Pydantic v2
+**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.0 Flash (parser + generator) · Langfuse (observability) · RAGAS (evaluation) · Scrapy · Pydantic v2
 
 ---
 
 ## High-Level System Flow
 
 ```mermaid
-%%{init: {'theme': 'dark', 'flowchart': {'nodeSpacing': 30, 'rankSpacing': 70}}}%%
-flowchart LR
-    A([Student]) -->|Question| App[Streamlit\nWeb App]
+%%{init: {'theme': 'dark', 'flowchart': {'nodeSpacing': 50, 'rankSpacing': 70}}}%%
+flowchart TD
+    USR([Student Question])
+    APP["Streamlit Web App"]
 
-    subgraph S1["Stage 1 — Router · Gemini 2.5 Flash"]
-        direction TB
-        Router["Gemini 2.5 Flash<br/>Variable Extraction<br/>course_ids · categories<br/>intent_type · recurrent_search"]
-        FD["Function Derivation<br/>Pure Python"]
-        Router --> FD
+    subgraph STAGE1["Stage 1 — Router · Gemini 2.5 Flash"]
+        direction LR
+        R["Gemini 2.5 Flash · temp=0<br/>Variable Extraction<br/>course_ids · categories · intent_type<br/>recurrent_search · rewritten_query"]
+        FD["Function Derivation<br/>Pure Python · 8-function matrix"]
+        R --> FD
     end
 
-    subgraph S2["Stage 2 — Retrieval · MongoDB + Voyage AI"]
-        direction TB
-        Orch[Retrieval\nOrchestrator]
-        MetaDB[(MongoDB Atlas\nIndex Lookup)]
-        VoyEmbed[Voyage voyage-3\nEmbeddings]
-        Search[(vectorSearch\n+ fulltext RRF)]
-        Reranker[Voyage rerank-2\nCross-encoder]
-        Orch --> MetaDB
-        Orch --> VoyEmbed --> Search --> Reranker
+    subgraph STAGE2["Stage 2 — Retrieval · MongoDB Atlas + Voyage AI"]
+        direction LR
+        META["search_by_course_categories<br/>Exact index lookup · no embedding"]
+        HYB["hybrid_search<br/>RRF: vectorSearch + fulltext"]
+        SEM["search_semantic<br/>Full-corpus vectorSearch"]
+        RRK["Voyage rerank-2<br/>Cross-encoder reranking"]
+        META --> RRK
+        HYB --> RRK
+        SEM --> RRK
     end
 
-    subgraph S3["Stage 3 — Generator · Gemini 2.0 Flash"]
-        direction TB
-        Dedup[Deduplication\nMiddleware]
-        Gen["Gemini 2.0 Flash<br/>Adaptive Prompt + Citations"]
-        Dedup --> Gen
+    subgraph STAGE3["Stage 3 — Generator · Gemini 2.0 Flash"]
+        direction LR
+        DDP["Deduplication<br/>best chunk per (course_id, category)"]
+        CTX["XML Context Builder<br/>Source N tags · recency ordered"]
+        GEN["Gemini 2.0 Flash<br/>Function-adaptive prompt<br/>temp: 0.0 – 0.2"]
+        DDP --> CTX --> GEN
     end
 
-    Canned[Canned\nResponse]
-    Obs["Langfuse Tracing<br/>RAGAS Eval"]
+    CANNED["Out-of-scope<br/>Canned Response"]
+    OBS["Langfuse Tracing<br/>RAGAS Evaluation (async)"]
+    ANS(["Answer + [Source N] Citations"])
 
-    App --> S1
-    FD -->|out_of_scope| Canned --> App
-    FD --> S2
-    MetaDB --> Dedup
-    Reranker --> Dedup
-    Gen -->|"Answer + [Source N]"| App --> A
-    App -.->|async| Obs
+    USR --> APP --> STAGE1
+    FD -->|"metadata_*"| META
+    FD -->|"recurrent_* (5-step)"| HYB
+    FD -->|"semantic_general"| SEM
+    FD -->|"out_of_scope"| CANNED --> APP
+    RRK --> DDP
+    GEN --> ANS --> APP --> USR
+    APP -.->|async| OBS
 
     classDef user     fill:#004D40,stroke:#4DB6AC,color:#B2DFDB
     classDef router   fill:#880E4F,stroke:#F06292,color:#F8BBD0
     classDef derive   fill:#4A148C,stroke:#BA68C8,color:#E1BEE7
     classDef canned   fill:#212121,stroke:#757575,color:#BDBDBD
-    classDef orchestr fill:#3E2723,stroke:#A1887F,color:#D7CCC8
-    classDef mongo    fill:#1A237E,stroke:#7986CB,color:#C5CAE9
     classDef voyage   fill:#01579B,stroke:#4FC3F7,color:#E1F5FE
+    classDef mongo    fill:#1A237E,stroke:#7986CB,color:#C5CAE9
+    classDef gen      fill:#880E4F,stroke:#F06292,color:#F8BBD0
     classDef obs      fill:#1B5E20,stroke:#66BB6A,color:#C8E6C9
+    classDef mid      fill:#3E2723,stroke:#A1887F,color:#D7CCC8
 
-    class A,App user
-    class Router,Gen router
+    class USR,APP,ANS user
+    class R,GEN router
     class FD derive
-    class Canned canned
-    class Orch,Dedup orchestr
-    class MetaDB,Search mongo
-    class VoyEmbed,Reranker voyage
-    class Obs obs
+    class CANNED canned
+    class HYB,SEM,RRK voyage
+    class META mongo
+    class DDP,CTX mid
+    class OBS obs
 ```
 
 ---
 
-## RAG Pipeline Detail
+## Ingestion Pipeline
+
+One-time ETL: scrape → parse → embed → store. Controlled by `ingestion_pipeline/`.
 
 ```mermaid
-%%{init: {'theme': 'dark', 'flowchart': {'nodeSpacing': 30, 'rankSpacing': 60}}}%%
-flowchart LR
-    Q([User Question]) --> INVOKE{Route &\nRetrieve}
+%%{init: {'theme': 'dark', 'flowchart': {'nodeSpacing': 50, 'rankSpacing': 70}}}%%
+flowchart TD
+    TAMU(["TAMU Course Catalog<br/>+ Class Schedule"])
+
+    subgraph SCRAPE["Step 1 — Scraping (Scrapy)"]
+        direction LR
+        SP1["catalog spider<br/>departments · course descriptions"]
+        SP2["class_search spider<br/>sections · instructors · PDF URLs"]
+        SP1 --> SP2
+    end
+
+    subgraph PARSE["Step 2 — PDF Parsing (Gemini)"]
+        direction LR
+        DL["PDF Downloader<br/>tamu_data/raw/<br/>7,970 PDFs across all depts"]
+        GEMINI["Gemini 2.5 Flash<br/>process_syllabi.py<br/>multimodal PDF → structured JSON<br/>13 categories · COURSE_SUMMARY · SAFETY<br/>sanitize_json · collapse_chunks"]
+        DL --> GEMINI
+    end
+
+    JSON[("Structured JSON<br/>tamu_data/processed/<br/>gem_parsed_YYYYMMDD/<br/>parsing_progress.csv<br/>per_file/*.txt reports")]
+
+    subgraph INGEST["Step 3 — Validate, Embed, Upsert (ingest.py)"]
+        direction LR
+        PYD["Pydantic v2<br/>ChunkDoc · CourseDoc · PolicyDoc<br/>validation + null coercion"]
+        EMB["Voyage voyage-3<br/>1024-dim embeddings<br/>batch size 50"]
+        PYD --> EMB
+    end
+
+    subgraph ATLAS["MongoDB Atlas"]
+        direction LR
+        MC[("chunks<br/>embeddings + metadata<br/>keyed: crn + chunk_index")]
+        MCO[("courses<br/>metadata + missing_sections<br/>keyed: crn")]
+        MP[("policies<br/>boilerplate text<br/>keyed: SHA-256(name)")]
+    end
+
+    IDX["setup_atlas.py<br/>vector_index (1024-dim cosine)<br/>text_index (BM25 lucene.standard)<br/>compound metadata indexes"]
+
+    TAMU --> SCRAPE --> PARSE
+    PARSE --> JSON
+    JSON --> INGEST
+    EMB --> MC
+    PYD --> MCO
+    PYD --> MP
+    IDX -.->|"one-time setup<br/>python -m ingestion_pipeline.setup_atlas"| MC
+
+    classDef source   fill:#004D40,stroke:#4DB6AC,color:#B2DFDB
+    classDef gemini   fill:#880E4F,stroke:#F06292,color:#F8BBD0
+    classDef store    fill:#1A237E,stroke:#7986CB,color:#C5CAE9
+    classDef voyage   fill:#01579B,stroke:#4FC3F7,color:#E1F5FE
+    classDef idx      fill:#4A148C,stroke:#BA68C8,color:#E1BEE7
+    classDef mid      fill:#3E2723,stroke:#A1887F,color:#D7CCC8
+
+    class TAMU source
+    class GEMINI gemini
+    class MC,MCO,MP store
+    class EMB voyage
+    class IDX idx
+    class PYD,JSON mid
+```
+
+### Ingestion Commands
+
+```bash
+# One-time: create Atlas vector + text + compound indexes
+python -m ingestion_pipeline.setup_atlas
+
+# Embed and ingest all parsed JSONs (skips error files automatically)
+python -m ingestion_pipeline.ingest
+
+# Single department only
+python -m ingestion_pipeline.ingest --department CSCE
+
+# Preview without writing (no MongoDB/Voyage calls)
+python -m ingestion_pipeline.ingest --dry-run
+
+# Retry previously failed PDF parses (scans gem_parsed_YYYYMMDD/ for error JSONs)
+GOOGLE_API_KEY=... python -m ingestion_pipeline.refine_errors [--department CSCE]
+```
+
+### Per-Run Artifacts
+
+| File | Description |
+|---|---|
+| `tamu_data/processed/gem_parsed_YYYYMMDD/*.json` | One structured JSON per PDF |
+| `tamu_data/processed/gem_parsed_YYYYMMDD/parsing_progress.csv` | Live progress sheet — updates after every file. Columns: status, error type, token count per category, flags for over/undersized chunks |
+| `tamu_data/logs/per_file/<stem>.txt` | Human-readable report per PDF (OK: chunk list + missing sections; FAILED: error + attempts) |
+| `tamu_data/logs/errors.jsonl` | Per-attempt error log |
+| `tamu_data/logs/refine_errors.jsonl` | Failures from `refine_errors.py` reruns |
+
+### Parsed JSON Schema
+
+```json
+{
+  "course_metadata": {
+    "course_id": "CSCE 638",
+    "section": "500",
+    "term": "202611",
+    "crn": "12345",
+    "instructor": { "name": "...", "email": "...", "office_hours": "..." },
+    "teaching_assistants": [],
+    "meeting_times": "MWF 10:20–11:10",
+    "location": "HRBB 124",
+    "course_url": "https://canvas.tamu.edu/courses/..."
+  },
+  "chunks": [
+    { "category": "GRADING", "title": "Grade Breakdown", "content": "...", "has_table": true },
+    { "category": "SAFETY", "title": "Lab Safety Rules", "content": "...", "has_table": false },
+    { "category": "COURSE_SUMMARY", "title": "Course Summary", "content": "CSCE 638 | NLP | Spring 2026\nTopics: transformers, BERT, LLMs...\nMethods: fine-tuning, RAG...", "has_table": false }
+  ],
+  "boilerplate_policies": ["Academic Integrity Policy", "ADA Accommodation"],
+  "completeness_check": {
+    "missing_sections": ["SCHEDULE"],
+    "warnings": ["Grading percentages do not sum to 100%"]
+  },
+  "_source_file": "202611_CSCE_638_600_54988.pdf",
+  "_parsed_at": "2026-03-04T10:00:00"
+}
+```
+
+### 13 Categories
+
+| Category | Description |
+|---|---|
+| `COURSE_OVERVIEW` | Course description, catalog info, special designations |
+| `COURSE_SUMMARY` | **Always generated.** RAG keyword-dense index: Topics / Methods / Prerequisites / Tools / Niche. ~200–280 tokens, no narrative prose. |
+| `INSTRUCTOR` | Instructor/TA details (if not fully captured in `course_metadata`) |
+| `PREREQUISITES` | Required courses, corequisites, standing requirements |
+| `LEARNING_OUTCOMES` | What students will learn, course objectives |
+| `MATERIALS` | Textbooks, software, platforms, tech requirements |
+| `GRADING` | Grade scale, weights, component descriptions, rubrics, appeals |
+| `SCHEDULE` | Course calendar, weekly topics, exam dates, due dates |
+| `ATTENDANCE_AND_MAKEUP` | Attendance rules, late work policy, makeup exams |
+| `AI_POLICY` | AI tool usage rules, citation requirements |
+| `UNIVERSITY_POLICIES` | Standard TAMU boilerplate (ADA, FERPA, Title IX, Honor Code) |
+| `SUPPORT_SERVICES` | IT help, Canvas support, tutoring, writing center |
+| `SAFETY` | **Lab/hands-on courses only.** PPE, chemical handling, emergency procedures, equipment rules. |
+
+---
+
+## Query Pipeline (Detailed)
+
+```mermaid
+%%{init: {'theme': 'dark', 'flowchart': {'nodeSpacing': 50, 'rankSpacing': 70}}}%%
+flowchart TD
+    Q(["User Question"])
 
     subgraph ROUTER["Router — Gemini 2.5 Flash · temp=0 · thinking_budget=512"]
-        direction TB
-        LLM["Gemini 2.5 Flash<br/>JSON · max_output_tokens=1024"]
+        direction LR
+        LLM["Gemini 2.5 Flash<br/>JSON mode · max_output_tokens=1024"]
         VARS["course_ids · specific_categories<br/>category_confidence · specific_only<br/>intent_type · recurrent_search<br/>rewritten_query"]
-        FN{"function\n+ retrieval_mode"}
+        FN{"function<br/>+ retrieval_mode"}
         LLM --> VARS --> FN
     end
 
-    subgraph RETRIEVAL["Retrieval — MongoDB Atlas + Voyage AI voyage-3"]
-        direction TB
-        META["search_by_course_categories<br/>No embedding · exact index"]
-        EMB[Voyage voyage-3\nQuery Embedding]
-        HYB["hybrid_search · per course<br/>RRF vectorSearch + fulltext"]
-        SEM["search_semantic<br/>full corpus vectorSearch"]
-        CHUNK[(MongoDB Atlas\nchunks collection)]
-        RRK[Voyage rerank-2\nCross-encoder]
-        META --> CHUNK
-        EMB --> HYB --> CHUNK
-        EMB --> SEM --> CHUNK
-        CHUNK --> RRK
+    subgraph META_PATH["metadata_* path — no embedding, no reranking"]
+        direction LR
+        METAF["search_by_course_categories<br/>exact $in index filter<br/>per (course_id, category)"]
+        METAC[("MongoDB Atlas<br/>chunks collection")]
+        METAF --> METAC
     end
 
-    subgraph DEDUP_SUB["Deduplication Middleware"]
-        DEDUP["_deduplicate_chunks<br/>best chunk per (course_id, category)"]
+    subgraph REC_PATH["recurrent_* path — 5-step deterministic pipeline"]
+        direction LR
+        R1["① fetch_anchor_chunks<br/>per (course_id, category)<br/>tracks DataGaps"]
+        R2["② generate_eval_search_string<br/>LLM eval pass · temp=0<br/>context-aware search string"]
+        R3["③ hybrid_search<br/>corpus-wide RRF discovery<br/>excludes anchor course_ids"]
+        R4["④ Voyage rerank-2<br/>cross-encoder on discovery chunks"]
+        R5["⑤ combine anchor + reranked<br/>DataIntegrityFlag · disclaimer if gaps"]
+        R1 --> R2 --> R3 --> R4 --> R5
+    end
+
+    subgraph SEM_PATH["semantic_general path"]
+        direction LR
+        SEMF["search_semantic<br/>$vectorSearch full corpus<br/>k=30 → rerank → k=10"]
+        SEMC[("MongoDB Atlas<br/>chunks collection")]
+        SEMF --> SEMC
     end
 
     subgraph GENERATOR["Generator — Gemini 2.0 Flash"]
-        direction TB
-        CTX["XML Context Builder<br/>Source N tags · recency ordered"]
-        PROMPT["System Prompt Assembly<br/>function-adaptive + intent_type overlay"]
-        GEN["Gemini 2.0 Flash<br/>temp: metadata→0.0 · hybrid→0.1"]
-        ANS[Response + Citations]
-        CTX --> PROMPT --> GEN --> ANS
+        direction LR
+        DDP["Deduplication<br/>best chunk per (course_id, category)"]
+        CTX["XML Context Builder<br/>Source N tags · primacy-recency order"]
+        SYS["System Prompt Assembly<br/>function-adaptive framing<br/>+ intent_type advisory overlay"]
+        GEN["Gemini 2.0 Flash<br/>temp: metadata→0.0 · others→0.2"]
+        ANS["Response + [Source N] Citations"]
+        DDP --> CTX --> SYS --> GEN --> ANS
     end
 
-    OOS[out_of_scope\nCanned Response]
-    REPLY([Reply to Student])
+    OOS["out_of_scope<br/>Canned Response"]
+    REPLY(["Reply to Student"])
     TRACE["Langfuse · 5-span trace<br/>RAGAS Faithfulness + AnswerRelevancy"]
 
-    INVOKE -->|structured extraction| ROUTER
-    FN -->|"∅ ids · sem=false"| OOS --> REPLY
-    FN -->|"catconf ≥ 0.7"| META
-    FN -->|hybrid| EMB
-    FN -->|semantic| EMB
-    META --> DEDUP
-    RRK --> DEDUP
-    DEDUP --> CTX
+    Q --> ROUTER
+    FN -->|"metadata_*"| META_PATH
+    FN -->|"recurrent_*"| REC_PATH
+    FN -->|"semantic_general"| SEM_PATH
+    FN -->|"out_of_scope"| OOS --> REPLY
+    META_PATH --> DDP
+    R5 --> DDP
+    SEM_PATH --> DDP
     ANS --> REPLY
     ANS -.->|async| TRACE
 
     classDef input    fill:#004D40,stroke:#4DB6AC,color:#B2DFDB
     classDef router   fill:#880E4F,stroke:#F06292,color:#F8BBD0
-    classDef vars     fill:#3E2723,stroke:#A1887F,color:#D7CCC8
     classDef derive   fill:#4A148C,stroke:#BA68C8,color:#E1BEE7
     classDef canned   fill:#212121,stroke:#757575,color:#BDBDBD
     classDef voyage   fill:#01579B,stroke:#4FC3F7,color:#E1F5FE
     classDef mongo    fill:#1A237E,stroke:#7986CB,color:#C5CAE9
+    classDef mid      fill:#3E2723,stroke:#A1887F,color:#D7CCC8
     classDef obs      fill:#1B5E20,stroke:#66BB6A,color:#C8E6C9
 
     class Q,REPLY input
     class LLM,GEN,ANS router
-    class VARS,CTX,PROMPT,DEDUP vars
-    class FN,INVOKE derive
+    class VARS,CTX,SYS,DDP mid
+    class FN,R1,R2,R3,R4,R5 derive
     class OOS canned
-    class EMB,HYB,SEM,RRK voyage
-    class META,CHUNK mongo
+    class SEMF,METAF voyage
+    class METAC,SEMC mongo
     class TRACE obs
 ```
 
@@ -366,14 +521,17 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 The parsed syllabus JSONs are included in `tamu_data/processed/gemini_parsed/` (259 CSCE + ISEN courses, Spring 2026).
 
 ```bash
-# Create Atlas indexes (vector + text + metadata)
-python -m db.setup_atlas
+# Create Atlas indexes (vector + text + metadata) — one time
+python -m ingestion_pipeline.setup_atlas
 
 # Embed and ingest all parsed JSONs
-python -m db.ingest
+python -m ingestion_pipeline.ingest
 
 # Or ingest a single department
-python -m db.ingest --department CSCE
+python -m ingestion_pipeline.ingest --department CSCE
+
+# Preview without writing to DB
+python -m ingestion_pipeline.ingest --dry-run
 ```
 
 ### Run
@@ -387,24 +545,21 @@ Open [http://localhost:8501](http://localhost:8501).
 ### Evaluate
 
 ```bash
-# Router dry-run (no MongoDB needed)
-python scripts/eval_pipeline.py --dry-run
+# Router accuracy (no MongoDB needed)
+make eval-router
 
-# Full pipeline (requires MongoDB + all API keys)
-python scripts/eval_pipeline.py
+# End-to-end smoke test
+make probe
 
-# Single function type
-python scripts/eval_pipeline.py --function metadata_specific
-
-# Single test
-python scripts/eval_pipeline.py --test-id 13
+# Full probe suite
+make probe-full
 ```
 
 ---
 
-## Data Pipeline
+## Full Data Pipeline (from scratch)
 
-To scrape fresh data and rebuild from scratch:
+To scrape fresh data and rebuild the corpus from scratch:
 
 ```bash
 # 1. Scrape academic catalog
@@ -413,15 +568,18 @@ make scrape-catalog
 # 2. Scrape course sections + download syllabi PDFs
 make scrape-classes
 
-# 3. Parse PDFs with Gemini (resumes automatically)
-python process_syllabi.py
-# For a single department: python process_syllabi.py --department CSCE
-# Retry failed files:      python process_syllabi.py --retry-errors
+# 3. Parse PDFs with Gemini (resumes automatically; skips completed files)
+GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py
+# Single department:  python ingestion_pipeline/process_syllabi.py --department CSCE
+# Retry failed files: python ingestion_pipeline/process_syllabi.py --retry-errors
+# Or retry via:       python -m ingestion_pipeline.refine_errors
 
-# 4. Rebuild MongoDB
-python -m db.setup_atlas
-python -m db.ingest
+# 4. Rebuild MongoDB (indexes + embeddings)
+python -m ingestion_pipeline.setup_atlas
+python -m ingestion_pipeline.ingest
 ```
+
+Reset catalog crawl: delete `tamu_data/scraper/logs/progress_log.txt`
 
 ---
 
@@ -442,7 +600,7 @@ Every user query is traced end-to-end in **Langfuse** and asynchronously evaluat
 
 ### Implementation notes
 
-- **Langfuse SDK** is **not used** — all telemetry posts directly to the Langfuse REST API via `httpx` (`db/observability.py`). Required because the official SDK depends on `pydantic.v1` which breaks on Python 3.14+.
+- **Langfuse SDK** is **not used** — all telemetry posts directly to the Langfuse REST API via `httpx` (`rag/observability.py`). Required because the official SDK depends on `pydantic.v1` which breaks on Python 3.14+.
 - **RAGAS** runs in a background daemon thread after each response — it does not block the UI.
 - **RAGAS embeddings** use Voyage AI (`voyage-3`) to avoid Google Embedding API compatibility issues.
 
@@ -452,28 +610,55 @@ Every user query is traced end-to-end in **Langfuse** and asynchronously evaluat
 
 ```
 tamubot/
-├── app.py                  # Streamlit chat UI
-├── config.py               # Env config + FUNCTION_RETRIEVAL_CONFIG + DEFAULT_SUMMARY_CATEGORIES
-├── process_syllabi.py      # Gemini PDF parser (pipeline step 3)
-├── db/
-│   ├── models.py           # Pydantic v2 MongoDB models
-│   ├── setup_atlas.py      # Create Atlas indexes (vector + text + compound metadata)
-│   ├── ingest.py           # Embed + upsert to MongoDB (Voyage voyage-3)
-│   ├── search.py           # hybrid_search · search_semantic · search_by_course_categories
-│   ├── router.py           # Variable extraction + function derivation + orchestrator
-│   ├── reranker.py         # Voyage rerank-2 (single + multi-course)
-│   ├── generator.py        # Function-adaptive prompts + semantic_type overlays + citations
-│   └── observability.py    # Langfuse REST client + RAGAS evaluation
+├── app.py                          # Streamlit chat UI
+├── config.py                       # Env config + LLM client factory
+├── Makefile                        # Dev targets: test, lint, typecheck, ingest, probe
+│
+├── rag/                            # Query-time RAG pipeline (runtime)
+│   ├── __init__.py                 # Public API — import from here, not submodules
+│   ├── models.py                   # Pydantic v2 schema CONTRACT (owned by consumer)
+│   │                               #   ChunkDoc · CourseDoc · PolicyDoc · VALID_CATEGORIES
+│   ├── router.py                   # Variable extraction + 8-function derivation + orchestrator
+│   ├── search.py                   # hybrid_search · search_semantic · fetch_anchor_chunks
+│   ├── reranker.py                 # Voyage rerank-2 (single + multi-course)
+│   ├── generator.py                # Function-adaptive prompts + intent_type overlays + citations
+│   ├── llm_client.py               # Unified LLM client (TAMU gateway / Gemini direct)
+│   ├── context_builder.py          # XML context formatting + thinking block stripping
+│   └── observability.py            # MinimalLangfuseClient + RAGAS background eval
+│
+├── ingestion_pipeline/             # Setup-time ETL (producer — implements rag.models contract)
+│   ├── __init__.py                 # Public API: parse_pdf · run_ingest · setup_indexes
+│   ├── process_syllabi.py          # Gemini 2.0 Flash PDF → structured JSON
+│   ├── ingest.py                   # Pydantic validate + Voyage embed + MongoDB upsert
+│   ├── setup_atlas.py              # Create vector/text/compound Atlas indexes
+│   └── refine_errors.py            # Second-pass retry for failed PDFs
+│
+├── evals/
+│   ├── eval_router_metrics.py      # 34-case router accuracy harness
+│   └── run_probe.py                # End-to-end smoke + full probe suites
+│
 ├── tamu_data/
-│   ├── processed/
-│   │   └── gemini_parsed/  # 259 structured syllabus JSONs (committed)
-│   ├── raw/                # PDFs + scraped JSONL (gitignored, large)
-│   └── scraper/            # Scrapy project (catalog + class_search spiders)
-├── scripts/
-│   └── eval_pipeline.py    # 34-case evaluation harness (router dry-run + full pipeline)
-├── pipeline/legacy/        # Superseded scripts (Vertex AI, PyMuPDF)
-├── OBSERVABILITY.md        # Langfuse + RAGAS monitoring runbook
-└── research_prompts.md     # Gemini Deep Research prompts
+│   ├── processed/gem_parsed_YYYYMMDD/  # Structured JSONs + parsing_progress.csv (date-stamped per run)
+│   ├── logs/per_file/                  # Per-PDF .txt reports (success + failure)
+│   ├── raw/                            # PDFs + scraped JSONL (gitignored, large)
+│   └── scraper/                        # Scrapy project (catalog + class_search spiders)
+│
+└── tests/                          # pytest unit tests
+```
+
+### Dependency Direction
+
+```
+config.py  (shared root)
+    │
+    ├──► rag/                    ← query-time runtime
+    │      models.py             ← schema CONTRACT (consumer owns)
+    │      router · search · reranker · generator · observability
+    │
+    └──► ingestion_pipeline/     ← setup-time ETL (producer)
+           ingest.py ──────────────► rag.models  (implements contract)
+           setup_atlas.py
+           process_syllabi.py
 ```
 
 ---
@@ -483,18 +668,34 @@ tamubot/
 | Collection | Description | Key |
 |---|---|---|
 | `chunks` | Syllabus chunks with 1024-dim Voyage embeddings | `(crn, chunk_index)` |
-| `courses` | One doc per section — metadata for aggregations | `crn` |
+| `courses` | One doc per section — metadata + completeness gaps | `crn` |
 | `policies` | Deduplicated university boilerplate policies | SHA-256 of policy name |
+
+### Indexes
+
+| Collection | Index | Type |
+|---|---|---|
+| `chunks` | `vector_index` | Atlas vectorSearch (1024-dim cosine) |
+| `chunks` | `text_index` | Atlas Search (BM25, lucene.standard) |
+| `chunks` | `(crn, chunk_index)` | Unique compound |
+| `chunks` | `(course_id, category)` | Compound metadata |
+| `courses` | `crn` | Unique |
+| `policies` | `policy_hash` | Unique |
 
 ---
 
-## Current Status (as of 2026-02-28)
+## Current Status (as of 2026-03-04)
 
 ### Completed
 
 - Scrapy spiders for catalog + class search (all departments)
 - Syllabus PDF download — 7,970 PDFs across all departments
 - Gemini PDF parsing — 259/259 CSCE + ISEN files parsed
+- **Ingestion pipeline hardening**: `sanitize_json` (fixes malformed Gemini JSON), `clean_replacement_chars` (U+FFFD en-dash fix), `collapse_chunks_by_category` (≤13 chunks/file), `refine_errors.py` (second-pass retry for error JSONs)
+- **13 categories**: added `COURSE_SUMMARY` (always-generated RAG keyword index) and `SAFETY` (lab courses only); `COURSE_OVERVIEW` token count reduced 5× for lab courses by proper separation
+- **`course_url`** extracted from syllabus PDF metadata into `course_metadata`
+- **Per-run observability**: `parsing_progress.csv` (live; token counts + flags per category), per-file `.txt` reports, standardized error types (`JSON_PARSE_ERROR` / `SSL_ERROR` / `DNS_ERROR` / `RATE_LIMIT`)
+- **`ingest.py`**: skips error JSONs; stores `missing_sections` + `completeness_warnings` on `CourseDoc` (fixes `get_missing_sections()` deriving presence from chunks)
 - MongoDB Atlas integration: models, indexes, ingestion, hybrid search
 - **3-stage RAG pipeline** (Router → Retrieval+Rerank → Generator) with XML context and `[Source N]` citations
 - **Router schema** — `intent_type` (replaces `semantic_intent`+`semantic_type`); `recurrent_search` flag; function derived mechanically in pure Python; 34-case dry-run eval at 100% function accuracy
@@ -506,8 +707,9 @@ tamubot/
   4. `rerank()` — Voyage rerank-2 on discovery chunks
   5. combine anchor + reranked discovery; disclaimer prepended if `DataGaps` exist
 - **`generate_comparison()`** — single structured LLM call + Python-rendered Markdown table for multi-course factual queries
-- **`<thinking>` block stripping** — `strip_thinking_blocks()` removes Chain-of-Verification quotes before display (both blocking and streaming)
+- **`<thinking>` block stripping** — `strip_thinking_blocks()` removes Chain-of-Verification quotes before display
 - **Observability stack**: Langfuse tracing + RAGAS automated evaluation; `intent_type` in router span metadata
+- **CBD reorganization** — `rag/` owns the schema contract (`models.py`); `ingestion_pipeline/` is the producer (`ingest.py` + `setup_atlas.py` moved from `rag/`); Pydantic validation enforced at ingest time; `CourseDoc` now stores `missing_sections` + `completeness_warnings`
 
 ### Known Issues
 
@@ -516,13 +718,16 @@ tamubot/
 - **Langfuse SDK incompatible with Python 3.14**: Workaround in `rag/observability.py` (direct REST). Revert to official SDK when fixed upstream.
 - **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — watch if prompt grows.
 - **Recall@k 36%**: CRN-exact matching counts cross-section hits as misses → redefine hit as `course_id + category`.
+- **Golden set ~10 label errors**: run adjudication before trusting router accuracy (74% raw, ~90% estimated).
+- **`SAFETY` / `COURSE_SUMMARY` not query-routable**: not in `rag.models.VALID_CATEGORIES`; stored in MongoDB but router never targets them directly.
 
 ### Next Steps
 
-1. Expand parsing to all departments (`python ingestion_pipeline/process_syllabi.py` without `--department`)
-2. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
-3. Re-run router eval after `intent_type` migration to verify accuracy holds
-4. Add latency percentile tracking (p50/p95 per function) in Langfuse dashboards
+1. Run `refine_errors.py` on remaining 15 SSL/DNS failures in `gemini_parsed/`
+2. Expand parsing to all departments (`python ingestion_pipeline/process_syllabi.py` without `--department`)
+3. Add `SAFETY` to `rag.models.VALID_CATEGORIES` to make it query-routable
+4. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
+5. Redefine Recall@k hit as `course_id + category` to fix 36% undercount
 
 ---
 

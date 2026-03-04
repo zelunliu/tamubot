@@ -1,4 +1,4 @@
-.PHONY: run scrape-catalog scrape-classes convert standardize ingest \
+.PHONY: run scrape-catalog scrape-classes setup-atlas ingest ingest-dept \
         test typecheck lint format eval-router probe probe-full
 
 # --- App ---
@@ -13,27 +13,27 @@ scrape-catalog:
 scrape-classes:
 	cd tamu_data/scraper && scrapy crawl class_search
 
-convert:
-	python convert_for_vertex.py
-
-standardize:
-	python standardize_syllabi.py
+setup-atlas:
+	python -m ingestion_pipeline.setup_atlas
 
 ingest:
-	python tamu_data/ingestion/upload_to_corpus.py
+	python -m ingestion_pipeline.ingest
+
+ingest-dept:
+	python -m ingestion_pipeline.ingest --department $(DEPT)
 
 # --- Dev / Testing ---
 test:
 	pytest tests/ -v
 
 typecheck:
-	mypy db/ --ignore-missing-imports
+	mypy rag/ ingestion_pipeline/ evals/ --ignore-missing-imports
 
 lint:
-	ruff check db/ app.py config.py
+	ruff check rag/ ingestion_pipeline/ evals/ app.py config.py
 
 format:
-	ruff format db/ app.py config.py
+	ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
 
 eval-router:
 	python evals/eval_router_metrics.py

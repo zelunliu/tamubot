@@ -1,7 +1,7 @@
 """Create MongoDB Atlas indexes for the three collections.
 
 Usage:
-    python -m db.setup_atlas
+    python -m ingestion_pipeline.setup_atlas
 
 Requires MONGODB_URI in .env (or environment).
 """

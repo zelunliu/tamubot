@@ -14,8 +14,10 @@ Usage:
     GOOGLE_API_KEY=... python process_syllabi.py --retry-errors      # retry previously failed files
 """
 
+import csv
 import json
 import os
+import re
 import sys
 import time
 import argparse
@@ -30,13 +32,38 @@ API_KEY = os.getenv("GOOGLE_API_KEY", "")
 MODEL = "gemini-2.5-flash"
 
 SYLLABI_DIR = Path("tamu_data/raw/syllabi")
-OUTPUT_DIR = Path("tamu_data/processed/gemini_parsed")
+OUTPUT_DIR = Path(f"tamu_data/processed/gem_parsed_{datetime.now().strftime('%Y%m%d')}")
 LOG_DIR = Path("tamu_data/logs")
+REPORT_DIR = Path("tamu_data/logs/per_file")
+PROGRESS_CSV = OUTPUT_DIR / "parsing_progress.csv"
 
 DEPARTMENTS = ["CSCE", "ISEN"]
 MAX_RETRIES = 2
 DELAY_BETWEEN_CALLS = 2  # seconds
 DELAY_ON_RATE_LIMIT = 30  # seconds
+
+# Categories in CSV column order (COURSE_SUMMARY adjacent to OVERVIEW)
+ALL_CATEGORIES = [
+    "COURSE_OVERVIEW", "COURSE_SUMMARY", "INSTRUCTOR", "PREREQUISITES",
+    "LEARNING_OUTCOMES", "MATERIALS", "GRADING", "SCHEDULE",
+    "ATTENDANCE_AND_MAKEUP", "AI_POLICY", "UNIVERSITY_POLICIES", "SUPPORT_SERVICES",
+    "SAFETY",
+]
+
+# Token-count warning thresholds per category (min, max)
+CSV_FIELDS = [
+    "file", "course_id", "section", "crn", "status",
+    "error_type", "error_detail", "chunk_count",
+    *[f"{cat}_tok" for cat in ALL_CATEGORIES],
+    "course_url", "flags", "parsed_at",
+]
+
+TOKEN_THRESHOLDS: dict[str, tuple[int, int]] = {
+    "COURSE_SUMMARY":        (150, 500),
+    "GRADING":               (50, 5000),
+    "SCHEDULE":              (50, 8000),
+    "default":               (20, 3000),
+}
 
 PROMPT = """You are a university syllabus parser. Analyze this PDF and extract ALL content into structured JSON.
 
@@ -56,11 +83,12 @@ OUTPUT FORMAT — return ONLY valid JSON:
     "teaching_assistants": [{"name": "...", "email": "..."}],
     "meeting_times": "...",
     "location": "...",
-    "credit_hours": "..."
+    "credit_hours": "...",
+    "course_url": "<Canvas course URL or official course webpage if found, else null>"
   },
   "chunks": [
     {
-      "category": "<one of the 11 categories below>",
+      "category": "<one of the 12 categories below>",
       "title": "<section heading from the document>",
       "content": "<full text of this section, preserving all detail>",
       "has_table": true/false
@@ -75,27 +103,61 @@ OUTPUT FORMAT — return ONLY valid JSON:
   }
 }
 
-THE 11 SEMANTIC CATEGORIES (use exactly these string values for "category"):
-1. COURSE_OVERVIEW — course description, catalog info, special designations, format
-2. INSTRUCTOR — instructor/TA details (only if NOT already fully captured in course_metadata)
-3. PREREQUISITES — required courses, corequisites, standing requirements
-4. LEARNING_OUTCOMES — what students will learn, course objectives
-5. MATERIALS — textbooks, required software, platforms, tech requirements
-6. GRADING — grade scale, weights, component descriptions (homework, exams, labs, projects), rubrics, grade appeals
-7. SCHEDULE — course calendar, weekly topics, exam dates, assignment due dates
-8. ATTENDANCE_AND_MAKEUP — attendance rules, late work policy, makeup exams, excused absences
-9. AI_POLICY — AI tool usage rules (permitted, required, prohibited), citation requirements
+THE 13 SEMANTIC CATEGORIES (use exactly these string values for "category"):
+1.  COURSE_OVERVIEW — course description, catalog info, special designations, format
+2.  INSTRUCTOR — instructor/TA details (only if NOT already fully captured in course_metadata)
+3.  PREREQUISITES — required courses, corequisites, standing requirements
+4.  LEARNING_OUTCOMES — what students will learn, course objectives
+5.  MATERIALS — textbooks, required software, platforms, tech requirements
+6.  GRADING — grade scale, weights, component descriptions (homework, exams, labs, projects), rubrics, grade appeals
+7.  SCHEDULE — course calendar, weekly topics, exam dates, assignment due dates
+8.  ATTENDANCE_AND_MAKEUP — attendance rules, late work policy, makeup exams, excused absences
+9.  AI_POLICY — AI tool usage rules (permitted, required, prohibited), citation requirements
 10. UNIVERSITY_POLICIES — standard institutional boilerplate (ADA, FERPA, Title IX, Honor Code, etc.)
 11. SUPPORT_SERVICES — IT help, Canvas support, tutoring, writing center
+12. COURSE_SUMMARY — RAG-optimized keyword index (see generation rules below)
+13. SAFETY — lab safety rules, protective equipment requirements, dress code, chemical/biological
+    hazard handling, equipment operation rules, emergency procedures, food/drink restrictions.
+    Use only for courses with a physical lab or hands-on component. Do NOT use for generic
+    academic integrity or classroom conduct (those go in UNIVERSITY_POLICIES).
 
 RULES:
-- Extract ALL course-specific content. Do not skip or summarize.
+- Extract ALL course-specific content. Do not skip or summarize (except COURSE_SUMMARY).
 - Preserve tables as Markdown tables (| col1 | col2 | format). Set has_table=true.
 - For UNIVERSITY_POLICIES: list ONLY the policy names in "boilerplate_policies". Do NOT include the full boilerplate text in chunks. Only include course-specific MODIFICATIONS to standard policies as chunks.
 - Never use "MISC" or "OTHER" as a category. Use the closest match.
 - Each chunk should be a coherent section. Don't split mid-paragraph.
-- For completeness_check: list categories absent from the syllabus as missing_sections. Add warnings for missing grade weights, missing dates, missing contact info, etc.
+- For completeness_check: list categories absent from the syllabus as missing_sections.
+  Do NOT include COURSE_SUMMARY in missing_sections — it is always generated.
+  Only include SAFETY in missing_sections if the course clearly has a lab/hands-on component.
+  Add warnings for missing grade weights, missing dates, missing contact info, etc.
 - Escape all special characters properly. Output must be valid JSON.
+- When assigning a category, verify the CONTENT of the section (not just the header/title).
+  If the header says "Assignments" but the content is about grade percentages and weights,
+  assign GRADING. If a section header is ambiguous, use the content to determine the best
+  matching category from the 13 options. Always prefer content semantics over header words.
+- If you are unsure between two categories, choose the one that better describes what a
+  student would need to know from this section's content.
+- course_url: extract the Canvas course URL or official course webpage URL if present in the
+  syllabus. Set to null if not found.
+
+COURSE_SUMMARY GENERATION RULES (category 12):
+Generate exactly one COURSE_SUMMARY chunk using this strict format:
+
+  <DEPT> <NUM> [/ <crosslist>] | <Full Course Title> | <Term>
+  Topics: <comma-separated specific concepts, named theorems, biological organisms, algorithms, protocols — no vague generalities>
+  Methods: <specific procedures, computational methods, lab techniques, analytical frameworks>
+  Prerequisites: <exact course codes and standing; omit this line entirely if none stated in the syllabus>
+  Tools/Platforms: <named software, instruments, platforms; omit if none stated>
+  Niche: <specialized sub-topics, industry-specific terms, long-tail subjects worth indexing>
+
+Rules for COURSE_SUMMARY content:
+- Retain ALL proper nouns, species names (e.g. "S. cerevisiae"), theorem names (e.g. "Stokes' Theorem", "Green's Theorem"), algorithm names, drug names, and tool names verbatim.
+- NEVER write: "students will learn", "designed to", "upon completion", "this course", "is ideal for", "you will", "gain experience", "understand", or any narrative framing.
+- Use declarative noun phrases only. Be dense — prefer "spot plate analysis, yeast strain construction, mutagenesis assay" over "hands-on lab techniques".
+- If a field has no data in the source text, omit that line entirely. Do not infer prerequisites, difficulty, or audience.
+- Preserve niche sub-topics that satisfy long-tail queries (e.g. "crisis communication", "manuscript preparation", "Bayesian Personalized Ranking").
+- Target 200-280 tokens total.
 """
 
 
@@ -164,6 +226,176 @@ def log_progress(completed: int, total: int, filename: str, status: str):
         f.write(json.dumps(entry) + "\n")
 
 
+def sanitize_json(raw: str) -> str:
+    """Attempt to clean common Gemini JSON output errors."""
+    raw = raw.replace('\x00', '')  # null bytes
+    # Fix invalid backslash escapes (not one of: " \ / b f n r t u 0-9)
+    raw = re.sub(r'\\([^"\\/bfnrtu0-9])', r'\\\\\1', raw)
+    # Strip bare control chars (0x01-0x1F except \t \n \r)
+    raw = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f]', '', raw)
+    return raw
+
+
+def clean_replacement_chars(obj):
+    """Recursively replace Unicode replacement character (U+FFFD) with a hyphen.
+
+    Gemini substitutes \ufffd when it encounters bytes it can't decode from the
+    PDF (e.g. Windows-1252 en-dashes, ligatures). Replacing with '-' is safe
+    for office hours ranges, schedules, etc.
+    """
+    if isinstance(obj, str):
+        return obj.replace('\ufffd', '-')
+    if isinstance(obj, dict):
+        return {k: clean_replacement_chars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [clean_replacement_chars(v) for v in obj]
+    return obj
+
+
+def collapse_chunks_by_category(chunks: list[dict]) -> list[dict]:
+    """Merge all chunks sharing the same category into a single chunk."""
+    from collections import OrderedDict
+    grouped: OrderedDict = OrderedDict()
+    for chunk in chunks:
+        cat = chunk.get("category", "COURSE_OVERVIEW")
+        if cat not in grouped:
+            grouped[cat] = {
+                "category": cat,
+                "title": chunk.get("title", ""),
+                "content": chunk.get("content", ""),
+                "has_table": chunk.get("has_table", False),
+            }
+        else:
+            grouped[cat]["content"] += "\n\n" + chunk.get("content", "")
+            if chunk.get("has_table"):
+                grouped[cat]["has_table"] = True
+            existing_title = grouped[cat]["title"]
+            new_title = chunk.get("title", "")
+            if new_title and new_title not in existing_title:
+                grouped[cat]["title"] = existing_title + " / " + new_title
+    return list(grouped.values())
+
+
+def write_per_file_report(pdf_path: Path, result: dict):
+    """Write a human-readable .txt report for a processed PDF."""
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORT_DIR / (pdf_path.stem + ".txt")
+
+    lines = [f"File: {pdf_path.name}"]
+
+    if "error" in result:
+        lines.append("Status: FAILED")
+        lines.append(f"Error: {result['error']}")
+        lines.append(f"Attempts: {result.get('_attempts', MAX_RETRIES + 1)}")
+    else:
+        chunks = result.get("chunks", [])
+        parsed_at = result.get("_parsed_at", "")
+        lines.append(f"Status: OK  |  Chunks: {len(chunks)}  |  Parsed: {parsed_at}")
+        lines.append("")
+        lines.append("Chunks:")
+        for chunk in chunks:
+            cat = chunk.get("category", "")
+            title = chunk.get("title", "")
+            lines.append(f"  {cat:<22} — \"{title}\"")
+        completeness = result.get("completeness_check", {})
+        missing = completeness.get("missing_sections", [])
+        warnings = completeness.get("warnings", [])
+        if missing:
+            lines.append("")
+            lines.append(f"Missing sections: {', '.join(missing)}")
+        if warnings:
+            lines.append("Completeness warnings:")
+            for w in warnings:
+                lines.append(f"  - {w}")
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def count_tokens(text: str) -> int:
+    """Approximate token count (1 token ≈ 4 chars for English text)."""
+    return max(0, round(len(text) / 4))
+
+
+def classify_error(error_str: str) -> str:
+    """Map a raw error string to a standardized error type."""
+    s = error_str.lower()
+    if "json parse error" in s:
+        return "JSON_PARSE_ERROR"
+    if "ssl" in s or "certificate" in s:
+        return "SSL_ERROR"
+    if "getaddrinfo" in s or "name or service not known" in s or "nodename nor servname" in s:
+        return "DNS_ERROR"
+    if "429" in error_str or "quota" in s or "rate" in s:
+        return "RATE_LIMIT"
+    if "exhausted retries" in s:
+        return "EXHAUSTED_RETRIES"
+    return "UNKNOWN_ERROR"
+
+
+def build_progress_row(pdf_path: Path, result: dict) -> dict:
+    """Build a CSV row dict for one processed PDF."""
+    meta = result.get("course_metadata", {})
+    chunks_by_cat = {c["category"]: c for c in result.get("chunks", [])}
+
+    token_cols: dict[str, int] = {}
+    flags: list[str] = []
+    for cat in ALL_CATEGORIES:
+        content = chunks_by_cat.get(cat, {}).get("content", "")
+        tok = count_tokens(content)
+        token_cols[f"{cat}_tok"] = tok
+        if content:  # only flag present chunks
+            lo, hi = TOKEN_THRESHOLDS.get(cat, TOKEN_THRESHOLDS["default"])
+            if tok < lo:
+                flags.append(f"{cat}:TOO_SMALL({tok})")
+            elif tok > hi:
+                flags.append(f"{cat}:TOO_LARGE({tok})")
+
+    if "error" in result:
+        error_type = classify_error(result["error"])
+        error_detail = result["error"][:120]
+    else:
+        error_type = ""
+        error_detail = ""
+
+    return {
+        "file": pdf_path.name,
+        "course_id": meta.get("course_id", ""),
+        "section": meta.get("section", ""),
+        "crn": meta.get("crn", ""),
+        "status": "FAILED" if "error" in result else "OK",
+        "error_type": error_type,
+        "error_detail": error_detail,
+        "chunk_count": len(result.get("chunks", [])),
+        **token_cols,
+        "course_url": meta.get("course_url") or "",
+        "flags": "; ".join(flags),
+        "parsed_at": result.get("_parsed_at", datetime.now().isoformat()),
+    }
+
+
+def load_progress_csv() -> list[dict]:
+    """Load existing progress CSV rows, keyed by filename for deduplication."""
+    if not PROGRESS_CSV.exists():
+        return []
+    try:
+        with open(PROGRESS_CSV, "r", newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def write_progress_csv(rows: list[dict]):
+    """Rewrite the full progress CSV (called after every PDF)."""
+    if not rows:
+        return
+    PROGRESS_CSV.parent.mkdir(parents=True, exist_ok=True)
+    with open(PROGRESS_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore", restval="")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def parse_pdf(client, pdf_path: Path) -> dict:
     """Send a PDF to Gemini and get structured JSON. Retries on failure."""
     pdf_bytes = pdf_path.read_bytes()
@@ -184,7 +416,16 @@ def parse_pdf(client, pdf_path: Path) -> dict:
             )
 
             raw = response.text.strip()
-            parsed = json.loads(raw)
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = json.loads(sanitize_json(raw))
+
+            # Clean up Unicode replacement chars (e.g. en-dashes in office hours)
+            parsed = clean_replacement_chars(parsed)
+
+            # Collapse duplicate-category chunks → at most 13 chunks per file
+            parsed["chunks"] = collapse_chunks_by_category(parsed.get("chunks", []))
 
             # Inject source filename into metadata for traceability
             parsed["_source_file"] = pdf_path.name
@@ -198,7 +439,7 @@ def parse_pdf(client, pdf_path: Path) -> dict:
             if attempt < MAX_RETRIES:
                 time.sleep(DELAY_BETWEEN_CALLS)
             else:
-                return {"error": error_msg, "_source_file": pdf_path.name}
+                return {"error": error_msg, "_source_file": pdf_path.name, "_attempts": attempt + 1}
 
         except Exception as e:
             error_str = str(e)
@@ -211,9 +452,9 @@ def parse_pdf(client, pdf_path: Path) -> dict:
             elif attempt < MAX_RETRIES:
                 time.sleep(DELAY_BETWEEN_CALLS * (attempt + 1))
             else:
-                return {"error": error_str, "_source_file": pdf_path.name}
+                return {"error": error_str, "_source_file": pdf_path.name, "_attempts": attempt + 1}
 
-    return {"error": "Exhausted retries", "_source_file": pdf_path.name}
+    return {"error": "Exhausted retries", "_source_file": pdf_path.name, "_attempts": MAX_RETRIES + 1}
 
 
 def main():
@@ -249,6 +490,8 @@ def main():
     print(f"  Already done: {already_done}")
     print(f"  To process:   {remaining}")
     print(f"  Output dir:   {OUTPUT_DIR}")
+    print(f"  Progress CSV: {PROGRESS_CSV}")
+    print(f"  Reports dir:  {REPORT_DIR}")
     print(f"  Error log:    {LOG_DIR / 'errors.jsonl'}")
     print(f"{'='*60}\n")
 
@@ -261,6 +504,10 @@ def main():
 
     client = genai.Client(api_key=API_KEY)
 
+    # Load existing progress rows; index by filename for upsert behaviour
+    progress_rows = load_progress_csv()
+    progress_index = {r["file"]: i for i, r in enumerate(progress_rows)}
+
     ok_count = 0
     fail_count = 0
     start_time = time.time()
@@ -270,6 +517,16 @@ def main():
         print(f"[{n}/{total}] {pdf_path.name} ({pdf_path.stat().st_size/1024:.0f} KB)...", end=" ", flush=True)
 
         result = parse_pdf(client, pdf_path)
+        write_per_file_report(pdf_path, result)
+
+        # Update realtime progress CSV
+        row = build_progress_row(pdf_path, result)
+        if pdf_path.name in progress_index:
+            progress_rows[progress_index[pdf_path.name]] = row
+        else:
+            progress_index[pdf_path.name] = len(progress_rows)
+            progress_rows.append(row)
+        write_progress_csv(progress_rows)
 
         # Save immediately
         out_path = OUTPUT_DIR / pdf_path.name.replace(".pdf", ".json")

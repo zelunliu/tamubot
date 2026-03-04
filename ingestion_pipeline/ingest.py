@@ -1,9 +1,9 @@
 """Ingest Gemini-parsed JSON files into MongoDB Atlas.
 
 Usage:
-    python -m db.ingest                          # ingest all
-    python -m db.ingest --department CSCE         # single department
-    python -m db.ingest --dry-run                 # preview without writing
+    python -m ingestion_pipeline.ingest                          # ingest all
+    python -m ingestion_pipeline.ingest --department CSCE         # single department
+    python -m ingestion_pipeline.ingest --dry-run                 # preview without writing
 
 Requires MONGODB_URI and VOYAGE_API_KEY in .env.
 """
@@ -20,6 +20,8 @@ from pathlib import Path
 import voyageai
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
+
+from rag.models import ChunkDoc, CourseDoc, PolicyDoc
 
 load_dotenv()
 
@@ -66,7 +68,7 @@ def parse_json_file(filepath: Path) -> dict | None:
 
 
 def build_chunk_docs(data: dict, source_file: str) -> list[dict]:
-    """Convert parsed JSON into chunk documents ready for MongoDB."""
+    """Convert parsed JSON into validated chunk documents ready for MongoDB."""
     meta = data.get("course_metadata", {})
     crn = meta.get("crn", "")
     course_id = meta.get("course_id", "")
@@ -79,22 +81,21 @@ def build_chunk_docs(data: dict, source_file: str) -> list[dict]:
     for i, chunk in enumerate(data.get("chunks", [])):
         category = chunk.get("category", "")
         anchor = build_anchor(course_id, section, term, category)
-        docs.append({
-            "crn": crn,
-            "chunk_index": i,
-            "category": category,
-            "title": chunk.get("title", ""),
-            "content": chunk.get("content", ""),
-            "has_table": chunk.get("has_table", False),
-            "anchor": anchor,
-            "course_id": course_id,
-            "section": section,
-            "term": term,
-            "instructor_name": instructor_name,
-            "source_file": source_file,
-            "ingested_at": datetime.utcnow(),
-            # embedding populated later
-        })
+        validated = ChunkDoc(
+            crn=crn,
+            chunk_index=i,
+            category=category,
+            title=chunk.get("title") or "",
+            content=chunk.get("content") or "",
+            has_table=chunk.get("has_table") or False,
+            anchor=anchor,
+            course_id=course_id,
+            section=section,
+            term=term,
+            instructor_name=instructor_name,
+            source_file=source_file,
+        )
+        docs.append(validated.model_dump())
     return docs
 
 
@@ -102,22 +103,25 @@ def build_course_doc(data: dict, source_file: str) -> dict:
     meta = data.get("course_metadata", {})
     chunks = data.get("chunks", [])
     categories = list({c.get("category", "") for c in chunks})
-    return {
-        "crn": meta.get("crn", ""),
-        "course_id": meta.get("course_id", ""),
-        "section": meta.get("section", ""),
-        "term": meta.get("term", ""),
-        "instructor": meta.get("instructor"),
-        "teaching_assistants": meta.get("teaching_assistants", []),
-        "meeting_times": meta.get("meeting_times"),
-        "location": meta.get("location"),
-        "credit_hours": meta.get("credit_hours"),
-        "categories_present": categories,
-        "chunk_count": len(chunks),
-        "boilerplate_policies": data.get("boilerplate_policies", []),
-        "source_file": source_file,
-        "ingested_at": datetime.utcnow(),
-    }
+    completeness = data.get("completeness_check", {})
+    validated = CourseDoc(
+        crn=meta.get("crn", ""),
+        course_id=meta.get("course_id", ""),
+        section=meta.get("section", ""),
+        term=meta.get("term", ""),
+        instructor=meta.get("instructor"),
+        teaching_assistants=meta.get("teaching_assistants", []),
+        meeting_times=meta.get("meeting_times"),
+        location=meta.get("location"),
+        credit_hours=meta.get("credit_hours"),
+        categories_present=categories,
+        chunk_count=len(chunks),
+        boilerplate_policies=data.get("boilerplate_policies", []),
+        missing_sections=completeness.get("missing_sections", []),
+        completeness_warnings=completeness.get("warnings", []),
+        source_file=source_file,
+    )
+    return validated.model_dump()
 
 
 def build_policy_ops(data: dict) -> list[UpdateOne]:
@@ -211,6 +215,9 @@ def main():
         for f in json_files:
             data = parse_json_file(f)
             if data:
+                if "error" in data:
+                    print(f"  {f.name}: SKIP (error file)")
+                    continue
                 chunks = build_chunk_docs(data, f.name)
                 print(f"  {f.name}: {len(chunks)} chunks")
         return
@@ -226,6 +233,10 @@ def main():
         data = parse_json_file(filepath)
         if data is None:
             errors.append(filepath.name)
+            continue
+
+        if "error" in data:
+            print(f"  SKIP: {filepath.name} — previously failed")
             continue
 
         try:

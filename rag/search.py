@@ -14,6 +14,7 @@ import voyageai
 from pymongo import MongoClient
 
 import config
+from rag.models import VALID_CATEGORIES
 
 MONGODB_URI = config.MONGODB_URI
 DB_NAME = config.MONGODB_DB
@@ -378,7 +379,6 @@ def get_missing_sections(course_id: str) -> list[str]:
     courses collection (populated during ingestion from completeness_check data).
     Returns an empty list if the course is not found.
     """
-    from rag.models import VALID_CATEGORIES
     db = _get_db()
     doc = db["courses"].find_one({"course_id": course_id}, {"categories_present": 1})
     if not doc:

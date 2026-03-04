@@ -1,4 +1,5 @@
 # Public API — evals and app.py import from here, not from submodules
+from rag.models import ChunkDoc, CourseDoc, PolicyDoc, VALID_CATEGORIES
 from rag.router import (
     route_retrieve_rerank,
     classify_query,
@@ -13,6 +14,7 @@ from rag.reranker import rerank, rerank_multi_course
 from rag.observability import get_langfuse, run_ragas_background, compute_ragas_metrics
 
 __all__ = [
+    "ChunkDoc", "CourseDoc", "PolicyDoc", "VALID_CATEGORIES",
     "route_retrieve_rerank", "classify_query", "RouterResult",
     "compute_dynamic_k", "deduplicate_chunks", "FUNCTION_CATEGORY_STRATEGIES",
     "generate", "generate_stream", "generate_comparison",

@@ -117,5 +117,7 @@ class CourseDoc(BaseModel):
     categories_present: list[str] = Field(default_factory=list)
     chunk_count: int = 0
     boilerplate_policies: list[str] = Field(default_factory=list)
+    missing_sections: list[str] = Field(default_factory=list)
+    completeness_warnings: list[str] = Field(default_factory=list)
     source_file: str = ""
     ingested_at: datetime = Field(default_factory=datetime.utcnow)
