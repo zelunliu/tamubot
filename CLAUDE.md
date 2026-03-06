@@ -1,17 +1,8 @@
 # CLAUDE.md
 
-## IMPORTANT: Task Notification
+## Task Notification
 
-**Every response, no exceptions:**
-1. **First tool call** must always be:
-```bash
-date +%s > "$(cygpath $TEMP)/.claude_task_start"
-```
-2. **Last tool call** must always be:
-```bash
-source .venv/Scripts/activate && python .claude_notify.py
-```
-Shows a popup (no auto-close) if the task took >30 seconds. Do this even for trivial/short responses.
+Timer starts automatically via `UserPromptSubmit` hook. Notification fires via `Stop` hook for tasks `>15s`. No manual tool calls needed.
 
 > Module-level detail: `rag/CLAUDE.md`, `ingestion_pipeline/CLAUDE.md`, `evals/CLAUDE.md`
 
@@ -39,6 +30,18 @@ Reset catalog crawl: delete `tamu_data/scraper/logs/progress_log.txt`
 - **Gemini JSON mode**: with `response_mime_type="application/json"` + schema, free-form Markdown fields silently return empty — always render Markdown in Python from structured data
 - **Langfuse SDK / Python 3.14**: `pydantic.v1` incompatible → custom `MinimalLangfuseClient` in `rag/observability.py`; revert when SDK ships fix
 - **ingestion_pipeline**: stays on direct `GOOGLE_API_KEY` — PDF multimodal (`Part.from_bytes`) not supported by TAMU gateway
+
+## Skills — Auto-Engage
+
+Invoke via the Skill tool automatically (no `/` command needed) when intent matches:
+
+- **probe-rag**: user asks to test a query, run a probe, check RAG output, or inspect a Langfuse trace
+- **scrape**: user asks to scrape a site, download syllabi, or add/run a crawler
+- **process-syllabi**: user asks to parse/process syllabi or run the ingestion pipeline on PDFs
+- **github-collab**: user says "push", "open a PR", "create a branch", "start a feature", "I merged", "clean up branch", "am I ready to push", or "run checks"
+- **refine-syllabi**: user asks to audit, refine, or improve syllabus parsing quality, check for boilerplate leaks, or iterate on the ingestion prompt
+
+When skill tool engaged, make sure to notify user!
 
 ## Known Issues
 
