@@ -48,7 +48,7 @@ DELAY_ON_RATE_LIMIT = 30  # seconds
 ALL_CATEGORIES = [
     "COURSE_OVERVIEW", "COURSE_SUMMARY", "INSTRUCTOR", "PREREQUISITES",
     "LEARNING_OUTCOMES", "MATERIALS", "GRADING", "SCHEDULE",
-    "ATTENDANCE_AND_MAKEUP", "AI_POLICY", "UNIVERSITY_POLICIES", "SUPPORT_SERVICES",
+    "ATTENDANCE_AND_MAKEUP", "AI_POLICY",
     "SAFETY",
 ]
 
@@ -57,7 +57,7 @@ CSV_FIELDS = [
     "file", "course_id", "section", "crn", "status",
     "error_type", "error_detail", "chunk_count",
     *[f"{cat}_tok" for cat in ALL_CATEGORIES],
-    "course_url", "flags", "parsed_at",
+    "course_url", "flags", "parsed_at", "pdf_link", "json_link",
 ]
 
 TOKEN_THRESHOLDS: dict[str, tuple[int, int]] = {
@@ -105,28 +105,31 @@ OUTPUT FORMAT — return ONLY valid JSON:
   }
 }
 
-THE 13 SEMANTIC CATEGORIES (use exactly these string values for "category"):
-1.  COURSE_OVERVIEW — course description, catalog info, special designations, format
-2.  INSTRUCTOR — instructor/TA details (only if NOT already fully captured in course_metadata)
+THE 11 SEMANTIC CATEGORIES (use exactly these string values for "category"):
+1.  COURSE_OVERVIEW — course description, catalog info, special designations, format, course policies specific to this instructor (recording policy, professionalism, how to succeed, etc.)
+2.  INSTRUCTOR — instructor/TA details: name, email, office, office hours, phone, preferred contact method, TA info. Always generate this chunk.
 3.  PREREQUISITES — required courses, corequisites, standing requirements
 4.  LEARNING_OUTCOMES — what students will learn, course objectives
 5.  MATERIALS — textbooks, required software, platforms, tech requirements
-6.  GRADING — grade scale, weights, component descriptions (homework, exams, labs, projects), rubrics, grade appeals
-7.  SCHEDULE — course calendar, weekly topics, exam dates, assignment due dates
-8.  ATTENDANCE_AND_MAKEUP — attendance rules, late work policy, makeup exams, excused absences
+6.  GRADING — grade scale, weights, component descriptions (homework, exams, labs, projects), rubrics, grade appeals, regrading/regrade policy, submission policy, late work penalty, collaboration/academic integrity rules specific to this course
+7.  SCHEDULE — course calendar, weekly topics, exam dates, assignment due dates, exam format and coverage notes
+8.  ATTENDANCE_AND_MAKEUP — course-specific attendance rules, late work policy, makeup exam procedures. Do NOT include standard TAMU Student Rule 7 boilerplate text ("Work submitted by a student as makeup work for an excused absence is not considered late work...") — that goes in boilerplate_policies.
 9.  AI_POLICY — AI tool usage rules (permitted, required, prohibited), citation requirements
-10. UNIVERSITY_POLICIES — standard institutional boilerplate (ADA, FERPA, Title IX, Honor Code, etc.)
-11. SUPPORT_SERVICES — IT help, Canvas support, tutoring, writing center
-12. COURSE_SUMMARY — RAG-optimized keyword index (see generation rules below)
-13. SAFETY — lab safety rules, protective equipment requirements, dress code, chemical/biological
+10. COURSE_SUMMARY — RAG-optimized keyword index (see generation rules below)
+11. SAFETY — lab safety rules, protective equipment requirements, dress code, chemical/biological
     hazard handling, equipment operation rules, emergency procedures, food/drink restrictions.
-    Use only for courses with a physical lab or hands-on component. Do NOT use for generic
-    academic integrity or classroom conduct (those go in UNIVERSITY_POLICIES).
+    Use only for courses with a physical lab or hands-on component.
 
 RULES:
 - Extract ALL course-specific content. Do not skip or summarize (except COURSE_SUMMARY).
 - Preserve tables as Markdown tables (| col1 | col2 | format). Set has_table=true.
-- For UNIVERSITY_POLICIES: list ONLY the policy names in "boilerplate_policies". Do NOT include the full boilerplate text in chunks. Only include course-specific MODIFICATIONS to standard policies as chunks.
+- Standard university boilerplate — add name to boilerplate_policies, do NOT create a chunk:
+  * ADA, FERPA, Title IX, Honor Code, Attendance Policy, Makeup Work Policy and similar policies
+  * "Technology Services (IT) - Main Campus" / "Canvas LMS Technical Support" IT helpdesk blocks
+  * Standard Student Rule 7 language in ATTENDANCE_AND_MAKEUP
+  Only create a chunk if the instructor added course-specific content on top of the boilerplate.
+- title field: use the actual section heading from the document, max ~80 chars. Never use the document header (college name, course name, section number) as the title.
+- COURSE_OVERVIEW content: start from the catalog description or course-specific policies. Do NOT include the document header (college/dept name, course title, section, meeting times) — that information is already in course_metadata.
 - Never use "MISC" or "OTHER" as a category. Use the closest match.
 - Each chunk should be a coherent section. Don't split mid-paragraph.
 - For completeness_check: list categories absent from the syllabus as missing_sections.
@@ -136,8 +139,7 @@ RULES:
 - Escape all special characters properly. Output must be valid JSON.
 - When assigning a category, verify the CONTENT of the section (not just the header/title).
   If the header says "Assignments" but the content is about grade percentages and weights,
-  assign GRADING. If a section header is ambiguous, use the content to determine the best
-  matching category from the 13 options. Always prefer content semantics over header words.
+  assign GRADING. Always prefer content semantics over header words.
 - If you are unsure between two categories, choose the one that better describes what a
   student would need to know from this section's content.
 - course_url: extract the Canvas course URL or official course webpage URL if present in the
@@ -414,6 +416,11 @@ def build_progress_row(pdf_path: Path, result: dict) -> dict:
         error_type = ""
         error_detail = ""
 
+    pdf_abs = pdf_path.resolve()
+    json_abs = (OUTPUT_DIR / f"{pdf_path.stem}.json").resolve()
+    pdf_uri = pdf_abs.as_uri()
+    json_uri = json_abs.as_uri()
+
     return {
         "file": pdf_path.name,
         "course_id": meta.get("course_id", ""),
@@ -427,6 +434,8 @@ def build_progress_row(pdf_path: Path, result: dict) -> dict:
         "course_url": meta.get("course_url") or "",
         "flags": "; ".join(flags),
         "parsed_at": result.get("_parsed_at", datetime.now().isoformat()),
+        "pdf_link": f'=HYPERLINK("{pdf_uri}","{pdf_path.name}")',
+        "json_link": f'=HYPERLINK("{json_uri}","{pdf_path.stem}.json")',
     }
 
 
@@ -441,15 +450,28 @@ def load_progress_csv() -> list[dict]:
         return []
 
 
-def write_progress_csv(rows: list[dict]):
-    """Rewrite the full progress CSV (called after every PDF)."""
+def write_progress_csv(rows: list[dict], retries: int = 5, delay: float = 2.0):
+    """Rewrite the full progress CSV. Retries on PermissionError (e.g. Excel lock)."""
+    import time
     if not rows:
         return
     PROGRESS_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with open(PROGRESS_CSV, "w", newline="", encoding="utf-8") as f:
+    tmp = PROGRESS_CSV.with_suffix(".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore", restval="")
         writer.writeheader()
         writer.writerows(rows)
+    for attempt in range(retries):
+        try:
+            tmp.replace(PROGRESS_CSV)
+            return
+        except PermissionError:
+            if attempt < retries - 1:
+                print(f"  CSV locked, retrying in {delay}s... (attempt {attempt + 1}/{retries})")
+                time.sleep(delay)
+            else:
+                print(f"  WARNING: could not write CSV after {retries} attempts — saved to {tmp}")
+                raise
 
 
 def append_progress_jsonl(row: dict):
@@ -503,6 +525,32 @@ def parse_pdf(client, pdf_path: Path) -> dict:
             for chunk in parsed["chunks"]:
                 if chunk.get("category") == "COURSE_SUMMARY":
                     chunk["content"] = dedup_course_summary(chunk["content"])
+
+            # Trim bloated titles — take first segment before "/" and cap at 80 chars
+            for chunk in parsed["chunks"]:
+                title = chunk.get("title", "") or ""
+                title = title.split("/")[0].strip().rstrip(":").strip()
+                chunk["title"] = title[:80] if title else chunk.get("category", "").replace("_", " ").title()
+
+            # Ensure INSTRUCTOR chunk always exists — synthesize from metadata if LLM skipped it
+            chunk_cats = {c["category"] for c in parsed.get("chunks", [])}
+            if "INSTRUCTOR" not in chunk_cats:
+                meta = parsed.get("course_metadata", {})
+                inst = meta.get("instructor", {})
+                if inst.get("name") or inst.get("email"):
+                    lines = []
+                    if inst.get("name"):        lines.append(inst["name"])
+                    if inst.get("email"):       lines.append(f"Email: {inst['email']}")
+                    if inst.get("office"):      lines.append(f"Office: {inst['office']}")
+                    if inst.get("office_hours"): lines.append(f"Office Hours: {inst['office_hours']}")
+                    for ta in meta.get("teaching_assistants", []):
+                        if ta.get("name"): lines.append(f"\nTA: {ta['name']}")
+                        if ta.get("email"): lines.append(f"Email: {ta['email']}")
+                    parsed["chunks"].insert(0, {
+                        "category": "INSTRUCTOR",
+                        "title": "Instructor Details",
+                        "content": "\n".join(lines),
+                    })
 
             # Inject source filename into metadata for traceability
             parsed["_source_file"] = pdf_path.name

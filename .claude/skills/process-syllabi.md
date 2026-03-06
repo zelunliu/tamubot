@@ -22,13 +22,13 @@ Parse syllabi via TAMU API and inspect the results. Supports three modes:
 
 ## Step 2a — Targeted mode (specific courses)
 
-1. Glob `tamu_data/raw/syllabi/202611_<DEPT>_<NUM>_*.pdf` for each course. If not found there, also try `tamu_data/raw/simple_syllabus_*/`.
+1. Glob `tamu_data/raw/syllabi/202611_<DEPT>_<NUM>_*.pdf` for each course. If not found, also try `tamu_data/raw/simple_syllabus_*/` (newest dir first).
 2. Delete existing JSONs in `tamu_data/processed/gem_parsed_<today>/` for those stems.
 3. Run in background:
 
 ```bash
 cd /c/dev/TAMU_NEW && source .venv/Scripts/activate && PYTHONIOENCODING=utf-8 python - <<'PYEOF'
-import json, sys
+import json, sys, time
 from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path.cwd()))
@@ -71,6 +71,7 @@ for pdf_path in targets:
         print(f"OK -> {out_path}")
     else:
         print(f"ERROR: {result['error']}")
+    time.sleep(2)
 PYEOF
 ```
 
@@ -92,7 +93,6 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 pdf_path  = Path("FILLED_IN_BY_CLAUDE")   # source PDF
 json_path = Path("FILLED_IN_BY_CLAUDE")   # output JSON from Step 2a
 
-# Extract all text from PDF
 doc = fitz.open(str(pdf_path))
 pdf_pages = [page.get_text() for page in doc]
 doc.close()
@@ -102,12 +102,10 @@ pdf_lines = set(l.strip() for l in pdf_text.splitlines() if len(l.strip()) > 50)
 with open(json_path, encoding="utf-8") as f:
     parsed = json.load(f)
 
-# Flatten all chunk content
 chunks = parsed.get("chunks", [])
 all_chunk_text = "\n".join(c["content"] for c in chunks)
 chunk_lines = set(l.strip() for l in all_chunk_text.splitlines() if len(l.strip()) > 50)
 
-# Metadata coverage
 meta = parsed.get("course_metadata", {})
 inst = meta.get("instructor", {})
 print(f"\n=== {json_path.stem} ===")
@@ -134,9 +132,7 @@ if cc.get("warnings"):
     print("Warnings:")
     for w in cc["warnings"]: print(f"  - {w}")
 
-# Lines from PDF not found in any chunk (potential losses)
 missing_lines = pdf_lines - chunk_lines
-# Filter out lines that are in boilerplate_policies (intentionally excluded)
 bp_text = " ".join(bp).lower()
 missing_lines = [l for l in missing_lines if not any(word in bp_text for word in l.lower().split()[:3])]
 if missing_lines:
@@ -153,7 +149,7 @@ for c in chunks:
 PYEOF
 ```
 
-Report what was found: coverage %, any uncaptured lines, and whether the completeness check flags look correct.
+Report: coverage %, uncaptured lines, completeness check flags.
 
 ---
 
@@ -172,19 +168,26 @@ Run in background. Stream / tail output if the user wants live progress. No comp
 
 ## Step 3 — Report
 
-**Targeted mode:** show the COURSE_SUMMARY content and flags for each course.
+**Targeted mode:** show the COURSE_SUMMARY and flags for each course.
 **Department/all mode:** summarize final counts (succeeded / failed) from stdout.
+
+Always provide file names as clickable links:
+- JSON: `[stem.json](file:///C:/dev/TAMU_NEW/tamu_data/processed/gem_parsed_YYYYMMDD/stem.json)`
+- PDF: `[stem.pdf](file:///C:/dev/TAMU_NEW/tamu_data/raw/syllabi/stem.pdf)`
 
 ---
 
 ## Notes
 
-- **Close the progress CSV before running** — it is rewritten after every file; Excel locks cause PermissionError.
-- OUTPUT_DIR is date-stamped (`gem_parsed_YYYYMMDD`); new folder each calendar day.
-- To force a re-parse of already-done files, delete their JSONs from the output dir first.
-- **PDF source dirs**: primary is `tamu_data/raw/syllabi/`; fallback is `tamu_data/raw/simple_syllabus_<date>/`.
-- **Coverage check caveat**: `UNIVERSITY_POLICIES` boilerplate text is intentionally excluded from chunks (names only in `boilerplate_policies`) — uncaptured lines from those pages are expected and not a bug.
-- **Text extraction**: PyMuPDF extracts embedded text only. Scanned/image-only PDFs will produce near-empty text and poor parse results — check page char counts if output looks thin.
+- **CSV auto-retry**: `write_progress_csv` writes to `.tmp` then renames, retries 5× on PermissionError. Close Excel if retries keep failing.
+- **OUTPUT_DIR** is date-stamped (`gem_parsed_YYYYMMDD`); new folder each calendar day.
+- **To force re-parse**: delete the JSON from `OUTPUT_DIR` first.
+- **PDF source dirs**: primary `tamu_data/raw/syllabi/`; fallback `tamu_data/raw/simple_syllabus_<date>/` (newest first).
+- **INSTRUCTOR fallback**: if LLM skips the INSTRUCTOR chunk, `parse_pdf` synthesizes one from `course_metadata` automatically.
+- **Coverage check caveat**: boilerplate text (IT helpdesk, Student Rule 7, ADA, etc.) is intentionally excluded from chunks — uncaptured lines from those pages are expected.
+- **Thin SCHEDULE flag**: some syllabi link to an external schedule document — `SCHEDULE:TOO_SMALL` may be correct.
+- **Rebuild CSV manually**: `python ingestion_pipeline/rebuild_csv.py` — rescans all JSONs in OUTPUT_DIR, resolves source PDFs, rewrites CSV with `pdf_link` and `json_link` columns (Excel `=HYPERLINK()` formulas).
+- **11 categories** (as of 2026-03-06): COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS, GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, SAFETY, COURSE_SUMMARY. UNIVERSITY_POLICIES and SUPPORT_SERVICES removed — treated as boilerplate.
 
 ## Examples
 
