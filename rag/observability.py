@@ -326,13 +326,14 @@ def compute_ragas_metrics(
         Dict of metric_name → float score, or {} on failure.
     """
     try:
-        from ragas import evaluate, EvaluationDataset, SingleTurnSample
-        from ragas.metrics import Faithfulness, AnswerRelevancy
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from langchain_openai import ChatOpenAI
-        from langchain_core.embeddings import Embeddings
         import voyageai
+        from langchain_core.embeddings import Embeddings
+        from langchain_openai import ChatOpenAI
+        from ragas import EvaluationDataset, SingleTurnSample, evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import AnswerRelevancy, Faithfulness
+
         import config
 
         critic_llm = LangchainLLMWrapper(
@@ -426,10 +427,11 @@ def score_groundedness(
         Groundedness score (0.0–1.0) or None on failure.
     """
     try:
-        from ragas import evaluate, EvaluationDataset, SingleTurnSample
-        from ragas.metrics import ResponseGroundedness
-        from ragas.llms import LangchainLLMWrapper
         from langchain_openai import ChatOpenAI
+        from ragas import EvaluationDataset, SingleTurnSample, evaluate
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import ResponseGroundedness
+
         import config
 
         critic_llm = LangchainLLMWrapper(

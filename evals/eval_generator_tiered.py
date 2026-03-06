@@ -35,7 +35,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
 
-
 # ---------------------------------------------------------------------------
 # Tier 1: Deterministic citation check
 # ---------------------------------------------------------------------------
@@ -291,7 +290,7 @@ def evaluate_golden_set(
     Returns:
         Aggregate metrics dict.
     """
-    from rag import route_retrieve_rerank, generate
+    from rag import generate, route_retrieve_rerank
 
     item_results = []
     for i, item in enumerate(golden_set, 1):
@@ -405,7 +404,7 @@ def main():
         )
 
         print(f"\n{'=' * 50}")
-        print(f"  GENERATOR EVAL RESULT")
+        print("  GENERATOR EVAL RESULT")
         print(f"{'=' * 50}")
         print(f"  Tier 1 (citation):   {'PASS' if result['tier1']['pass'] else 'FAIL'}")
         print(f"    {result['tier1']['details']}")
@@ -436,7 +435,7 @@ def main():
         summary = evaluate_golden_set(golden, run_full_pipeline=not args.no_pipeline)
 
         print(f"\n{'=' * 50}")
-        print(f"  GENERATOR EVAL SUMMARY")
+        print("  GENERATOR EVAL SUMMARY")
         print(f"{'=' * 50}")
         print(f"  Total:             {summary.get('n_total', 0)}")
         print(f"  Pass:              {summary.get('n_pass', 0)} ({summary.get('pass_rate', 0):.1%})")

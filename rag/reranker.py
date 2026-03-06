@@ -4,12 +4,10 @@ Uses voyage-rerank-2 cross-encoder to rerank over-retrieved candidates
 down to the most relevant top-k results.
 """
 
-from itertools import chain
 
 import voyageai
 
 import config
-
 
 _voyage = None
 

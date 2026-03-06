@@ -1,6 +1,8 @@
-import scrapy
 import json
+
+import scrapy
 from items import ClassSectionItem
+
 
 class ClassSearchSpider(scrapy.Spider):
     name = 'class_search'

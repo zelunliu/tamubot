@@ -1,5 +1,6 @@
 import scrapy
 
+
 class SimpleSyllabusItem(scrapy.Item):
     term_code    = scrapy.Field()
     crn          = scrapy.Field()

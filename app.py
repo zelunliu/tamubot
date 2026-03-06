@@ -1,7 +1,9 @@
-import streamlit as st
-import os
 import logging
+import os
 import traceback
+
+import streamlit as st
+
 import config
 from rag.observability import get_langfuse, run_ragas_background
 
@@ -33,16 +35,17 @@ if "messages" not in st.session_state:
 USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 
 if USE_MONGODB:
-    from rag.pipeline import run_pipeline, generator_order
     from rag import generator  # keep for format_context_xml fallback
+    from rag.pipeline import generator_order, run_pipeline
 else:
+    from typing import Any, List
+
     import vertexai
-    from vertexai.preview import rag
-    from langchain_google_vertexai import ChatVertexAI
-    from langchain_core.retrievers import BaseRetriever
     from langchain_core.documents import Document
     from langchain_core.prompts import ChatPromptTemplate
-    from typing import List, Any
+    from langchain_core.retrievers import BaseRetriever
+    from langchain_google_vertexai import ChatVertexAI
+    from vertexai.preview import rag
 
 
 # ---------------------------------------------------------------------------

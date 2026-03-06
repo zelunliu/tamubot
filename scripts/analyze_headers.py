@@ -1,6 +1,7 @@
-import os
 import json
+import os
 from collections import Counter
+
 
 def analyze_chunks():
     source_dir = 'tamu_data/tamu_scraper/syllabi'
@@ -29,7 +30,7 @@ def analyze_chunks():
                 total_chunks += len(data)
                 for chunk in data:
                     header_counts[chunk.get('header', 'Unknown').strip()] += 1
-        except:
+        except Exception:
             continue
 
     stats = {

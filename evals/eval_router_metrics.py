@@ -39,8 +39,7 @@ else:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from rag import classify_query, RouterResult
-
+from rag import RouterResult, classify_query
 
 # ---------------------------------------------------------------------------
 # ECE: Expected Calibration Error
@@ -377,13 +376,13 @@ def print_report(
     print(f"  {ece_result.get('interpretation', '')}")
     non_empty_bins = [b for b in ece_result.get("bin_details", []) if b["count"] > 0]
     if non_empty_bins:
-        print(f"  Non-empty bins:")
+        print("  Non-empty bins:")
         for b in non_empty_bins:
             print(f"    [{b['range'][0]:.1f}–{b['range'][1]:.1f}] "
                   f"n={b['count']:2d}  conf={b['mean_conf']:.3f}  acc={b['accuracy']:.3f}  "
                   f"gap={b['gap']:.3f}")
 
-    print(f"\nIntent F1 (semantic_intent=True class):")
+    print("\nIntent F1 (semantic_intent=True class):")
     print(f"  Precision: {f1_result['precision']:.3f}")
     print(f"  Recall:    {f1_result['recall']:.3f}")
     print(f"  F1:        {f1_result['f1']:.3f}")
@@ -393,7 +392,7 @@ def print_report(
     if rewrite_result.get("error"):
         print(f"\nRewrite Cosine Gain: SKIPPED ({rewrite_result['error']})")
     elif rewrite_result.get("n_pairs", 0) == 0:
-        print(f"\nRewrite Cosine Gain: N/A (no rewritten queries found)")
+        print("\nRewrite Cosine Gain: N/A (no rewritten queries found)")
     else:
         print(f"\nRewrite Cosine Gain (n={rewrite_result['n_pairs']} pairs):")
         print(f"  Mean gain:     {rewrite_result['mean_gain']:+.5f}")

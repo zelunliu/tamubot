@@ -42,3 +42,10 @@ Thumbs.db
 # Claude Code internal (keep skills — they're project-specific)
 .claude/*
 !.claude/skills/
+
+# auto-claude framework
+.auto-claude/
+.auto-claude-security.json
+
+# Playwright MCP logs
+.playwright-mcp/

@@ -21,7 +21,7 @@ import voyageai
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 
-from rag.models import ChunkDoc, CourseDoc, PolicyDoc
+from rag.models import ChunkDoc, CourseDoc
 
 load_dotenv()
 
@@ -251,7 +251,7 @@ def main():
 
             # Write to MongoDB
             upsert_course(db, course_doc)
-            n = upsert_chunks(db, chunk_docs)
+            upsert_chunks(db, chunk_docs)
             if policy_ops:
                 db["policies"].bulk_write(policy_ops, ordered=False)
 

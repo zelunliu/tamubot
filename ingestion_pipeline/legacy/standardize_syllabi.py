@@ -1,10 +1,11 @@
 
-import fitz
-import os
+import concurrent.futures
 import json
+import os
 import re
 from collections import Counter
-import concurrent.futures
+
+import fitz
 
 # 1. Definitive Standard Mapping
 HEADER_MAPPING = {
@@ -34,7 +35,7 @@ def clean_content(text):
     text = re.sub(r"Page \d+ of \d+", "", text)
     text = re.sub(r"Course Syllabus", "", text)
     lines = [line.strip() for line in text.split('\n')]
-    return "\n".join([l for l in lines if l])
+    return "\n".join([ln for ln in lines if ln])
 
 def extract_course_info(doc):
     first_page_text = doc[0].get_text()
@@ -55,11 +56,12 @@ def process_single_pdf(args):
             blocks = page.get_text("dict")["blocks"]
             for b in blocks:
                 if "lines" in b:
-                    for l in b["lines"]:
-                        for s in l["spans"]:
+                    for ln in b["lines"]:
+                        for s in ln["spans"]:
                             font_sizes.append(round(s["size"]))
         
-        if not font_sizes: return None
+        if not font_sizes:
+            return None
         common_size = Counter(font_sizes).most_common(1)[0][0]
         
         chunks = []
@@ -69,10 +71,10 @@ def process_single_pdf(args):
             blocks = page.get_text("dict")["blocks"]
             for b in blocks:
                 if "lines" in b:
-                    block_text = "".join([s["text"] for l in b["lines"] for s in l["spans"]]).strip()
-                    if not block_text or block_text == "Course Syllabus": continue
-                    
-                    is_styled = any(round(s["size"]) > common_size or (s["flags"] & 2**4) for l in b["lines"] for s in l["spans"])
+                    block_text = "".join([s["text"] for ln in b["lines"] for s in ln["spans"]]).strip()
+                    if not block_text or block_text == "Course Syllabus":
+                        continue
+                    is_styled = any(round(s["size"]) > common_size or (s["flags"] & 2**4) for ln in b["lines"] for s in ln["spans"])
                     
                     if is_styled and len(block_text) < 80:
                         std_h = get_standard_header(block_text)
@@ -97,7 +99,7 @@ def process_single_pdf(args):
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(chunks, f, indent=2)
         return chunks
-    except:
+    except Exception:
         return None
 
 def main():

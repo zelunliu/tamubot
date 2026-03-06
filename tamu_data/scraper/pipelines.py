@@ -1,8 +1,10 @@
-from scrapy.pipelines.files import FilesPipeline
-from scrapy import Request
-import os
 import json
+import os
+
 from items import SimpleSyllabusItem
+from scrapy import Request
+from scrapy.pipelines.files import FilesPipeline
+
 
 class SyllabusPipeline(FilesPipeline):
     def get_media_requests(self, item, info):

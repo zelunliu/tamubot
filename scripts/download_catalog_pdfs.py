@@ -1,8 +1,9 @@
 import json
 import os
-import requests
 import time
 from urllib.parse import urlparse
+
+import requests
 
 MANIFEST_FILE = 'tamu_data/tamu_scraper/data/pdf_manifest.json'
 OUTPUT_DIR = 'tamu_data/tamu_scraper/catalog_pdfs'

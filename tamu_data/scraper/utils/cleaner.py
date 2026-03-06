@@ -1,5 +1,6 @@
 import trafilatura
 
+
 def clean_html_content(html_content):
     """
     Extracts main text from HTML content using Trafilatura.

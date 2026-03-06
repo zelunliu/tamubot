@@ -9,7 +9,9 @@ import json
 import sys
 import time
 from pathlib import Path
+
 import fitz  # PyMuPDF
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 
@@ -163,7 +165,7 @@ def print_summary(result: dict, pdf_name: str):
     print(f"  Meeting: {meta.get('meeting_times', '?')} @ {meta.get('location', '?')}")
     print(f"  Chunks: {len(chunks)}")
 
-    print(f"\n  Category breakdown:")
+    print("\n  Category breakdown:")
     cats = {}
     for c in chunks:
         cat = c.get("category", "?")
@@ -179,7 +181,7 @@ def print_summary(result: dict, pdf_name: str):
     if missing:
         print(f"\n  MISSING SECTIONS: {', '.join(missing)}")
     if warnings:
-        print(f"  WARNINGS:")
+        print("  WARNINGS:")
         for w in warnings:
             print(f"    - {w}")
 

@@ -1,8 +1,9 @@
 
-import os
 import json
+import os
 import statistics
 from collections import defaultdict
+
 
 def analyze_dept_quality():
     input_dir = 'tamu_data/rag_vertex/standardized_chunks'
@@ -13,7 +14,8 @@ def analyze_dept_quality():
     for fname in files:
         # Extract dept from filename: 202611_CSCE_... -> CSCE
         parts = fname.split('_')
-        if len(parts) < 2: continue
+        if len(parts) < 2:
+            continue
         dept = parts[1]
         
         path = os.path.join(input_dir, fname)
@@ -29,13 +31,14 @@ def analyze_dept_quality():
                     length = len(chunk.get("content", ""))
                     if length > 0:
                         dept_stats[dept]["lengths"].append(length)
-        except:
+        except Exception:
             continue
 
     # Process results
     results = []
     for dept, data in dept_stats.items():
-        if data["total"] == 0: continue
+        if data["total"] == 0:
+            continue
         
         efficiency = (data["mapped"] / data["total"]) * 100
         

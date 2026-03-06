@@ -14,20 +14,22 @@ Usage:
     python ingestion_pipeline/process_syllabi.py --retry-errors      # retry previously failed files
 """
 
+import argparse
 import csv
 import json
-import os
 import re
 import sys
 import time
-import argparse
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
+
 load_dotenv()
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import config
+import config  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL = config.TAMU_MODEL
@@ -152,7 +154,7 @@ Generate exactly one COURSE_SUMMARY chunk using this strict format:
   Instructor: <Full Name> | <email>
   Meets: <days and times> | <location>
   Topics: <ALL named concepts, techniques, algorithms, models, and skills from the ENTIRE syllabus — course description, learning outcomes, AND weekly schedule — merged into one comma-separated list. Rare/specialized terms first, broader ones last. No duplicates.>
-  Tools: <software, instruments, or platforms students are required or encouraged to USE for coursework (assignments, labs, projects); omit if none. Do NOT include tools merely permitted or mentioned in AI/academic integrity policies.>
+  Tools: <software or platforms students actively USE to complete coursework (assignments, labs, projects); omit if none. Exclude: communication/Q&A platforms (Campuswire, Piazza, email lists, Google Groups), test-taking hardware (webcam, Chromebooks), university support resources (library tech bar, OAL lab), and tools mentioned only in AI/academic integrity policies.>
   Prerequisites: <exact course codes and standing; omit if none stated>
 
 Rules for COURSE_SUMMARY content:
@@ -161,6 +163,7 @@ Rules for COURSE_SUMMARY content:
 - NO DUPLICATION: No term appears twice anywhere in the summary. Tools must not repeat terms already in Topics.
 - RARE TERMS FIRST: List specialized/rare terms before generic ones in Topics. Rare terms provide stronger keyword signal for search.
 - BE THOROUGH: Extract ALL named algorithms, models, techniques, tools, and skills from the entire syllabus — do not truncate.
+- EXCLUDE from Topics: academic integrity terms (plagiarism, complicity, fabrication, cheating), grading process terms (late penalties, regrading, test cases, grade appeals, incomplete grades), and software environment setup steps (installing libraries, configuring environments, executing compilers, running programs). These are course policies, not knowledge areas.
 - Retain ALL proper nouns, theorem names, algorithm names, drug names, and tool names verbatim.
 - NEVER write narrative: "students will learn", "designed to", "upon completion", "this course", "you will", "gain experience", or any similar framing.
 - Use declarative noun phrases only.
@@ -284,6 +287,36 @@ def collapse_chunks_by_category(chunks: list[dict]) -> list[dict]:
             if new_title and new_title not in existing_title:
                 grouped[cat]["title"] = existing_title + " / " + new_title
     return list(grouped.values())
+
+
+def clean_template_noise(chunks: list[dict]) -> list[dict]:
+    """Strip known TAMU template labels and empty-field artifacts from chunk content."""
+    for chunk in chunks:
+        cat = chunk.get("category", "")
+        content = chunk.get("content", "")
+
+        if cat == "PREREQUISITES":
+            # Strip template label "Prerequisite/Corequisite(s):" at start
+            content = re.sub(r"^Prerequisite/Corequisite\(s\):\s*", "", content)
+
+        elif cat == "MATERIALS":
+            # Strip "This material Is: Required/Recommended/Optional" lines (TAMU template)
+            content = re.sub(r"^This material Is: \w+\n?", "", content, flags=re.MULTILINE)
+
+        elif cat == "LEARNING_OUTCOMES":
+            # Strip preamble (both "student" and "learner" variants)
+            content = re.sub(
+                r"^Upon completion of this course, the (?:student|learner) will be able to:\n?",
+                "", content, flags=re.IGNORECASE,
+            )
+
+        elif cat == "COURSE_OVERVIEW":
+            # Strip bare "None" lines (empty template fields captured verbatim)
+            lines = [ln for ln in content.splitlines() if ln.strip() != "None"]
+            content = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+
+        chunk["content"] = content.strip()
+    return chunks
 
 
 def dedup_course_summary(content: str) -> str:
@@ -516,6 +549,9 @@ def parse_pdf(client, pdf_path: Path) -> dict:
             # Collapse duplicate-category chunks → at most 13 chunks per file
             parsed["chunks"] = collapse_chunks_by_category(parsed.get("chunks", []))
 
+            # Strip TAMU template labels and empty-field artifacts
+            parsed["chunks"] = clean_template_noise(parsed["chunks"])
+
             # Strip has_table when false — only keep the field when a table is present
             for chunk in parsed["chunks"]:
                 if not chunk.get("has_table"):
@@ -539,13 +575,19 @@ def parse_pdf(client, pdf_path: Path) -> dict:
                 inst = meta.get("instructor", {})
                 if inst.get("name") or inst.get("email"):
                     lines = []
-                    if inst.get("name"):        lines.append(inst["name"])
-                    if inst.get("email"):       lines.append(f"Email: {inst['email']}")
-                    if inst.get("office"):      lines.append(f"Office: {inst['office']}")
-                    if inst.get("office_hours"): lines.append(f"Office Hours: {inst['office_hours']}")
+                    if inst.get("name"):
+                        lines.append(inst["name"])
+                    if inst.get("email"):
+                        lines.append(f"Email: {inst['email']}")
+                    if inst.get("office"):
+                        lines.append(f"Office: {inst['office']}")
+                    if inst.get("office_hours"):
+                        lines.append(f"Office Hours: {inst['office_hours']}")
                     for ta in meta.get("teaching_assistants", []):
-                        if ta.get("name"): lines.append(f"\nTA: {ta['name']}")
-                        if ta.get("email"): lines.append(f"Email: {ta['email']}")
+                        if ta.get("name"):
+                            lines.append(f"\nTA: {ta['name']}")
+                        if ta.get("email"):
+                            lines.append(f"Email: {ta['email']}")
                     parsed["chunks"].insert(0, {
                         "category": "INSTRUCTOR",
                         "title": "Instructor Details",
@@ -610,7 +652,7 @@ def main():
     remaining = len(to_process)
 
     print(f"{'='*60}")
-    print(f"Syllabus Processing Pipeline")
+    print("Syllabus Processing Pipeline")
     print(f"{'='*60}")
     print(f"  Departments:  {', '.join(departments)}")
     print(f"  Total PDFs:   {total}")
@@ -688,7 +730,7 @@ def main():
     print(f"  Total processed this run: {ok_count + fail_count}")
     print(f"  Overall progress: {already_done + ok_count}/{total}")
     if fail_count > 0:
-        print(f"  Run with --retry-errors to retry failed files")
+        print("  Run with --retry-errors to retry failed files")
     print(f"{'='*60}")
 
     # Write summary

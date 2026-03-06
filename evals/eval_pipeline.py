@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import io
 import json
 import re
 import sys
@@ -30,10 +29,13 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import config
 from rag import (
-    classify_query, RouterResult, compute_dynamic_k,
-    deduplicate_chunks, FUNCTION_CATEGORY_STRATEGIES, generate,
+    FUNCTION_CATEGORY_STRATEGIES,
+    RouterResult,
+    classify_query,
+    compute_dynamic_k,
+    deduplicate_chunks,
+    generate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test case definitions  — grounded in CSCE 638 / CSCE 670 (Spring 2026)
@@ -477,10 +479,10 @@ def run_test(
     t_router_start = time.perf_counter()
     try:
         rr = classify_query(tc.query)
-        router_error = None
+        _router_error = None
     except Exception as e:
         rr = RouterResult(rewritten_query=tc.query, category_confidence=0.0)
-        router_error = str(e)
+        _router_error = str(e)
     latency_router_ms = (time.perf_counter() - t_router_start) * 1000
 
     # ── Stage 2: Retrieval + Rerank ──────────────────────────────────────
@@ -545,7 +547,7 @@ def run_test(
             )
             ragas_faithfulness = scores.get("faithfulness")
             ragas_answer_relevancy = scores.get("answer_relevancy")
-        except Exception as e:
+        except Exception:
             pass  # RAGAS failure is non-fatal
 
     latency_ragas_ms = (time.perf_counter() - t_ragas_start) * 1000
@@ -613,7 +615,7 @@ def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
     Mirrors the logic in router._retrieve_and_rerank() for use in the eval harness
     (avoids re-running the router LLM call).
     """
-    from rag import search, reranker
+    from rag import reranker, search
 
     search_query = rr.rewritten_query or query
 
@@ -621,13 +623,13 @@ def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
         return []
 
     fn = rr.function
-    mode = rr.retrieval_mode
+    _mode = rr.retrieval_mode
     dk = compute_dynamic_k(fn, len(rr.course_ids))
     retrieve_k = dk["retrieve_k"]
     rerank_k = dk["rerank_k"]
 
     course_ids = rr.course_ids
-    specific_cats = rr.specific_categories
+    _specific_cats = rr.specific_categories
 
     # semantic_general
     if fn == "semantic_general":
@@ -644,8 +646,8 @@ def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
 
     # recurrent_* path: 5-step deterministic cardinality pipeline
     if fn.startswith("recurrent_"):
-        from rag.search import fetch_anchor_chunks
         from rag.generator import generate_eval_search_string
+        from rag.search import fetch_anchor_chunks
         anchor_chunks, _, _ = fetch_anchor_chunks(course_ids, categories)
         eval_query = generate_eval_search_string(
             anchor_chunks, search_query, rr.intent_type or "GENERAL"
@@ -843,8 +845,8 @@ def write_markdown_report(
                 lines.append(f"**Notes:** {r.notes}")
             lines += [
                 "",
-                f"| Field | Value |",
-                f"|---|---|",
+                "| Field | Value |",
+                "|---|---|",
                 f"| Function expected | `{r.function_expected}` |",
                 f"| Function actual | `{r.function_actual}` |",
                 f"| Retrieval mode | `{r.retrieval_mode_actual}` |",

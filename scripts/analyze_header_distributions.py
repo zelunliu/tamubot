@@ -1,8 +1,9 @@
 
-import os
 import json
+import os
 import statistics
 from collections import defaultdict
+
 
 def analyze_header_distributions():
     input_dir = 'tamu_data/rag_vertex/standardized_chunks'
@@ -23,7 +24,7 @@ def analyze_header_distributions():
                 length = len(chunk.get("content", ""))
                 if length > 0:
                     category_stats[cat].append(length)
-        except:
+        except Exception:
             continue
 
     results = []

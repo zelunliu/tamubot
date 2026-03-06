@@ -35,9 +35,11 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from rag import route_retrieve_rerank, generate, get_langfuse, run_ragas_background
-from evals.eval_pipeline import TEST_SUITE, TestCase  # noqa: F401  (TestCase re-exported for callers)
-
+from evals.eval_pipeline import (  # noqa: F401  (TestCase re-exported for callers)
+    TEST_SUITE,
+    TestCase,
+)
+from rag import generate, get_langfuse, route_retrieve_rerank, run_ragas_background
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -9,5 +9,5 @@ matches = re.finditer(pattern, content)
 for m in matches:
     start = max(0, m.start() - 200)
     end = min(len(content), m.end() + 200)
-    print(f"\n--- Context ---")
+    print("\n--- Context ---")
     print(content[start:end])

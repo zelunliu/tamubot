@@ -32,7 +32,6 @@ Usage:
 """
 
 import argparse
-import io
 import json
 import sys
 import time
@@ -43,8 +42,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-import config
 from google.genai import types
+
+import config
 
 # ---------------------------------------------------------------------------
 # Derivation matrix description (injected into the adjudicator prompt)
@@ -242,7 +242,7 @@ def adjudicate(
     # Load golden set
     print(f"\nLoading golden set from {golden_path}...")
     with golden_path.open(encoding="utf-8") as f:
-        items = [json.loads(l) for l in f if l.strip()]
+        items = [json.loads(line) for line in f if line.strip()]
     print(f"  {len(items)} items loaded.")
 
     # Load or compute router results
@@ -310,7 +310,7 @@ def adjudicate(
         )
 
         if verdict is None:
-            print(f"       -> SKIP (adjudication failed — keeping stratum label)")
+            print("       -> SKIP (adjudication failed — keeping stratum label)")
             n_kept_stratum += 1
             continue
 

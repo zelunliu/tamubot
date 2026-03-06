@@ -1,9 +1,9 @@
-import re
+import datetime
 import json
 import os
-import datetime
+import re
+
 import scrapy
-from scrapy.exceptions import CloseSpider
 from items import SimpleSyllabusItem
 
 DEPARTMENTS = ['CSCE', 'ISEN']

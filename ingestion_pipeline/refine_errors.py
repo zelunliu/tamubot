@@ -8,24 +8,22 @@ Usage:
     python -m ingestion_pipeline.refine_errors --department CSCE
 """
 
+import argparse
 import json
 import sys
 import time
-import argparse
-from pathlib import Path
 from datetime import datetime
-
-import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from ingestion_pipeline.process_syllabi import (
+    DELAY_BETWEEN_CALLS,
+    LOG_DIR,
+    OUTPUT_DIR,
+    SYLLABI_DIR,
     parse_pdf,
     write_per_file_report,
-    OUTPUT_DIR,
-    LOG_DIR,
-    SYLLABI_DIR,
-    DELAY_BETWEEN_CALLS,
 )
 
 
@@ -131,7 +129,7 @@ def main():
             time.sleep(DELAY_BETWEEN_CALLS)
 
     print(f"\n{'='*60}")
-    print(f"Refine complete")
+    print("Refine complete")
     print(f"  Recovered:     {recovered}")
     print(f"  Still failing: {still_failing}")
     if still_failing > 0:

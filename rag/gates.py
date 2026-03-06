@@ -6,7 +6,6 @@ Gate 2 (LLM, asynchronous): RAGAS ResponseGroundedness scoring via observability
 
 import re
 
-
 # Functions that require citation validation
 _FACTUAL_FUNCTIONS = frozenset([
     "metadata_default",

@@ -1,6 +1,7 @@
-import os
-from pdfminer.high_level import extract_text
 import concurrent.futures
+import os
+
+from pdfminer.high_level import extract_text
 
 SOURCE_DIRS = ['tamu_data/tamu_scraper/syllabi', 'tamu_data/tamu_scraper/catalog_pdfs']
 OUTPUT_DIR = 'tamu_data/rag_vertex/extracted_text'

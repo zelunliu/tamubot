@@ -16,7 +16,6 @@ import config
 from rag.llm_client import call_llm
 from rag.prompts import ROUTER_PROMPT
 
-
 # ---------------------------------------------------------------------------
 # Dynamic-k helper (pure Python, no LLM)
 # ---------------------------------------------------------------------------

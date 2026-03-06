@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from pathlib import Path
 
 # Paths
 INPUT_FILE = os.path.join('tamu_data', 'tamu_scraper', 'data', 'scraped_content.jsonl')

@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
 
-
 # ---------------------------------------------------------------------------
 # Relevance labeling
 # ---------------------------------------------------------------------------
@@ -230,8 +229,9 @@ def rrf_sweep(
     if k_values is None:
         k_values = [20, 40, 60, 80, 100]
 
-    from rag import hybrid_search
     import voyageai
+
+    from rag import hybrid_search
 
     vo = voyageai.Client(api_key=config.VOYAGE_API_KEY)
     query_embed = vo.embed([query], model="voyage-3", input_type="query").embeddings[0]
@@ -295,7 +295,7 @@ def evaluate_retrieval_golden_set(
     Returns:
         Dict with per-item results and aggregate statistics.
     """
-    from rag import classify_query, compute_dynamic_k, hybrid_search, search_semantic, rerank
+    from rag import classify_query, compute_dynamic_k, hybrid_search, rerank, search_semantic
 
     item_results = []
     for i, item in enumerate(golden_set, 1):

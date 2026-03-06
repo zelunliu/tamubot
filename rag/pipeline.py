@@ -15,14 +15,14 @@ from __future__ import annotations
 from typing import Iterator, Optional
 
 import config
+from rag import reranker, search
 from rag.router import (
+    FUNCTION_CATEGORY_STRATEGIES,
+    RouterResult,
     classify_query,
     compute_dynamic_k,
     deduplicate_chunks,
-    FUNCTION_CATEGORY_STRATEGIES,
-    RouterResult,
 )
-from rag import search, reranker
 from rag.search import fetch_anchor_chunks
 
 

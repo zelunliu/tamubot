@@ -18,7 +18,6 @@ Usage:
 import math
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Adjusted Wald (Agresti-Coull) confidence interval
 # ---------------------------------------------------------------------------

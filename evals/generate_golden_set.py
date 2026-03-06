@@ -304,6 +304,7 @@ def sample_chunks_from_mongo(
     Returns a flat list of chunk dicts tagged with _sampled_category.
     """
     from pymongo import MongoClient
+
     import config
 
     client = MongoClient(config.MONGODB_URI)
@@ -357,8 +358,9 @@ def synthesize_question_for_chunk(
     Returns an enriched question dict with ground truth for all pipeline stages,
     or None on synthesis failure.
     """
-    import config
     from google.genai import types
+
+    import config
 
     client = config.get_genai_client()
     course_id = chunk.get("course_id", "the course")
@@ -486,6 +488,7 @@ def upload_to_langfuse(
 ) -> bool:
     """Create (or upsert) a Langfuse dataset and upload all items."""
     import httpx
+
     import config
 
     if not (config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY):
@@ -582,7 +585,7 @@ def generate_golden_set(
     with_cat_n = sum(stratum_counts[s] for s in ("metadata_specific", "metadata_specific_evaluative", "metadata_combined"))
 
     print(f"\n{'=' * 60}")
-    print(f"  TamuBot Golden Set Generation")
+    print("  TamuBot Golden Set Generation")
     print(f"  Target: {n_total} q  |  Dept: {department}  |  Seed: {seed}")
     print(f"  No-category: {no_cat_n} ({no_cat_n/n_total:.0%})  "
           f"Category-specific: {with_cat_n} ({with_cat_n/n_total:.0%})  "
@@ -601,7 +604,7 @@ def generate_golden_set(
         all_chunks = sample_chunks_from_mongo(n_total=n_chunks, department=department)
 
     # ── Step 2: Synthesize per stratum ────────────────────────────────
-    print(f"\n[2/4] Synthesizing questions...")
+    print("\n[2/4] Synthesizing questions...")
     all_questions: list[dict] = []
 
     for stratum, spec in STRATUM_MAP.items():
@@ -647,7 +650,7 @@ def generate_golden_set(
         all_questions.extend(oos_items)
 
     if dry_run:
-        print(f"\n  DRY-RUN complete. Planned distribution:")
+        print("\n  DRY-RUN complete. Planned distribution:")
         print(f"  {'Stratum':<22} {'n':>4}  {'Category':>8}  {'semantic_intent':>16}")
         print(f"  {'-'*56}")
         for s, spec in STRATUM_MAP.items():
@@ -663,7 +666,7 @@ def generate_golden_set(
               f"({total_no_cat/n_total:.0%})")
         print(f"  Category-specific:   {total_cat}/{n_total} "
               f"({total_cat/n_total:.0%})")
-        print(f"\n  Category weights (descending):")
+        print("\n  Category weights (descending):")
         for cat, w in sorted(CATEGORY_WEIGHTS.items(), key=lambda x: -x[1]):
             bar = "#" * round(w * 100)
             print(f"    {cat:<30} {w:.0%}  {bar}")
@@ -699,7 +702,7 @@ def generate_golden_set(
     print(f"  Summary: {len(all_questions)} questions generated")
     print(f"{'=' * 60}")
 
-    print(f"\n  By stratum:")
+    print("\n  By stratum:")
     strata_counts: dict[str, int] = {}
     for q in all_questions:
         s = q.get("stratum", "?")
@@ -710,7 +713,7 @@ def generate_golden_set(
         tag = "(no cat)" if not spec["has_category"] else "(cat)"
         print(f"    {s:<22} {n:2d}  {tag}")
 
-    print(f"\n  By category (actual distribution):")
+    print("\n  By category (actual distribution):")
     cat_counts: dict[str, int] = {}
     for q in all_questions:
         c = q.get("category") or "none/oos"

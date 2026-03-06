@@ -8,17 +8,16 @@ import json
 import re
 
 import config
-from rag.context_builder import format_context_xml, collapse_whitespace, strip_thinking_blocks
+from rag.context_builder import collapse_whitespace, format_context_xml, strip_thinking_blocks
 from rag.gates import validate_citations_with_trace
 from rag.llm_client import call_llm, stream_llm
 from rag.prompts import (
     _BASE_SYSTEM,
     _FUNCTION_PROMPTS,
-    _SEMANTIC_TYPE_PROMPTS,
     _FUNCTION_TEMPERATURES,
+    _SEMANTIC_TYPE_PROMPTS,
     UNCERTAINTY_INJECTION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Eval Pass — context-aware search string for recurrent discovery

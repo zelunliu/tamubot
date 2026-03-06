@@ -11,14 +11,14 @@ Output:
     simple_syllabus_metadata.json
 """
 
-import re
-import os
-import json
-import time
 import datetime
-import requests
+import json
+import os
+import re
+import time
 from urllib.parse import quote
-from playwright.sync_api import sync_playwright, Page
+
+from playwright.sync_api import sync_playwright
 
 # ── Config ───────────────────────────────────────────────────────────────────
 

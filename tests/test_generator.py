@@ -7,11 +7,10 @@ Tests cover:
   - Thinking token configuration (config.py)
 """
 
-import pytest
+import config
 from rag.context_builder import format_context_xml
 from rag.gates import validate_citations_gate1
 from rag.prompts import _FUNCTION_TEMPERATURES
-import config
 
 
 class TestFormatContextXmlPrimacyRecency:

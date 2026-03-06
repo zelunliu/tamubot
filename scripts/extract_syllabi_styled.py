@@ -1,15 +1,17 @@
-import fitz  # PyMuPDF
-import os
+import concurrent.futures
 import json
+import os
 import re
 from collections import Counter
-import concurrent.futures
+
+import fitz  # PyMuPDF
+
 
 def clean_content(text):
     text = re.sub(r"Page \d+ of \d+", "", text)
     text = re.sub(r"Course Syllabus", "", text)
     lines = [line.strip() for line in text.split('\n')]
-    return "\n".join([l for l in lines if l])
+    return "\n".join([ln for ln in lines if ln])
 
 def extract_course_info(doc):
     first_page_text = doc[0].get_text()
@@ -33,8 +35,8 @@ def process_single_pdf(args):
             blocks = page.get_text("dict")["blocks"]
             for b in blocks:
                 if "lines" in b:
-                    for l in b["lines"]:
-                        for s in l["spans"]:
+                    for ln in b["lines"]:
+                        for s in ln["spans"]:
                             font_sizes.append(round(s["size"]))
         
         if not font_sizes:
@@ -52,9 +54,9 @@ def process_single_pdf(args):
                     block_text = ""
                     is_header = False
                     
-                    for l in b["lines"]:
+                    for ln in b["lines"]:
                         line_text = ""
-                        for s in l["spans"]:
+                        for s in ln["spans"]:
                             if round(s["size"]) > common_size or (s["flags"] & 2**4):
                                 is_header = True
                             line_text += s["text"]
