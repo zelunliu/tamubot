@@ -38,30 +38,6 @@ for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_bud
 - `result.input_tokens / output_tokens` — None on TAMU path (SSE, no token counts exposed)
 - Langfuse model name: `config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL`
 
-## 8-Function Routing Matrix
-
-Pure Python in `_derive_function()` — no LLM judgment:
-
-```
-course_ids  recurrent_search  intent_type   specific_categories  specific_only  → function            mode
-empty       any               not None      any                  any            → semantic_general     semantic
-empty       any               None          any                  any            → out_of_scope         —
-present     true              any           empty                —              → recurrent_default    hybrid (5-step)
-present     true              any           populated            true           → recurrent_specific   hybrid (5-step)
-present     true              any           populated            false          → recurrent_combined   hybrid (5-step)
-present     false             any           empty                —              → metadata_default     metadata
-present     false             any           populated            true           → metadata_specific    metadata
-present     false             any           populated            false          → metadata_combined    metadata
-```
-
-`recurrent_*` = 5-step deterministic cardinality pipeline:
-1. `fetch_anchor_chunks()` → anchor chunks + DataGaps + DataIntegrityFlag
-2. `generate_eval_search_string()` → context-aware search string (LLM, temp=0)
-3. `hybrid_search()` → corpus-wide discovery, filter out anchor course_ids
-4. `rerank()` → rerank discovery chunks
-5. combine anchor + reranked discovery; return with data_gaps, data_integrity
-
-Thinking budget: `metadata_*` = 0, `recurrent_*`/`semantic_general` = 1024. Temps: `metadata_*` = 0.0, others = 0.2.
 
 ## Gotchas
 

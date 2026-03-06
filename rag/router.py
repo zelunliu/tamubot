@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import config
-from rag import search, reranker
 from rag.llm_client import call_llm
 from rag.prompts import ROUTER_PROMPT
 
@@ -284,96 +283,9 @@ def route_retrieve_rerank(
     query: str,
     trace=None,
 ) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool]:
-    """Full Stage 1+2 pipeline: classify → retrieve → rerank.
-
-    For recurrent_* queries, runs the 5-step deterministic cardinality pipeline:
-      1. Anchor fetch (metadata) → DataGaps + DataIntegrityFlag
-      2. Eval pass (LLM) → context-aware search string
-      3. Vector discovery (hybrid) → filter out anchor course_ids
-      4. Rerank discovery chunks
-      5. Combine anchor + discovery
-
-    Args:
-        query: The raw user question.
-        trace: Optional Langfuse trace to attach Router_Stage and Retrieval_Stage spans to.
-
-    Returns:
-        (reranked_results, router_result, data_gaps, data_integrity)
-        data_gaps: [(course_id, category), ...] pairs with 0 results (recurrent only)
-        data_integrity: True if no gaps (always True for non-recurrent paths)
-    """
-    # --- Router_Stage span ---
-    router_span = None
-    if trace is not None:
-        try:
-            router_span = trace.span(
-                name="Router_Stage",
-                input={"query": query},
-            )
-        except Exception:
-            router_span = None
-
-    router_result = classify_query(query, router_span=router_span)
-
-    if router_span is not None:
-        try:
-            router_span.end()
-        except Exception:
-            pass
-
-    search_query = router_result.rewritten_query or query
-
-    # No retrieval needed (out_of_scope or no course + no intent_type)
-    if not router_result.requires_retrieval:
-        return [], router_result, [], True
-
-    # --- Retrieval_Stage span ---
-    retrieval_span = None
-    if trace is not None:
-        try:
-            retrieval_span = trace.span(
-                name="Retrieval_Stage",
-                input={
-                    "query": search_query,
-                    "function": router_result.function,
-                    "retrieval_mode": router_result.retrieval_mode,
-                    "course_ids": router_result.course_ids,
-                },
-            )
-        except Exception:
-            retrieval_span = None
-
-    data_gaps: list[tuple[str, str]] = []
-    data_integrity = True
-
-    try:
-        if router_result.recurrent_search:
-            chunks, data_gaps, data_integrity = _retrieve_recurrent(
-                query, search_query, router_result, retrieval_span
-            )
-        else:
-            chunks = _retrieve_and_rerank(query, search_query, router_result, retrieval_span)
-
-        reranked = deduplicate_chunks(chunks)
-    except Exception as e:
-        if retrieval_span is not None:
-            try:
-                retrieval_span.end(level="ERROR", status_message=str(e))
-            except Exception:
-                pass
-        raise
-
-    if retrieval_span is not None:
-        try:
-            retrieval_span.end(output={
-                "n_results": len(reranked),
-                "data_gaps": len(data_gaps),
-                "data_integrity": data_integrity,
-            })
-        except Exception:
-            pass
-
-    return reranked, router_result, data_gaps, data_integrity
+    """Backward-compat wrapper — delegates to pipeline.run_pipeline()."""
+    from rag.pipeline import run_pipeline  # lazy import to avoid circular
+    return run_pipeline(query, trace=trace)
 
 
 def deduplicate_chunks(results: list[dict]) -> list[dict]:
@@ -392,98 +304,3 @@ def deduplicate_chunks(results: list[dict]) -> list[dict]:
             seen.add(key)
             deduped.append(doc)
     return deduped
-
-
-def _retrieve_recurrent(
-    query: str,
-    search_query: str,
-    router_result: "RouterResult",
-    retrieval_span=None,
-) -> tuple[list[dict], list[tuple[str, str]], bool]:
-    """5-step deterministic cardinality pipeline for recurrent_* queries.
-
-    Steps:
-      1. Anchor fetch: metadata retrieval for anchor course(s) → DataGaps + DataIntegrityFlag
-      2. Eval pass: LLM generates context-aware search string from anchor chunks
-      3. Vector discovery: corpus-wide hybrid search using eval search string
-      4. Filter + rerank discovery chunks (exclude anchor course_ids)
-      5. Combine: anchor chunks + reranked discovery
-
-    Returns:
-        (all_chunks, data_gaps, data_integrity)
-    """
-    from rag.generator import generate_eval_search_string
-    from rag.search import fetch_anchor_chunks
-
-    fn = router_result.function
-    dk = compute_dynamic_k(fn, len(router_result.course_ids))
-    retrieve_k = dk["retrieve_k"]
-    rerank_k = dk["rerank_k"]
-
-    course_ids = router_result.course_ids
-    strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
-    effective_cats = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
-
-    # Step 1: Anchor fetch
-    anchor_chunks, data_gaps, data_integrity = fetch_anchor_chunks(course_ids, effective_cats)
-
-    # Step 2: Eval pass — LLM generates context-aware search string
-    eval_query = generate_eval_search_string(
-        anchor_chunks, search_query, router_result.intent_type or "GENERAL"
-    )
-
-    # Step 3 & 4: Vector discovery, filter, rerank
-    all_results = search.hybrid_search(
-        eval_query, filters=None, k=retrieve_k, parent_span=retrieval_span
-    )
-    anchor_ids = set(course_ids)
-    discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
-
-    discovery_reranked = reranker.rerank(
-        eval_query, discovery_chunks, top_k=rerank_k, parent_span=retrieval_span
-    )
-
-    # Step 5: Anchor chunks first (primacy) so generator has reference course context
-    return anchor_chunks + discovery_reranked, data_gaps, data_integrity
-
-
-def _retrieve_and_rerank(
-    query: str,
-    search_query: str,
-    router_result: "RouterResult",
-    retrieval_span=None,
-) -> list[dict]:
-    """Internal helper: run the function-specific retrieval + optional reranking.
-
-    Handles semantic_general and all metadata_* paths.
-    recurrent_* paths are handled by _retrieve_recurrent().
-    """
-    fn = router_result.function
-    dk = compute_dynamic_k(fn, len(router_result.course_ids))
-    retrieve_k = dk["retrieve_k"]
-    rerank_k = dk["rerank_k"]
-
-    course_ids = router_result.course_ids
-
-    # ── semantic_general: no course ID, pure corpus-wide vector search ──────
-    if fn == "semantic_general":
-        results = search.search_semantic(search_query, top_k=retrieve_k)
-        return reranker.rerank(search_query, results, top_k=rerank_k, parent_span=retrieval_span)
-
-    # ── out_of_scope: should have been filtered upstream ────────────────────
-    if fn == "out_of_scope" or not course_ids:
-        return []
-
-    # ── Determine which categories to fetch (registry lookup) ───────────────
-    strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
-    categories = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
-
-    # ── metadata_* path: exact lookup per course, no reranking ──────────────
-    if len(course_ids) == 1:
-        return search.search_by_course_categories(course_ids[0], categories)
-
-    # Multi-course: interleave results across courses
-    combined: list[dict] = []
-    for cid in course_ids:
-        combined.extend(search.search_by_course_categories(cid, categories))
-    return combined

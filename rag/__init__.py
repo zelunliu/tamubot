@@ -12,6 +12,8 @@ from rag.generator import generate, generate_stream, generate_comparison
 from rag.search import hybrid_search, search_semantic, search_by_course_categories, get_missing_sections, fetch_anchor_chunks
 from rag.reranker import rerank, rerank_multi_course
 from rag.observability import get_langfuse, run_ragas_background, compute_ragas_metrics
+# router must be fully initialized before pipeline imports
+from rag.pipeline import run_pipeline, router_order, db_order, generator_order
 
 __all__ = [
     "ChunkDoc", "CourseDoc", "PolicyDoc", "VALID_CATEGORIES",
@@ -21,4 +23,5 @@ __all__ = [
     "hybrid_search", "search_semantic", "search_by_course_categories", "get_missing_sections", "fetch_anchor_chunks",
     "rerank", "rerank_multi_course",
     "get_langfuse", "run_ragas_background", "compute_ragas_metrics",
+    "run_pipeline", "router_order", "db_order", "generator_order",
 ]

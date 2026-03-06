@@ -1,5 +1,18 @@
 # CLAUDE.md
 
+## IMPORTANT: Task Notification
+
+**Every response, no exceptions:**
+1. **First tool call** must always be:
+```bash
+date +%s > "$(cygpath $TEMP)/.claude_task_start"
+```
+2. **Last tool call** must always be:
+```bash
+source .venv/Scripts/activate && python .claude_notify.py
+```
+Shows a popup (no auto-close) if the task took >30 seconds. Do this even for trivial/short responses.
+
 > Module-level detail: `rag/CLAUDE.md`, `ingestion_pipeline/CLAUDE.md`, `evals/CLAUDE.md`
 
 ## Commands

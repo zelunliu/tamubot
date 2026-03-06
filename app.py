@@ -33,8 +33,8 @@ if "messages" not in st.session_state:
 USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 
 if USE_MONGODB:
-    from rag.router import route_retrieve_rerank
-    from rag import generator
+    from rag.pipeline import run_pipeline, generator_order
+    from rag import generator  # keep for format_context_xml fallback
 else:
     import vertexai
     from vertexai.preview import rag
@@ -170,7 +170,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             data_integrity = True
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    source_docs, router_result, data_gaps, data_integrity = route_retrieve_rerank(prompt, trace=lf_trace)
+                    source_docs, router_result, data_gaps, data_integrity = run_pipeline(prompt, trace=lf_trace)
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
@@ -180,16 +180,15 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             answer_placeholder = st.empty()
             try:
                 logger.info("Starting generation (streaming)...")
-                stream = generator.generate_stream(
-                    results=source_docs,
-                    question=prompt,
-                    function=router_result.function if router_result else "semantic_general",
-                    course_ids=router_result.course_ids if router_result else None,
-                    intent_type=router_result.intent_type if router_result else None,
+                stream = generator_order(
+                    recurrent=False,
+                    chunks=source_docs,
+                    query=prompt,
+                    router_result=router_result,
                     data_gaps=data_gaps,
                     data_integrity=data_integrity,
                     trace=lf_trace,
-                )
+                ) if router_result is not None else iter([])
                 for token in stream:
                     answer += token
                     answer_placeholder.markdown(answer + "▌")
