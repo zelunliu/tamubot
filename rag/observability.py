@@ -330,15 +330,16 @@ def compute_ragas_metrics(
         from ragas.metrics import Faithfulness, AnswerRelevancy
         from ragas.llms import LangchainLLMWrapper
         from ragas.embeddings import LangchainEmbeddingsWrapper
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_openai import ChatOpenAI
         from langchain_core.embeddings import Embeddings
         import voyageai
         import config
 
         critic_llm = LangchainLLMWrapper(
-            ChatGoogleGenerativeAI(
-                model="gemini-2.0-flash",
-                google_api_key=config.GOOGLE_API_KEY,
+            ChatOpenAI(
+                model=config.TAMU_MODEL,
+                api_key=config.TAMU_API_KEY,
+                base_url=config.TAMU_BASE_URL,
                 temperature=0,
             )
         )
@@ -428,14 +429,14 @@ def score_groundedness(
         from ragas import evaluate, EvaluationDataset, SingleTurnSample
         from ragas.metrics import ResponseGroundedness
         from ragas.llms import LangchainLLMWrapper
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_openai import ChatOpenAI
         import config
 
-        # Use Gemini 2.5 Flash-Lite as critic (cost-effective, sufficient for groundedness)
         critic_llm = LangchainLLMWrapper(
-            ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash-lite",
-                google_api_key=config.GOOGLE_API_KEY,
+            ChatOpenAI(
+                model=config.TAMU_MODEL,
+                api_key=config.TAMU_API_KEY,
+                base_url=config.TAMU_BASE_URL,
                 temperature=0,
             )
         )

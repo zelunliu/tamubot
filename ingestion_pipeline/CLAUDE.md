@@ -10,17 +10,17 @@ from ingestion_pipeline import parse_pdf, run_ingest, setup_indexes
 
 ## Gotchas
 
-- **Always uses `GOOGLE_API_KEY` directly** — not the TAMU gateway. PDF bytes (`Part.from_bytes`) are not supported by OpenAI-compatible APIs.
+- **Uses TAMU gateway** (`TAMU_API_KEY`) via `config.get_tamu_client()`. PDF text is extracted with PyMuPDF (`fitz`) and sent as plain text — no `Part.from_bytes`.
 - **13 vs 11 categories**: `process_syllabi.py` uses `ALL_CATEGORIES` (13, incl. `COURSE_SUMMARY` + `SAFETY`); `rag.models.VALID_CATEGORIES` has 11 — intentional, `COURSE_SUMMARY`/`SAFETY` not query-routable yet.
 - **Output folder is date-stamped**: `gem_parsed_YYYYMMDD` — new folder each calendar day. `OUTPUT_DIR` is computed at import time via `datetime.now()`.
 - **CSV schema**: `CSV_FIELDS` constant drives all writes (`extrasaction="ignore"`, `restval=""`). Delete stale CSV manually when adding new category columns.
-- **`\ufffd` replacement chars**: Gemini substitutes U+FFFD for un-decodable PDF bytes (e.g. Windows-1252 en-dashes). `clean_replacement_chars()` replaces with `-` after every successful parse.
+- **`\ufffd` replacement chars**: PyMuPDF may emit U+FFFD for un-decodable bytes (e.g. Windows-1252 en-dashes). `clean_replacement_chars()` replaces with `-` after every successful parse.
 
 ## Running
 
 ```bash
-GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
-GOOGLE_API_KEY=... python ingestion_pipeline/refine_errors.py [--department CSCE]  # retry error JSONs
+python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
+python ingestion_pipeline/refine_errors.py [--department CSCE]  # retry error JSONs
 python -m ingestion_pipeline.setup_atlas
 python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
 ```

@@ -1,19 +1,19 @@
 """
-Test Gemini 2.5 Flash PDF parsing on CSCE + ISEN syllabus PDFs.
-Sends each PDF directly to Gemini and asks for structured JSON output.
+Test TAMU API PDF parsing on CSCE + ISEN syllabus PDFs.
+Extracts PDF text with PyMuPDF, then parses via TAMU gateway.
 
-Usage: GOOGLE_API_KEY=... python test_gemini_parse.py
+Usage: python ingestion_pipeline/test_gemini_parse.py
 """
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
-from google import genai
+import fitz  # PyMuPDF
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import config
 
-API_KEY = os.getenv("GOOGLE_API_KEY", "")
-MODEL = "gemini-2.5-flash"
+MODEL = config.TAMU_MODEL
 
 SYLLABI_DIR = Path("tamu_data/raw/syllabi")
 OUTPUT_DIR = Path("tamu_data/processed/test_output")
@@ -97,30 +97,34 @@ RULES:
 """
 
 
+def extract_pdf_text(pdf_path: Path) -> str:
+    """Extract plain text from a PDF using PyMuPDF."""
+    doc = fitz.open(str(pdf_path))
+    pages = [page.get_text() for page in doc]
+    doc.close()
+    return "\n\n".join(pages)
+
+
 def parse_pdf(client, pdf_path: Path, max_retries: int = 2) -> dict:
-    """Send a PDF to Gemini and get structured JSON back. Retries on JSON errors."""
+    """Extract PDF text and parse via TAMU API. Retries on JSON errors."""
     print(f"\n{'='*60}")
     print(f"Processing: {pdf_path.name} ({pdf_path.stat().st_size/1024:.0f} KB)")
     print(f"{'='*60}")
 
-    pdf_bytes = pdf_path.read_bytes()
+    pdf_text = extract_pdf_text(pdf_path)
+    user_message = f"{PROMPT}\n\n---\n\nSYLLABUS TEXT:\n{pdf_text}"
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.models.generate_content(
+            stream = client.chat.completions.create(
                 model=MODEL,
-                contents=[
-                    genai.types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-                    PROMPT,
-                ],
-                config=genai.types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=65536,
-                    response_mime_type="application/json",
-                ),
+                messages=[{"role": "user", "content": user_message}],
+                temperature=0.1,
+                max_tokens=65536,
+                response_format={"type": "json_object"},
+                stream=True,
             )
-
-            raw = response.text.strip()
+            raw = "".join(chunk.choices[0].delta.content or "" for chunk in stream).strip()
             parsed = json.loads(raw)
             if attempt > 0:
                 print(f"  Succeeded on retry {attempt}")
@@ -195,11 +199,11 @@ def print_summary(result: dict, pdf_name: str):
 
 
 def main():
-    if not API_KEY:
-        print("ERROR: Set GOOGLE_API_KEY environment variable")
+    if not config.TAMU_API_KEY:
+        print("ERROR: Set TAMU_API_KEY environment variable")
         sys.exit(1)
 
-    client = genai.Client(api_key=API_KEY)
+    client = config.get_tamu_client()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     results_summary = []

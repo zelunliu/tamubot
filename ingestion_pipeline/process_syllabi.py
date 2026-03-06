@@ -9,9 +9,9 @@ Features:
   - Summary report at the end
 
 Usage:
-    GOOGLE_API_KEY=... python process_syllabi.py
-    GOOGLE_API_KEY=... python process_syllabi.py --department CSCE   # only CSCE
-    GOOGLE_API_KEY=... python process_syllabi.py --retry-errors      # retry previously failed files
+    python ingestion_pipeline/process_syllabi.py
+    python ingestion_pipeline/process_syllabi.py --department CSCE   # only CSCE
+    python ingestion_pipeline/process_syllabi.py --retry-errors      # retry previously failed files
 """
 
 import csv
@@ -25,11 +25,12 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
-from google import genai
+import fitz  # PyMuPDF
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import config
 
 # ── Config ────────────────────────────────────────────────────────────────────
-API_KEY = os.getenv("GOOGLE_API_KEY", "")
-MODEL = "gemini-2.5-flash"
+MODEL = config.TAMU_MODEL
 
 SYLLABI_DIR = Path("tamu_data/raw/syllabi")
 OUTPUT_DIR = Path(f"tamu_data/processed/gem_parsed_{datetime.now().strftime('%Y%m%d')}")
@@ -166,11 +167,13 @@ Rules for COURSE_SUMMARY content:
 """
 
 
-def get_pdf_list(departments: list[str]) -> list[Path]:
+def get_pdf_list(departments: list[str], source_dir: Path | None = None) -> list[Path]:
     """Get all PDFs for the specified departments."""
+    d = source_dir or SYLLABI_DIR
     pdfs = []
     for dept in departments:
-        pdfs.extend(sorted(SYLLABI_DIR.glob(f"202611_{dept}_*.pdf")))
+        pattern = f"*_{dept}_*.pdf" if source_dir else f"202611_{dept}_*.pdf"
+        pdfs.extend(sorted(d.glob(pattern)))
     return pdfs
 
 
@@ -456,26 +459,30 @@ def append_progress_jsonl(row: dict):
         f.write(json.dumps(row) + "\n")
 
 
+def extract_pdf_text(pdf_path: Path) -> str:
+    """Extract plain text from a PDF using PyMuPDF."""
+    doc = fitz.open(str(pdf_path))
+    pages = [page.get_text() for page in doc]
+    doc.close()
+    return "\n\n".join(pages)
+
+
 def parse_pdf(client, pdf_path: Path) -> dict:
-    """Send a PDF to Gemini and get structured JSON. Retries on failure."""
-    pdf_bytes = pdf_path.read_bytes()
+    """Extract PDF text and parse structured JSON via TAMU API. Retries on failure."""
+    pdf_text = extract_pdf_text(pdf_path)
+    user_message = f"{PROMPT}\n\n---\n\nSYLLABUS TEXT:\n{pdf_text}"
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = client.models.generate_content(
+            stream = client.chat.completions.create(
                 model=MODEL,
-                contents=[
-                    genai.types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-                    PROMPT,
-                ],
-                config=genai.types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=65536,
-                    response_mime_type="application/json",
-                ),
+                messages=[{"role": "user", "content": user_message}],
+                temperature=0.1,
+                max_tokens=65536,
+                response_format={"type": "json_object"},
+                stream=True,  # TAMU gateway always returns SSE
             )
-
-            raw = response.text.strip()
+            raw = "".join(chunk.choices[0].delta.content or "" for chunk in stream).strip()
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
@@ -531,14 +538,16 @@ def main():
     parser = argparse.ArgumentParser(description="Parse syllabus PDFs with Gemini 2.5 Flash")
     parser.add_argument("--department", type=str, help="Process only this department (e.g., CSCE)")
     parser.add_argument("--retry-errors", action="store_true", help="Retry previously failed files")
+    parser.add_argument("--input-dir", type=str, help="Custom PDF input directory (overrides default SYLLABI_DIR)")
     args = parser.parse_args()
 
-    if not API_KEY:
-        print("ERROR: Set GOOGLE_API_KEY environment variable")
+    if not config.TAMU_API_KEY:
+        print("ERROR: Set TAMU_API_KEY environment variable")
         sys.exit(1)
 
+    input_dir = Path(args.input_dir) if args.input_dir else None
     departments = [args.department.upper()] if args.department else DEPARTMENTS
-    all_pdfs = get_pdf_list(departments)
+    all_pdfs = get_pdf_list(departments, input_dir)
     completed = get_completed_files()
 
     if args.retry_errors:
@@ -572,7 +581,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    client = genai.Client(api_key=API_KEY)
+    client = config.get_tamu_client()
 
     # Load existing progress rows; index by filename for upsert behaviour
     progress_rows = load_progress_csv()

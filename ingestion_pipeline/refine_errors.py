@@ -4,8 +4,8 @@ Scans tamu_data/processed/gemini_parsed/ for JSON files with a top-level "error"
 key, re-runs parse_pdf() (with sanitization + collapse logic), and reports recovery.
 
 Usage:
-    GOOGLE_API_KEY=... python -m ingestion_pipeline.refine_errors
-    GOOGLE_API_KEY=... python -m ingestion_pipeline.refine_errors --department CSCE
+    python -m ingestion_pipeline.refine_errors
+    python -m ingestion_pipeline.refine_errors --department CSCE
 """
 
 import json
@@ -15,16 +15,18 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import config
 from ingestion_pipeline.process_syllabi import (
     parse_pdf,
     write_per_file_report,
     OUTPUT_DIR,
     LOG_DIR,
     SYLLABI_DIR,
-    API_KEY,
     DELAY_BETWEEN_CALLS,
 )
-from google import genai
 
 
 def find_error_jsons(department: str | None = None) -> list[Path]:
@@ -78,8 +80,8 @@ def main():
     parser.add_argument("--department", type=str, help="Filter by department (e.g. CSCE)")
     args = parser.parse_args()
 
-    if not API_KEY:
-        print("ERROR: Set GOOGLE_API_KEY environment variable")
+    if not config.TAMU_API_KEY:
+        print("ERROR: Set TAMU_API_KEY environment variable")
         sys.exit(1)
 
     department = args.department.upper() if args.department else None
@@ -95,7 +97,7 @@ def main():
         print(f"Department filter: {department}")
     print(f"{'='*60}\n")
 
-    client = genai.Client(api_key=API_KEY)
+    client = config.get_tamu_client()
 
     recovered = 0
     still_failing = 0
