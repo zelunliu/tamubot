@@ -1,8 +1,8 @@
 import scrapy
 import os
 from urllib.parse import urlparse
-from ..items import TamuPageItem, PdfManifestItem
-from ..utils.cleaner import clean_html_content
+from items import TamuPageItem, PdfManifestItem
+from utils.cleaner import clean_html_content
 
 class CatalogSpider(scrapy.Spider):
     name = 'catalog'

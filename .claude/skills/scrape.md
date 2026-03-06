@@ -73,11 +73,17 @@ print(r.status_code, r.headers.get('X-Cache'), r.text[:200])
 ## Lessons learned
 
 ### tamu.simplesyllabus.com
-- **CloudFront WAF blocks all non-browser requests** — Scrapy + plain requests both return 500
-- Real endpoint: `/api2/doc-library-search?term_statuses[]=future&term_statuses[]=current&page_size=50&page=N`
-- `/api2/search` and `/api2/doc-pdf` are broken server-side (500 for all docs)
-- **Solution**: use Playwright in-page `page.evaluate(fetch(...))` for API calls, `page.pdf()` for saving
-- Slug URL-encode parentheses: `(46627)` → `%2846627%29` via `urllib.parse.quote(slug, safe='-')`
+- **CloudFront WAF blocks all non-browser requests** — Scrapy + plain requests both return `X-Cache: Error from cloudfront` / HTTP 500 empty body
+- **Real search endpoint**: `/api2/doc-library-search` (NOT `/api2/search` — broken 500)
+- **`/api2/doc-pdf` is broken server-wide** (500 for all docs) — use `page.pdf()` instead
+- **Solution**: Playwright in-page `page.evaluate(fetch(...))` for API calls, `page.pdf()` for saving rendered view page
+- **Term filtering**: use `term_ids[]={entity_id}` — NOT `term_statuses[]` (defaults to current+future only, ignores `past`)
+  - Get term entity_ids from `/api2/term?bypass_pagination=true&is_active=true`
+  - Fall 2025 CS: `ecd304d6-7795-4f49-a0ee-1d6137884ac7`
+  - Spring 2026 CS: `3a9c109e-8e72-4682-966e-b6c754c0596f`
+  - Can combine: `term_ids[]=ID1&term_ids[]=ID2`
+- **Item structure**: `code` (doc_id), `title` ("CSCE 670 600 (46627)"), `term_name` ("Spring 2026 - College Station")
+- **Slug construction**: `{term_name.replace(' - ','-').replace(' ','-')}-{SUBJ}-{COURSE}-{SEC}-({CRN})`; URL-encode parens via `urllib.parse.quote(slug, safe='-')`
 - Scraper: `tamu_data/scraper/download_simple_syllabus.py`
 
 ### howdyportal.tamu.edu

@@ -1,7 +1,7 @@
 BOT_NAME = 'tamu_scraper'
 
-SPIDER_MODULES = ['tamu_scraper.spiders']
-NEWSPIDER_MODULE = 'tamu_scraper.spiders'
+SPIDER_MODULES = ['spiders']
+NEWSPIDER_MODULE = 'spiders'
 
 # User-Agent as requested
 USER_AGENT = 'TAMU-Student-Project-Research'
@@ -15,8 +15,9 @@ DOWNLOAD_DELAY = 1.5
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 ITEM_PIPELINES = {
-   'tamu_scraper.pipelines.SyllabusPipeline': 1,
-   'tamu_scraper.pipelines.ProgressPipeline': 300,
+   'pipelines.SyllabusPipeline': 1,
+   'pipelines.ManifestPipeline': 2,
+   'pipelines.ProgressPipeline': 300,
 }
 
 FILES_STORE = 'syllabi'

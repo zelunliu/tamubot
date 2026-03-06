@@ -1,4 +1,4 @@
-.PHONY: run scrape-catalog scrape-classes setup-atlas ingest ingest-dept \
+.PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
         test typecheck lint format eval-router probe probe-full
 
 # --- App ---
@@ -12,6 +12,9 @@ scrape-catalog:
 
 scrape-classes:
 	cd tamu_data/scraper && scrapy crawl class_search
+
+scrape-simple-syllabus:
+	python tamu_data/scraper/download_simple_syllabus.py
 
 setup-atlas:
 	python -m ingestion_pipeline.setup_atlas

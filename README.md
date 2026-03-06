@@ -84,16 +84,17 @@ One-time ETL: scrape → parse → embed → store. Controlled by `ingestion_pip
 flowchart TD
     TAMU(["TAMU Course Catalog<br/>+ Class Schedule"])
 
-    subgraph SCRAPE["Step 1 — Scraping (Scrapy)"]
+    subgraph SCRAPE["Step 1 — Scraping"]
         direction LR
         SP1["catalog spider<br/>departments · course descriptions"]
         SP2["class_search spider<br/>sections · instructors · PDF URLs"]
+        SP3["download_simple_syllabus.py<br/>Playwright · tamu.simplesyllabus.com<br/>CSCE + ISEN · section 600"]
         SP1 --> SP2
     end
 
     subgraph PARSE["Step 2 — PDF Parsing (Gemini)"]
         direction LR
-        DL["PDF Downloader<br/>tamu_data/raw/<br/>7,970 PDFs across all depts"]
+        DL["PDF Downloader<br/>tamu_data/raw/<br/>7,970 PDFs (HowdyPortal)<br/>+ 39 PDFs (Simple Syllabus)"]
         GEMINI["Gemini 2.5 Flash<br/>process_syllabi.py<br/>multimodal PDF → structured JSON<br/>13 categories · COURSE_SUMMARY · SAFETY<br/>sanitize_json · collapse_chunks"]
         DL --> GEMINI
     end
@@ -518,7 +519,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 
 ### Load data into MongoDB
 
-The parsed syllabus JSONs are included in `tamu_data/processed/gemini_parsed/` (259 CSCE + ISEN courses, Spring 2026).
+The parsed syllabus JSONs are included in `tamu_data/processed/gem_parsed_YYYYMMDD/` (259 CSCE + ISEN courses, Spring 2026 via HowdyPortal; 39 graduate section-600 syllabi via Simple Syllabus).
 
 ```bash
 # Create Atlas indexes (vector + text + metadata) — one time
@@ -565,8 +566,12 @@ To scrape fresh data and rebuild the corpus from scratch:
 # 1. Scrape academic catalog
 make scrape-catalog
 
-# 2. Scrape course sections + download syllabi PDFs
+# 2. Scrape course sections + download syllabi PDFs (HowdyPortal)
 make scrape-classes
+
+# 2b. Download graduate syllabi from Simple Syllabus (CSCE + ISEN section 600, Spring 2026)
+#     Uses Playwright — bypasses CloudFront WAF, prints rendered pages to PDF
+make scrape-simple-syllabus
 
 # 3. Parse PDFs with Gemini (resumes automatically; skips completed files)
 GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py
@@ -641,7 +646,9 @@ tamubot/
 │   ├── processed/gem_parsed_YYYYMMDD/  # Structured JSONs + parsing_progress.csv (date-stamped per run)
 │   ├── logs/per_file/                  # Per-PDF .txt reports (success + failure)
 │   ├── raw/                            # PDFs + scraped JSONL (gitignored, large)
-│   └── scraper/                        # Scrapy project (catalog + class_search spiders)
+│   └── scraper/                        # Scrapy project + standalone downloaders
+│       ├── spiders/                    # catalog · class_search · simple_syllabus (Scrapy)
+│       └── download_simple_syllabus.py # Playwright downloader for tamu.simplesyllabus.com
 │
 └── tests/                          # pytest unit tests
 ```
@@ -689,7 +696,8 @@ config.py  (shared root)
 ### Completed
 
 - Scrapy spiders for catalog + class search (all departments)
-- Syllabus PDF download — 7,970 PDFs across all departments
+- Syllabus PDF download — 7,970 PDFs across all departments (HowdyPortal)
+- **Simple Syllabus scraper** — Playwright-based downloader for `tamu.simplesyllabus.com`; 39 graduate (section 600) Spring 2026 syllabi for CSCE + ISEN; PDFs saved to `tamu_data/raw/simple_syllabus_YYYYMMDD/` with metadata sidecar JSON
 - Gemini PDF parsing — 259/259 CSCE + ISEN files parsed
 - **Ingestion pipeline hardening**: `sanitize_json` (fixes malformed Gemini JSON), `clean_replacement_chars` (U+FFFD en-dash fix), `collapse_chunks_by_category` (≤13 chunks/file), `refine_errors.py` (second-pass retry for error JSONs)
 - **13 categories**: added `COURSE_SUMMARY` (always-generated RAG keyword index) and `SAFETY` (lab courses only); `COURSE_OVERVIEW` token count reduced 5× for lab courses by proper separation
@@ -728,6 +736,8 @@ config.py  (shared root)
 3. Add `SAFETY` to `rag.models.VALID_CATEGORIES` to make it query-routable
 4. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
 5. Redefine Recall@k hit as `course_id + category` to fix 36% undercount
+6. Parse and ingest Simple Syllabus PDFs (`tamu_data/raw/simple_syllabus_YYYYMMDD/`) — run `process_syllabi.py` against that folder
+7. Investigate Simple Syllabus API to retrieve Fall 2025 syllabi (the `doc-library-search` endpoint defaults to current+future terms only; past-term parameter unknown)
 
 ---
 
