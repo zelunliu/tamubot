@@ -1,4 +1,4 @@
-"""Pydantic v2 models for the V2 pipeline collections: chunks_v2, courses_v2."""
+"""Pydantic v2 models for the V3 pipeline collections: chunks_v3, courses_v3."""
 
 from datetime import datetime
 from typing import Optional
@@ -8,26 +8,18 @@ from pydantic import BaseModel, Field
 from rag.models import Instructor
 
 
-class ChunkDocV2(BaseModel):
-    """One document in the *chunks_v2* collection.
+class ChunkDocV3(BaseModel):
+    """One document in the *chunks_v3* collection.
 
-    Structural chunks from header-based segmentation — no category field.
+    Flat token chunks (~600 tokens each) — no header or category fields.
     """
     # Unique key for idempotent upserts: crn + chunk_index
     crn: str
     chunk_index: int
 
-    # Structural header metadata
-    header_text: Optional[str] = None
-    header_level: int = 0          # 0 = no-header / paragraph-merge fallback
-    parent_header: Optional[str] = None
-
     # Chunk content
     content: str
     has_table: bool = False
-
-    # Contextual anchor prepended before embedding
-    anchor: str = ""
 
     # Denormalized course metadata
     course_id: str
@@ -39,13 +31,13 @@ class ChunkDocV2(BaseModel):
     embedding: Optional[list[float]] = None
 
     # Housekeeping
-    pipeline_version: str = "v2"
+    pipeline_version: str = "v3"
     source_file: str = ""
     ingested_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class CourseDocV2(BaseModel):
-    """One document per course section (CRN) in *courses_v2*."""
+class CourseDocV3(BaseModel):
+    """One document per course section (CRN) in *courses_v3*."""
     crn: str
     course_id: str
     section: str
@@ -56,9 +48,8 @@ class CourseDocV2(BaseModel):
     location: Optional[str] = None
     credit_hours: Optional[str] = None
     chunk_count: int = 0
-    header_count: int = 0          # chunks with a real header (level > 0)
     syllabus_url: Optional[str] = None
     doc_id: Optional[str] = None
-    pipeline_version: str = "v2"
+    pipeline_version: str = "v3"
     source_file: str = ""
     ingested_at: datetime = Field(default_factory=datetime.utcnow)

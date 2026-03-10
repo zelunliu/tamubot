@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Iterator, Optional
 
 import config
-from rag import reranker, search
+from rag import reranker
+from rag import search_v3 as search
 from rag.router import (
     FUNCTION_CATEGORY_STRATEGIES,
     RouterResult,
@@ -23,7 +24,7 @@ from rag.router import (
     compute_dynamic_k,
     deduplicate_chunks,
 )
-from rag.search import fetch_anchor_chunks
+from rag.search_v3 import fetch_anchor_chunks
 
 
 def router_order(query: str, trace=None) -> RouterResult:
@@ -89,8 +90,8 @@ def db_order(
     if fn == "out_of_scope" or not router_result.course_ids:
         return [], [], True
 
-    # recurrent discover: hybrid search, filter anchor course_ids, rerank
-    all_results = search.hybrid_search(search_q, filters=None, k=retrieve_k, parent_span=trace)
+    # recurrent discover: semantic search with rewritten query, filter anchor course_ids, rerank
+    all_results = search.search_semantic(search_q, top_k=retrieve_k)
     anchor_ids = set(router_result.course_ids)
     discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
     reranked = reranker.rerank(search_q, discovery_chunks, top_k=rerank_k, parent_span=trace)
@@ -193,14 +194,10 @@ def run_pipeline(
         else:
             anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
             if router_result.recurrent_search:
-                eval_q = generator_order(
-                    recurrent=True,
-                    chunks=anchor,
-                    query=search_query,
-                    router_result=router_result,
-                )
+                # Skip eval_q generation — use rewritten query directly for
+                # corpus-wide semantic discovery (avoids anchoring to anchor course)
                 discovery, _, _ = db_order(
-                    "discover", router_result, discovery_query=eval_q, trace=retrieval_span
+                    "discover", router_result, discovery_query=None, trace=retrieval_span
                 )
                 reranked = deduplicate_chunks(anchor + discovery)
             else:

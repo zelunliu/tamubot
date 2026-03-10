@@ -298,7 +298,7 @@ def deduplicate_chunks(results: list[dict]) -> list[dict]:
     seen: set[tuple] = set()
     deduped: list[dict] = []
     for doc in results:
-        key = (doc.get("course_id", ""), doc.get("category", ""))
+        key = (doc.get("course_id", ""), doc.get("chunk_index", -1))
         if key not in seen:
             seen.add(key)
             deduped.append(doc)
