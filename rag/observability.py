@@ -56,6 +56,17 @@ class LFGeneration:
         level: Optional[str] = None,
         status_message: Optional[str] = None,
     ) -> None:
+        # Normalise usage to the format Langfuse REST API requires for display.
+        # Without "unit": "TOKENS" the values are stored but never shown in the UI.
+        if usage is not None:
+            inp = usage.get("input") or 0
+            out = usage.get("output") or 0
+            usage = {
+                "input": inp,
+                "output": out,
+                "total": inp + out,
+                "unit": "TOKENS",
+            }
         body: dict = {
             "id": self.id,
             "traceId": self._trace_id,
@@ -284,6 +295,14 @@ class MinimalLangfuseClient:
                     auth=self._auth,
                 )
                 resp.raise_for_status()
+            # Log any per-event errors from the 207 Multi-Status response
+            try:
+                body = resp.json()
+                errors = [e for e in body.get("errors", []) if e]
+                if errors:
+                    logger.warning(f"Langfuse ingestion partial errors: {errors}")
+            except Exception:
+                pass
             logger.debug(f"Langfuse: flushed {len(batch)} events.")
         except Exception as e:
             logger.warning(f"Langfuse flush failed ({len(batch)} events): {e}")

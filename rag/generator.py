@@ -27,6 +27,7 @@ def generate_eval_search_string(
     anchor_chunks: list[dict],
     original_query: str,
     intent_type: str,
+    parent_span=None,
 ) -> str:
     """Recurrent Eval Pass: generate a context-aware vector search string.
 
@@ -38,6 +39,7 @@ def generate_eval_search_string(
         anchor_chunks:  Chunks from the anchor course(s) metadata fetch.
         original_query: The user's original question (or rewritten_query).
         intent_type:    Advisory dimension (e.g. "PLANNING", "ACADEMIC").
+        parent_span:    Optional Langfuse trace/span; creates EvalSearch_Stage generation.
 
     Returns:
         A concise search string for the hybrid discovery step.
@@ -57,16 +59,48 @@ def generate_eval_search_string(
         f"to search for. Output ONLY the search string, no other text."
     )
 
+    eval_gen = None
+    if parent_span is not None:
+        try:
+            eval_gen = parent_span.generation(
+                name="EvalSearch_Stage",
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+                input=[{"role": "user", "content": eval_prompt}],
+                metadata={"intent_type": intent_type, "n_anchor_chunks": len(anchor_chunks)},
+            )
+        except Exception:
+            eval_gen = None
+
+    llm_result = None
     try:
-        result = call_llm(
+        llm_result = call_llm(
             messages=[{"role": "user", "content": eval_prompt}],
             temperature=0,
             max_tokens=4096,  # TAMU gateway requires min 4096 or response is empty
         )
-        return result.text.strip() or original_query
-    except Exception:
-        # Fallback to original query if eval pass fails
+        text = llm_result.text.strip() or original_query
+    except Exception as e:
+        if eval_gen is not None:
+            try:
+                eval_gen.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
         return original_query
+
+    if eval_gen is not None:
+        try:
+            eval_gen.end(
+                output=text,
+                usage=(
+                    {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
+                    if llm_result and llm_result.input_tokens is not None
+                    else None
+                ),
+            )
+        except Exception:
+            pass
+
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +260,7 @@ def generate(
     # Gate 1: Validate citations in response
     validate_citations_with_trace(text, function, trace)
 
-    # Gate 2: Launch async groundedness scoring (fire-and-forget)
-    contexts = [doc.get("content", "") for doc in results]
-    trace_id = trace.id if trace is not None else None
-    if trace_id:
-        from rag.observability import run_groundedness_scoring_background
-        run_groundedness_scoring_background(question, contexts, text, trace_id)
+    # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
 
     if generation_span is not None:
         try:
@@ -584,12 +613,7 @@ def generate_stream(
     complete_text = strip_thinking_blocks("".join(full_text_parts))
     validate_citations_with_trace(complete_text, function, trace)
 
-    if trace is not None:
-        contexts = [doc.get("content", "") for doc in results]
-        trace_id = trace.id
-        if trace_id:
-            from rag.observability import run_groundedness_scoring_background
-            run_groundedness_scoring_background(question, contexts, complete_text, trace_id)
+    # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
 
     if generation_span is not None:
         try:

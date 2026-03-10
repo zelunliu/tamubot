@@ -5,7 +5,7 @@ import traceback
 import streamlit as st
 
 import config
-from rag.observability import get_langfuse, run_ragas_background
+from rag.observability import get_langfuse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tamubot")
@@ -207,7 +207,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     answer = "No relevant information found in the knowledge base."
                 answer_placeholder.markdown(answer)
 
-            # Close the parent trace, flush all buffered spans, trigger RAGAS
+            # Close the parent trace and flush all buffered spans
             if lf_trace is not None:
                 try:
                     lf_trace.update(output=answer)
@@ -217,14 +217,6 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     lf.flush()
                 except Exception:
                     pass
-                if answer and source_docs:
-                    contexts = [
-                        doc.get("content") or doc.get("policy_name", "")
-                        for doc in source_docs
-                        if doc.get("content") or doc.get("policy_name")
-                    ]
-                    if contexts:
-                        run_ragas_background(prompt, contexts, answer, lf_trace.id)
 
             if source_docs:
                 with st.expander("View Source Documents", expanded=False):

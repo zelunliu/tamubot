@@ -142,13 +142,22 @@ def run_pipeline(
     query: str,
     trace=None,
 ) -> tuple[list[dict], RouterResult, list[tuple[str, str]], bool]:
-    """Full 3-stage pipeline: router_order → db_order(s) → ready for generator_order.
+    """Full pipeline: router_order → db_order(s) → ready for generator_order.
 
-    Langfuse span hierarchy preserved:
-      TamuBot_Complete_Pipeline (trace)
-        └─ Router_Stage         ← router_order()
-        └─ Retrieval_Stage      ← run_pipeline() (wraps all db_order calls)
-             └─ Voyage_Embeddings, MongoDB_*, Voyage_Reranker
+    Langfuse trace hierarchy:
+      Non-recurrent / semantic_general:
+        TamuBot_Complete_Pipeline
+          ├─ Router_Stage
+          ├─ Retrieval_Stage  (+ Voyage_Embeddings, MongoDB_*, Voyage_Reranker inside)
+          └─ Generator_Stage
+
+      Recurrent (5 flat steps):
+        TamuBot_Complete_Pipeline
+          ├─ Router_Stage
+          ├─ Anchor_Pass       (direct MongoDB fetch, no embeddings)
+          ├─ EvalSearch_Stage  (LLM generates discovery query from anchor content)
+          ├─ Discover_Pass     (+ Voyage_Embeddings, MongoDB_*, Voyage_Reranker inside)
+          └─ Generator_Stage
 
     Args:
         query: Raw user question.
@@ -163,99 +172,92 @@ def run_pipeline(
     if not router_result.requires_retrieval:
         return [], router_result, [], True
 
-    # --- Retrieval_Stage span ---
     dk = compute_dynamic_k(router_result.function, len(router_result.course_ids))
-    retrieval_span = None
-    if trace is not None:
-        try:
-            retrieval_span = trace.span(
-                name="Retrieval_Stage",
-                input={
-                    "query": search_query,
-                    "function": router_result.function,
-                    "retrieval_mode": router_result.retrieval_mode,
-                    "course_ids": router_result.course_ids,
-                    "retrieve_k": dk["retrieve_k"],
-                    "rerank_k": dk["rerank_k"],
-                },
-            )
-        except Exception:
-            retrieval_span = None
-
     data_gaps: list[tuple[str, str]] = []
     data_integrity = True
 
-    try:
-        if not router_result.course_ids:
-            # semantic_general: corpus-wide vector search
-            chunks, _, _ = db_order("discover", router_result, trace=retrieval_span)
-            reranked = deduplicate_chunks(chunks)
-        else:
-            if router_result.recurrent_search:
-                # Anchor pass sub-span
-                anchor_span = None
-                if retrieval_span is not None:
-                    try:
-                        anchor_span = retrieval_span.span(
-                            "Anchor_Pass",
-                            input={"course_ids": router_result.course_ids},
-                        )
-                    except Exception:
-                        anchor_span = None
-                anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
-                if anchor_span is not None:
-                    try:
-                        anchor_span.end(output={"n_chunks": len(anchor), "data_gaps": len(data_gaps)})
-                    except Exception:
-                        pass
-
-                # Discover pass sub-span (Voyage_Embeddings + Reranker nest inside)
-                discover_span = None
-                if retrieval_span is not None:
-                    try:
-                        discover_span = retrieval_span.span(
-                            "Discover_Pass",
-                            input={"query": search_query},
-                        )
-                    except Exception:
-                        discover_span = None
-                discovery, _, _ = db_order(
-                    "discover", router_result, discovery_query=None,
-                    trace=discover_span or retrieval_span,
-                )
-                if discover_span is not None:
-                    try:
-                        discover_span.end(output={"n_chunks": len(discovery)})
-                    except Exception:
-                        pass
-                reranked = deduplicate_chunks(anchor + discovery)
-            else:
-                anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
-                reranked = deduplicate_chunks(anchor)
-    except Exception as e:
-        if retrieval_span is not None:
-            try:
-                retrieval_span.end(level="ERROR", status_message=str(e))
-            except Exception:
-                pass
-        raise
-
-    if retrieval_span is not None:
+    def _span(name, input=None):
+        if trace is None:
+            return None
         try:
-            retrieval_span.end(output={
-                "n_results": len(reranked),
-                "data_gaps": len(data_gaps),
-                "data_integrity": data_integrity,
-                "results_summary": [
-                    {
-                        "course_id": c.get("course_id"),
-                        "chunk_index": c.get("chunk_index"),
-                        "score": c.get("score"),
-                    }
-                    for c in reranked
-                ],
-            })
+            return trace.span(name=name, input=input)
+        except Exception:
+            return None
+
+    def _end_span(span, **kwargs):
+        if span is None:
+            return
+        try:
+            span.end(**kwargs)
         except Exception:
             pass
+
+    def _results_summary(chunks):
+        return [
+            {"course_id": c.get("course_id"), "chunk_index": c.get("chunk_index"), "score": c.get("score")}
+            for c in chunks
+        ]
+
+    try:
+        if router_result.recurrent_search:
+            # ── Recurrent: 5 flat steps directly under the trace ──────────────
+            # Step 2: Anchor_Pass — direct MongoDB lookup, no embeddings
+            anchor_span = _span("Anchor_Pass", input={"course_ids": router_result.course_ids})
+            anchor, data_gaps, data_integrity = db_order("anchor", router_result)
+            _end_span(anchor_span, output={"n_chunks": len(anchor), "data_gaps": len(data_gaps)})
+
+            # Step 3: EvalSearch_Stage — LLM call to build discovery query
+            from rag.generator import generate_eval_search_string
+            eval_query = generate_eval_search_string(
+                anchor,
+                router_result.rewritten_query or search_query,
+                router_result.intent_type or "GENERAL",
+                parent_span=trace,
+            )
+
+            # Step 4: Discover_Pass — semantic search + rerank with eval query
+            discover_span = _span("Discover_Pass", input={"query": eval_query})
+            discovery, _, _ = db_order(
+                "discover", router_result, discovery_query=eval_query,
+                trace=discover_span or trace,
+            )
+            _end_span(discover_span, output={
+                "n_chunks": len(discovery), "results_summary": _results_summary(discovery),
+            })
+
+            reranked = deduplicate_chunks(anchor + discovery)
+
+        elif not router_result.course_ids:
+            # ── semantic_general: corpus-wide vector search ────────────────────
+            retrieval_span = _span("Retrieval_Stage", input={
+                "query": search_query, "function": router_result.function,
+                "retrieve_k": dk["retrieve_k"], "rerank_k": dk["rerank_k"],
+            })
+            chunks, _, _ = db_order("discover", router_result, trace=retrieval_span)
+            reranked = deduplicate_chunks(chunks)
+            _end_span(retrieval_span, output={
+                "n_results": len(reranked), "results_summary": _results_summary(reranked),
+            })
+
+        else:
+            # ── metadata_*: direct anchor fetch + rerank ──────────────────────
+            retrieval_span = _span("Retrieval_Stage", input={
+                "query": search_query, "function": router_result.function,
+                "retrieval_mode": router_result.retrieval_mode,
+                "course_ids": router_result.course_ids,
+                "retrieve_k": dk["retrieve_k"], "rerank_k": dk["rerank_k"],
+            })
+            anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
+            reranked = deduplicate_chunks(
+                reranker.rerank(search_query, anchor, top_k=dk["rerank_k"], parent_span=retrieval_span)
+                if anchor else anchor
+            )
+            _end_span(retrieval_span, output={
+                "n_results": len(reranked), "data_gaps": len(data_gaps),
+                "data_integrity": data_integrity, "results_summary": _results_summary(reranked),
+            })
+
+    except Exception:
+        raise
 
     return reranked, router_result, data_gaps, data_integrity
