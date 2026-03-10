@@ -16,8 +16,28 @@ from google.genai import types
 import config
 
 
+def _count_tokens_approx(text: str) -> int:
+    """Approximate token count using tiktoken cl100k_base (GPT-4 tokeniser).
+
+    Used for the TAMU gateway path where SSE does not expose usage metadata.
+    The cl100k_base encoding is a reasonable proxy for Gemini-family models
+    (~±10% typical deviation).  Falls back to len/4 if tiktoken is unavailable.
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def _count_messages_tokens(messages: list[dict]) -> int:
+    """Sum approximate token counts across all message contents."""
+    return sum(_count_tokens_approx(m.get("content", "")) for m in messages)
+
+
 class LLMResult(NamedTuple):
-    """Return type for call_llm().  Usage fields are None on the TAMU gateway path."""
+    """Return type for call_llm().  Usage fields are approximate (tiktoken) on TAMU path."""
 
     text: str
     input_tokens: int | None = None
@@ -87,7 +107,7 @@ def stream_llm(
         str: Text tokens as they arrive.
     """
     if config.USE_TAMU_API:
-        yield from _stream_tamu(messages, temperature, max_tokens)
+        yield from _stream_tamu(messages, temperature, max_tokens, usage_out=usage_out)
     else:
         yield from _stream_gemini(messages, temperature, max_tokens, thinking_budget, usage_out=usage_out)
 
@@ -116,19 +136,25 @@ def _call_tamu(
         kwargs["response_format"] = {"type": "json_schema", "json_schema": json_schema}
     elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    input_tokens = _count_messages_tokens(messages)
     stream = tamu.chat.completions.create(**kwargs)
     text = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
-    # TAMU gateway does not expose token counts in SSE
-    return LLMResult(text=text)
+    return LLMResult(
+        text=text,
+        input_tokens=input_tokens,
+        output_tokens=_count_tokens_approx(text),
+    )
 
 
 def _stream_tamu(
     messages: list[dict],
     temperature: float,
     max_tokens: int,
+    usage_out: list | None = None,
 ) -> Iterator[str]:
     """Streaming call via TAMU gateway — yields tokens."""
     tamu = config.get_tamu_client()
+    input_tokens = _count_messages_tokens(messages) if usage_out is not None else None
     stream = tamu.chat.completions.create(
         model=config.TAMU_MODEL,
         messages=messages,
@@ -136,10 +162,19 @@ def _stream_tamu(
         max_tokens=max_tokens,
         stream=True,
     )
+    output_parts: list[str] = [] if usage_out is not None else None  # type: ignore[assignment]
     for chunk in stream:
         token = chunk.choices[0].delta.content
         if token:
+            if output_parts is not None:
+                output_parts.append(token)
             yield token
+    if usage_out is not None and output_parts is not None:
+        usage_out.extend([
+            input_tokens,
+            _count_tokens_approx("".join(output_parts)),
+            0,  # no thinking tokens on TAMU path
+        ])
 
 
 # ---------------------------------------------------------------------------

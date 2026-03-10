@@ -79,7 +79,7 @@ def db_order(
     search_q = discovery_query or router_result.rewritten_query
 
     if fn == "semantic_general":
-        results = search.search_semantic(search_q, top_k=retrieve_k)
+        results = search.search_semantic(search_q, top_k=retrieve_k, parent_span=trace)
         reranked = reranker.rerank(search_q, results, top_k=rerank_k, parent_span=trace)
         return reranked, [], True
 
@@ -87,7 +87,7 @@ def db_order(
         return [], [], True
 
     # recurrent discover: semantic search with rewritten query, filter anchor course_ids, rerank
-    all_results = search.search_semantic(search_q, top_k=retrieve_k)
+    all_results = search.search_semantic(search_q, top_k=retrieve_k, parent_span=trace)
     anchor_ids = set(router_result.course_ids)
     discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
     reranked = reranker.rerank(search_q, discovery_chunks, top_k=rerank_k, parent_span=trace)

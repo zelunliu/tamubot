@@ -296,10 +296,11 @@ def search_semantic(
     query: str,
     filters: Optional[dict] = None,
     top_k: int = 5,
+    parent_span=None,
 ) -> list[dict]:
     """V1-compatible corpus-wide vector search (no course filter)."""
     db = _get_db()
-    embedding = _embed_query(query)
+    embedding = _embed_query(query, parent_span=parent_span)
 
     atlas_filters = None
     if filters:
@@ -310,12 +311,38 @@ def search_semantic(
             else:
                 atlas_filters[field] = value
 
-    pipeline = [
-        _build_vector_stage(embedding, top_k, atlas_filters),
-        {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
-        _projection(),
-    ]
-    return list(db[CHUNKS_COLLECTION].aggregate(pipeline))
+    search_span = None
+    if parent_span is not None:
+        try:
+            search_span = parent_span.span(
+                name="MongoDB_Vector_Search",
+                input={"query": query, "top_k": top_k},
+            )
+        except Exception:
+            search_span = None
+
+    try:
+        pipeline = [
+            _build_vector_stage(embedding, top_k, atlas_filters),
+            {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+            _projection(),
+        ]
+        results = list(db[CHUNKS_COLLECTION].aggregate(pipeline))
+    except Exception as e:
+        if search_span is not None:
+            try:
+                search_span.end(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
+        raise
+
+    if search_span is not None:
+        try:
+            search_span.end(metadata={"n_results": len(results)})
+        except Exception:
+            pass
+
+    return results
 
 
 def search_by_course(
