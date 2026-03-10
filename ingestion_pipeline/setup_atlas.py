@@ -6,6 +6,7 @@ Usage:
 Requires MONGODB_URI in .env (or environment).
 """
 
+import argparse
 import os
 import sys
 
@@ -116,15 +117,102 @@ def setup_search_indexes(db):
     return created
 
 
+def setup_standard_indexes_v2(db):
+    """Create standard MongoDB indexes for the V2 collections."""
+    chunks_v2 = db["chunks_v2"]
+    chunks_v2.create_index("crn", name="idx_crn")
+    chunks_v2.create_index("course_id", name="idx_course_id")
+    chunks_v2.create_index("term", name="idx_term")
+    chunks_v2.create_index("header_level", name="idx_header_level")
+    chunks_v2.create_index(
+        [("crn", 1), ("chunk_index", 1)],
+        unique=True,
+        name="idx_crn_chunk_unique",
+    )
+    print("  [chunks_v2] standard indexes created")
+
+    courses_v2 = db["courses_v2"]
+    courses_v2.create_index("crn", unique=True, name="idx_crn")
+    courses_v2.create_index("course_id", name="idx_course_id")
+    courses_v2.create_index("term", name="idx_term")
+    print("  [courses_v2] standard indexes created")
+
+
+def setup_search_indexes_v2(db):
+    """Create Atlas Search and Vector Search indexes for V2 collections."""
+    chunks_v2 = db["chunks_v2"]
+
+    vector_idx = SearchIndexModel(
+        definition={
+            "fields": [
+                {
+                    "type": "vector",
+                    "path": "embedding",
+                    "numDimensions": 1024,
+                    "similarity": "cosine",
+                },
+                {"type": "filter", "path": "course_id"},
+                {"type": "filter", "path": "term"},
+            ]
+        },
+        name="vector_index_v2",
+        type="vectorSearch",
+    )
+
+    text_idx = SearchIndexModel(
+        definition={
+            "mappings": {
+                "dynamic": False,
+                "fields": {
+                    "content": {"type": "string", "analyzer": "lucene.standard"},
+                    "header_text": {"type": "string", "analyzer": "lucene.standard"},
+                    "course_id": {"type": "token"},
+                    "term": {"type": "token"},
+                    "instructor_name": {"type": "string", "analyzer": "lucene.standard"},
+                },
+            }
+        },
+        name="text_index_v2",
+        type="search",
+    )
+
+    existing = [idx["name"] for idx in chunks_v2.list_search_indexes()]
+    created = []
+    indexes = {"vector_index_v2": vector_idx, "text_index_v2": text_idx}
+    for name, idx in indexes.items():
+        if name in existing:
+            print(f"  [chunks_v2] search index '{name}' already exists — skipping")
+        else:
+            chunks_v2.create_search_index(idx)
+            created.append(name)
+            print(f"  [chunks_v2] search index '{name}' created (may take a few minutes)")
+    return created
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Create MongoDB Atlas indexes")
+    parser.add_argument(
+        "--version", choices=["v1", "v2", "all"], default="all",
+        help="Which index set to create (default: all)",
+    )
+    args = parser.parse_args()
+
     db = get_db()
     print(f"Setting up indexes on database '{DB_NAME}'...\n")
 
-    print("Standard indexes:")
-    setup_standard_indexes(db)
+    if args.version in ("v1", "all"):
+        print("V1 — Standard indexes:")
+        setup_standard_indexes(db)
+        print("\nV1 — Atlas Search indexes:")
+        search_indexes = setup_search_indexes(db)
+    else:
+        search_indexes = []
 
-    print("\nAtlas Search indexes:")
-    search_indexes = setup_search_indexes(db)
+    if args.version in ("v2", "all"):
+        print("\nV2 — Standard indexes:")
+        setup_standard_indexes_v2(db)
+        print("\nV2 — Atlas Search indexes:")
+        search_indexes += setup_search_indexes_v2(db)
 
     print("\nDone.")
     if search_indexes:

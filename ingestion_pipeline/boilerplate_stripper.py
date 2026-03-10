@@ -1,0 +1,632 @@
+"""
+ingestion_pipeline/boilerplate_stripper.py
+
+Deterministic pre-stripper for TAMU syllabus PDFs.
+Removes known institutional boilerplate sections BEFORE the LLM sees the text,
+based on section-header matching against a frequency-derived registry.
+
+Usage (module):
+    from ingestion_pipeline.boilerplate_stripper import strip_pdf
+    cleaned_text, strip_log = strip_pdf(pdf_path)
+
+Batch validation (CLI — run from repo root):
+    python -m ingestion_pipeline.boilerplate_stripper
+    python -m ingestion_pipeline.boilerplate_stripper --input-dirs tamu_data/raw/simple_syllabus_20260305
+"""
+
+import json
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+import fitz  # PyMuPDF
+
+# ── Boilerplate registry ──────────────────────────────────────────────────────
+# Derived from header frequency analysis across 317 CSCE/ISEN syllabi.
+# Each entry: lowercase header string → category label.
+# A PDF section whose header (lowercased, stripped) matches → stripped.
+
+BOILERPLATE_REGISTRY: dict[str, list[str]] = {
+    # Document / department masthead lines (pure structural noise)
+    "DEPT_HEADER": [
+        "college of engineering",
+        "computer science and engineering",
+        "industrial and systems engineering",
+        "texas a&m at galveston",
+    ],
+    # Standard TAMU-wide legal/policy sections (100% verbatim across all files)
+    "TAMU_POLICY": [
+        "university policies",
+        "academic integrity statement and policy",
+        "notice of nondiscrimination",
+        "civil rights, free speech, and title ix policies",
+        "americans with disabilities act (ada) policy",
+        "pregnancy accommodations",
+        "statement on mental health and wellness",
+        # FERPA header sometimes wraps across two bold lines in the PDF
+        "statement on the family educational rights and privacy act (ferpa)",
+        "statement on the family educational rights and",
+        "privacy act (ferpa)",
+        "free speech and civil discourse",
+        "additional university policies for galveston campus",
+        "college and department policies",
+        "university attendance policy",
+        "makeup work policy",
+    ],
+    # IT helpdesk / tool support blocks (zero course-specific content)
+    "TECH_SUPPORT": [
+        "technology support",
+        "canvas lms technical support",
+        "technology services (it) - main campus",
+        "perusall technical support",
+        "peerceptiv technical support",
+        "github technical support",
+        "peer teacher central",
+        "university writing center",
+        "learning resources",
+    ],
+    # Additional institutional template sections confirmed across files
+    "INSTITUTIONAL": [
+        "additional course details",
+        "course copyright",
+        "respect for all",
+        "absence documentation",
+    ],
+}
+
+# Flat lookup: lowercase header text → category label
+_HEADER_MAP: dict[str, str] = {
+    h: cat
+    for cat, headers in BOILERPLATE_REGISTRY.items()
+    for h in headers
+}
+
+ALL_BOILERPLATE_HEADERS: frozenset[str] = frozenset(_HEADER_MAP)
+
+
+def classify_header(text: str) -> str | None:
+    """Return boilerplate category label if text matches registry, else None."""
+    return _HEADER_MAP.get(text.lower().strip().rstrip(":"))
+
+
+def strip_markdown_boilerplate(md_text: str) -> tuple[str, list[dict]]:
+    """Strip boilerplate sections from Markdown text (e.g. from pymupdf4llm).
+
+    Detects headers by '#' prefix instead of font metadata.
+
+    Returns:
+        filtered_md  — Markdown with boilerplate sections removed
+        strip_log    — list of {header, type, chars, header_level} dicts
+    """
+    import re
+
+    sections: list[tuple[str | None, int, list[str]]] = []
+    cur_header: str | None = None
+    cur_level: int = 0
+    cur_lines: list[str] = []
+
+    for line in md_text.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*)", line)
+        if m:
+            sections.append((cur_header, cur_level, cur_lines))
+            cur_header = m.group(2).strip()
+            cur_level = len(m.group(1))
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    sections.append((cur_header, cur_level, cur_lines))
+
+    kept: list[str] = []
+    strip_log: list[dict] = []
+
+    for header, level, content_lines in sections:
+        bp_type = classify_header(header) if header else None
+        content = "\n".join(content_lines).strip()
+
+        if bp_type:
+            strip_log.append({
+                "header": header,
+                "type": bp_type,
+                "chars": len(header or "") + len(content),
+                "header_level": level,
+                "content": content,
+            })
+        else:
+            if header:
+                kept.append(f"{'#' * level} {header}")
+            if content:
+                kept.append(content)
+
+    return "\n\n".join(kept), strip_log
+
+
+# ── Core strip function ───────────────────────────────────────────────────────
+
+def strip_pdf(pdf_path: Path) -> tuple[str, list[dict]]:
+    """
+    Extract text from a PDF and remove known boilerplate sections.
+
+    Strategy:
+      1. Extract all text lines with font metadata via PyMuPDF.
+      2. Detect section headers: bold flag OR font size > body size + 1.5pt.
+      3. Group lines into (header, content) sections.
+      4. Strip sections whose header matches BOILERPLATE_REGISTRY.
+      5. Return joined non-boilerplate text + a strip log.
+
+    Returns:
+        cleaned_text  — text with boilerplate removed, ready for LLM
+        strip_log     — list of {header, type, chars, page_start}
+    """
+    doc = fitz.open(str(pdf_path))
+
+    raw_lines: list[dict] = []
+    for page_num, page in enumerate(doc, 1):
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                if not spans:
+                    continue
+                text = " ".join(s["text"] for s in spans).strip()
+                if not text:
+                    continue
+                raw_lines.append({
+                    "text": text,
+                    "size": max(s.get("size", 0) for s in spans),
+                    "bold": any(s.get("flags", 0) & 16 for s in spans),
+                    "page": page_num,
+                })
+    doc.close()
+
+    if not raw_lines:
+        return "", []
+
+    # Body font = most common rounded font size
+    body_size: int = Counter(round(l["size"]) for l in raw_lines).most_common(1)[0][0]
+
+    # Segment into sections
+    sections: list[tuple[str | None, int, list[str]]] = []
+    cur_header: str | None = None
+    cur_page: int = 1
+    cur_lines: list[str] = []
+
+    for ln in raw_lines:
+        is_header = (
+            (ln["bold"] or ln["size"] >= body_size + 0.5)
+            and 3 <= len(ln["text"]) <= 120
+        )
+        if is_header:
+            sections.append((cur_header, cur_page, cur_lines))
+            cur_header = ln["text"]
+            cur_page = ln["page"]
+            cur_lines = []
+        else:
+            cur_lines.append(ln["text"])
+    sections.append((cur_header, cur_page, cur_lines))
+
+    # Filter: strip boilerplate, keep the rest
+    kept: list[str] = []
+    strip_log: list[dict] = []
+
+    for header, page, lines in sections:
+        bp_type = classify_header(header) if header else None
+        content = "\n".join(lines)
+
+        if bp_type:
+            strip_log.append({
+                "header": header,
+                "type": bp_type,
+                "chars": len(header or "") + len(content),
+                "page_start": page,
+                "content": content,
+            })
+        else:
+            if header:
+                kept.append(header)
+            if content:
+                kept.append(content)
+
+    return "\n\n".join(kept), strip_log
+
+
+def pdf_to_annotated_markdown(pdf_path: Path) -> tuple[str, dict]:
+    """Extract PDF text with inline font annotations for every non-body line.
+
+    Body text (most common font size, non-bold) is emitted as plain text.
+    All other lines are prefixed with their font metadata so a downstream LLM
+    can identify structural headers from both typography AND content:
+
+        [16.0pt bold] College of Engineering
+        [13.0pt bold] Course Description
+        This is body text at 11.0pt — no prefix.
+        [11.0pt bold] Note:
+
+    body_size is detected at 0.5pt resolution to avoid integer-rounding errors
+    (e.g. a PDF with 10.5pt body text must not collapse to 10pt).
+
+    Returns:
+        annotated_text — font-annotated plain text (no Markdown headers)
+        stats          — {page_count, body_size, annotated_lines, plain_lines,
+                         char_count_in, char_count_out}
+    """
+    import re as _re
+
+    doc = fitz.open(str(pdf_path))
+    page_count = doc.page_count
+
+    raw_lines: list[dict] = []
+    for page_num, page in enumerate(doc, 1):
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                if not spans:
+                    continue
+                text = " ".join(s["text"] for s in spans).strip()
+                if not text:
+                    continue
+                raw_lines.append({
+                    "text": text,
+                    "size": max(s.get("size", 0) for s in spans),
+                    "bold": any(s.get("flags", 0) & 16 for s in spans),
+                    "page": page_num,
+                })
+    doc.close()
+
+    char_count_in = sum(len(l["text"]) for l in raw_lines)
+
+    if not raw_lines:
+        return "", {
+            "page_count": page_count, "body_size": 0,
+            "annotated_lines": 0, "plain_lines": 0,
+            "char_count_in": 0, "char_count_out": 0,
+        }
+
+    # 0.5pt resolution prevents collapsing nearby sizes (e.g. 10.5 → 10)
+    body_size: float = Counter(round(l["size"] * 2) / 2 for l in raw_lines).most_common(1)[0][0]
+
+    annotated_count = plain_count = 0
+    out_lines: list[str] = []
+
+    for ln in raw_lines:
+        text = ln["text"]
+        # Round size to 1 decimal for clean display
+        size = round(ln["size"], 1)
+        size_bucket = round(ln["size"] * 2) / 2  # same resolution as body detection
+        bold = ln["bold"]
+
+        is_body = (size_bucket == body_size) and not bold
+
+        if is_body:
+            out_lines.append(text)
+            plain_count += 1
+        else:
+            bold_tag = " bold" if bold else ""
+            out_lines.append(f"[{size}pt{bold_tag}] {text}")
+            annotated_count += 1
+
+    # Embed body font size as a parseable header comment for downstream functions
+    header = f"<!-- body_font:{body_size}pt -->"
+    annotated_text = header + "\n" + "\n".join(out_lines)
+
+    return annotated_text, {
+        "page_count": page_count,
+        "body_size": body_size,
+        "annotated_lines": annotated_count,
+        "plain_lines": plain_count,
+        "char_count_in": char_count_in,
+        "char_count_out": len(annotated_text),
+    }
+
+
+def strip_font_annotated_boilerplate(text: str) -> tuple[str, list[dict]]:
+    """Strip boilerplate from font-annotated text produced by pdf_to_annotated_markdown.
+
+    Annotated lines have the form: [Xpt bold] Header Text  or  [Xpt] Header Text
+    Plain lines (no prefix) are body text. Each annotated line starts a new
+    section; its text content is matched against BOILERPLATE_REGISTRY.
+
+    Returns:
+        filtered_text — annotated text with boilerplate sections removed
+        strip_log     — list of {header, type, chars, font_size, bold, content}
+    """
+    import re as _re
+
+    FONT_PREFIX = _re.compile(r"^\[(\d+\.?\d*)pt( bold)?\] (.+)$")
+    BODY_HEADER = _re.compile(r"^<!-- body_font:\d+\.?\d*pt -->$")
+
+    # Preserve the body_font comment line, skip it for section parsing
+    all_lines = text.splitlines()
+    body_comment = ""
+    parse_lines = all_lines
+    if all_lines and BODY_HEADER.match(all_lines[0]):
+        body_comment = all_lines[0]
+        parse_lines = all_lines[1:]
+
+    sections: list[tuple[str | None, dict, list[str]]] = []
+    cur_header: str | None = None
+    cur_meta: dict = {}
+    cur_lines: list[str] = []
+
+    for line in parse_lines:
+        m = FONT_PREFIX.match(line)
+        if m:
+            sections.append((cur_header, cur_meta, cur_lines))
+            cur_header = m.group(3).strip()
+            cur_meta = {
+                "font_size": float(m.group(1)),
+                "bold": m.group(2) is not None,
+            }
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    sections.append((cur_header, cur_meta, cur_lines))
+
+    kept: list[str] = []
+    strip_log: list[dict] = []
+
+    for header, meta, content_lines in sections:
+        bp_type = classify_header(header) if header else None
+        content = "\n".join(content_lines).strip()
+        font_size = meta.get("font_size", 0.0)
+        bold = meta.get("bold", False)
+
+        if bp_type:
+            strip_log.append({
+                "header": header,
+                "type": bp_type,
+                "chars": len(header or "") + len(content),
+                "font_size": font_size,
+                "bold": bold,
+                "content": content,
+            })
+        else:
+            if header:
+                bold_tag = " bold" if bold else ""
+                kept.append(f"[{font_size}pt{bold_tag}] {header}")
+            if content:
+                kept.append(content)
+
+    # Re-attach the body_font comment so annotated_to_clean_markdown can use it
+    if body_comment:
+        kept.insert(0, body_comment)
+
+    return "\n".join(kept), strip_log
+
+
+def annotated_to_clean_markdown(annotated_text: str) -> str:
+    """Convert font-annotated text to clean Markdown using adaptive header detection.
+
+    Strategy:
+      1. Parse <!-- body_font:Xpt --> header to get the document body font size.
+      2. Only consider annotated lines with size > body_size as header candidates
+         (filters out sub-body text like footnotes at smaller sizes).
+      3. Among candidates, discard configs with count > 60 — they're over-represented
+         body-variant text, not structural headers (e.g. 188 lines at 11pt in ISEN_620).
+      4. Sort remaining viable configs by size desc, bold as tie-breaker.
+         Take at most 2 → mapped to ## (top) and ### (second).
+      5. Top config gets promoted to # only if it appears <= 3 times in the doc
+         (rare → likely a document title, not a repeated section header).
+      6. Lines longer than 120 chars are always plain text regardless of font.
+    """
+    import re as _re
+    from collections import Counter as _Counter
+
+    FONT_PREFIX = _re.compile(r"^\[(\d+\.?\d*)pt( bold)?\] (.+)$")
+    BODY_HEADER = _re.compile(r"^<!-- body_font:(\d+\.?\d*)pt -->$")
+
+    # ── Parse body font size from first line ──────────────────────────────────
+    lines = annotated_text.splitlines()
+    body_size = 0.0
+    start_idx = 0
+    if lines:
+        m = BODY_HEADER.match(lines[0])
+        if m:
+            body_size = float(m.group(1))
+            start_idx = 1  # skip header comment line
+
+    # ── Pass 1: count each (size, bold) config above body size ───────────────
+    config_counts: _Counter = _Counter()
+    for line in lines[start_idx:]:
+        m = FONT_PREFIX.match(line)
+        if m:
+            size = float(m.group(1))
+            bold = m.group(2) is not None
+            if size > body_size:  # only candidates above body size
+                config_counts[(size, bold)] += 1
+
+    # ── Assign header levels ──────────────────────────────────────────────────
+    MAX_HEADER_COUNT = 60  # configs appearing more often are body-variant text
+
+    viable = sorted(
+        [(cfg, cnt) for cfg, cnt in config_counts.items() if cnt <= MAX_HEADER_COUNT],
+        key=lambda x: (x[0][0], x[0][1]),  # sort by (size, bold) descending
+        reverse=True,
+    )
+
+    level_map: dict[tuple[float, bool], int] = {}
+    for i, (cfg, _cnt) in enumerate(viable[:2]):  # at most ## and ###
+        level_map[cfg] = i + 2  # 2=##, 3=###
+
+    # Top config → # only if it's a rare title (appears very few times)
+    if viable and viable[0][1] <= 3:
+        level_map[viable[0][0]] = 1  # promote to #
+
+    # ── Pass 2: emit clean markdown ───────────────────────────────────────────
+    out_lines: list[str] = []
+    for line in lines[start_idx:]:
+        m = FONT_PREFIX.match(line)
+        if m:
+            size = float(m.group(1))
+            bold = m.group(2) is not None
+            text = m.group(3)
+            level = level_map.get((size, bold))
+            if level and len(text) <= 120:
+                out_lines.append(f"{'#' * level} {text}")
+            else:
+                out_lines.append(text)
+        else:
+            out_lines.append(line)
+
+    return "\n".join(out_lines)
+
+
+def render_stripped_markdown(stem: str, strip_log: list[dict]) -> str:
+    """Format stripped sections as readable Markdown for human review.
+
+    Handles strip_log entries from both strip_markdown_boilerplate
+    (has header_level) and strip_font_annotated_boilerplate (has font_size/bold).
+    """
+    total_chars = sum(e.get("chars", 0) for e in strip_log)
+    lines: list[str] = [
+        f"# Stripped Content: {stem}",
+        f"_{len(strip_log)} sections stripped, {total_chars} chars total_",
+        "",
+        "---",
+    ]
+    for entry in strip_log:
+        header = entry.get("header", "(no header)")
+        bp_type = entry.get("type", "?")
+        chars = entry.get("chars", 0)
+        content = entry.get("content", "")
+
+        # Font-annotated log entry
+        if "font_size" in entry:
+            font_size = entry["font_size"]
+            bold = entry.get("bold", False)
+            bold_tag = " bold" if bold else ""
+            meta_str = f"font: {font_size}pt{bold_tag} | chars: {chars}"
+        else:
+            level = entry.get("header_level", 2)
+            meta_str = f"chars: {chars} | header_level: {level}"
+
+        lines.append("")
+        lines.append(f"## [{bp_type}] {header}")
+        lines.append(f"_{meta_str}_")
+        lines.append("")
+        if content:
+            lines.append(content)
+
+    return "\n".join(lines)
+
+
+# ── Batch validation ──────────────────────────────────────────────────────────
+
+def batch_validate(pdf_paths: list[Path], log_dir: Path) -> dict:
+    """
+    Run strip_pdf on every PDF, write per-file JSON logs, return a summary.
+
+    Per-file log: tamu_data/logs/boilerplate_strip/<stem>.json
+    Summary:      tamu_data/logs/boilerplate_strip/_summary.json
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict] = []
+    header_counter: Counter = Counter()
+    type_counter: Counter = Counter()
+
+    for i, pdf in enumerate(pdf_paths, 1):
+        print(f"[{i}/{len(pdf_paths)}] {pdf.name} ...", end=" ", flush=True)
+        try:
+            cleaned, strip_log = strip_pdf(pdf)
+
+            # Original char count (re-open for raw text)
+            doc = fitz.open(str(pdf))
+            original = "\n".join(p.get_text() for p in doc)
+            doc.close()
+
+            chars_orig = len(original)
+            chars_rem = len(cleaned)
+            chars_stripped = sum(e["chars"] for e in strip_log)
+            reduction = round(chars_stripped / max(chars_orig, 1) * 100, 1)
+
+            result: dict = {
+                "file": pdf.name,
+                "chars_original": chars_orig,
+                "chars_remaining": chars_rem,
+                "chars_stripped": chars_stripped,
+                "reduction_pct": reduction,
+                "sections_stripped": strip_log,
+            }
+            print(f"-{reduction}%  ({len(strip_log)} sections stripped)")
+
+            for entry in strip_log:
+                header_counter[entry["header"].lower()] += 1
+                type_counter[entry["type"]] += 1
+
+        except Exception as e:
+            result = {"file": pdf.name, "error": str(e)}
+            print(f"ERROR: {e}")
+
+        results.append(result)
+        with open(log_dir / f"{pdf.stem}.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+    ok = [r for r in results if "error" not in r]
+    summary = {
+        "run_timestamp": datetime.now().isoformat(),
+        "total_files": len(results),
+        "files_ok": len(ok),
+        "avg_reduction_pct": round(
+            sum(r["reduction_pct"] for r in ok) / max(len(ok), 1), 1
+        ),
+        "stripped_by_type": dict(type_counter.most_common()),
+        "stripped_header_frequency": dict(header_counter.most_common()),
+    }
+    with open(log_dir / "_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    return summary
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    parser = argparse.ArgumentParser(
+        description="Batch boilerplate strip — dry-run validation across all PDFs"
+    )
+    parser.add_argument(
+        "--input-dirs", nargs="+",
+        default=[
+            "tamu_data/raw/simple_syllabus_20260305",
+            "tamu_data/raw/simple_syllabus_20260304",
+        ],
+    )
+    parser.add_argument("--log-dir", default="tamu_data/logs/boilerplate_strip")
+    args = parser.parse_args()
+
+    # Collect + deduplicate by stem (later dir in list wins)
+    seen: dict[str, Path] = {}
+    for d in reversed(args.input_dirs):
+        for p in sorted(Path(d).glob("*.pdf")):
+            seen[p.stem] = p
+    pdfs = sorted(seen.values(), key=lambda p: p.stem)
+
+    print(f"PDFs:    {len(pdfs)}")
+    print(f"Log dir: {args.log_dir}\n")
+
+    summary = batch_validate(pdfs, Path(args.log_dir))
+
+    total = summary["total_files"]
+    print(f"\n{'='*65}")
+    print(f"Files processed : {total}  ({summary['files_ok']} ok)")
+    print(f"Avg reduction   : {summary['avg_reduction_pct']}%")
+
+    print(f"\nStripped sections by type:")
+    for bp_type, count in summary["stripped_by_type"].items():
+        print(f"  {bp_type:<20} {count:>5} occurrences")
+
+    print(f"\nStripped header frequency (top 40):")
+    print(f"  {'Header':<55} {'Files':>6}  {'%':>6}")
+    print(f"  {'-'*55}  {'------':>6}  {'------':>6}")
+    for header, count in list(summary["stripped_header_frequency"].items())[:40]:
+        print(f"  {header:<55} {count:>6}  {count/total*100:>5.1f}%")
+
+    print(f"\nPer-file logs : {args.log_dir}/")
+    print(f"Summary       : {args.log_dir}/_summary.json")

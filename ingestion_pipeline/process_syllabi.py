@@ -30,6 +30,7 @@ import fitz  # PyMuPDF  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config  # noqa: E402
+from ingestion_pipeline.boilerplate_stripper import strip_pdf  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL = config.TAMU_MODEL
@@ -51,7 +52,7 @@ ALL_CATEGORIES = [
     "COURSE_OVERVIEW", "COURSE_SUMMARY", "INSTRUCTOR", "PREREQUISITES",
     "LEARNING_OUTCOMES", "MATERIALS", "GRADING", "SCHEDULE",
     "ATTENDANCE_AND_MAKEUP", "AI_POLICY",
-    "SAFETY",
+    "UNIVERSITY_POLICIES", "SAFETY",
 ]
 
 # Token-count warning thresholds per category (min, max)
@@ -92,7 +93,7 @@ OUTPUT FORMAT — return ONLY valid JSON:
   },
   "chunks": [
     {
-      "category": "<one of the 12 categories below>",
+      "category": "<one of the 12 categories below — see list>",
       "title": "<section heading from the document>",
       "content": "<full text of this section, preserving all detail>",
       "has_table": true/false
@@ -107,35 +108,32 @@ OUTPUT FORMAT — return ONLY valid JSON:
   }
 }
 
-THE 11 SEMANTIC CATEGORIES (use exactly these string values for "category"):
-1.  COURSE_OVERVIEW — course description, catalog info, special designations, format, course policies specific to this instructor (recording policy, professionalism, how to succeed, etc.)
+THE 12 SEMANTIC CATEGORIES (use exactly these string values for "category"):
+1.  COURSE_OVERVIEW — course description, catalog info, special designations, format, course policies specific to this instructor (recording policy, professionalism, communication platforms, how to succeed, etc.)
 2.  INSTRUCTOR — instructor/TA details: name, email, office, office hours, phone, preferred contact method, TA info. Always generate this chunk.
 3.  PREREQUISITES — required courses, corequisites, standing requirements
 4.  LEARNING_OUTCOMES — what students will learn, course objectives
 5.  MATERIALS — textbooks, required software, platforms, tech requirements
 6.  GRADING — grade scale, weights, component descriptions (homework, exams, labs, projects), rubrics, grade appeals, regrading/regrade policy, submission policy, late work penalty, collaboration/academic integrity rules specific to this course
 7.  SCHEDULE — course calendar, weekly topics, exam dates, assignment due dates, exam format and coverage notes
-8.  ATTENDANCE_AND_MAKEUP — course-specific attendance rules, late work policy, makeup exam procedures. Do NOT include standard TAMU Student Rule 7 boilerplate text ("Work submitted by a student as makeup work for an excused absence is not considered late work...") — that goes in boilerplate_policies.
+8.  ATTENDANCE_AND_MAKEUP — course-specific attendance rules, late work policy, makeup exam procedures
 9.  AI_POLICY — AI tool usage rules (permitted, required, prohibited), citation requirements
-10. COURSE_SUMMARY — RAG-optimized keyword index (see generation rules below)
-11. SAFETY — lab safety rules, protective equipment requirements, dress code, chemical/biological
+10. UNIVERSITY_POLICIES — standard university-wide or department-wide policies that apply to all courses: academic integrity definitions and honor code, professionalism statements, copyright/recording notices, school-life conflict policy, accessibility statements, and any other institutional policy text not specific to this course
+11. COURSE_SUMMARY — RAG-optimized keyword index (see generation rules below)
+12. SAFETY — lab safety rules, protective equipment requirements, dress code, chemical/biological
     hazard handling, equipment operation rules, emergency procedures, food/drink restrictions.
     Use only for courses with a physical lab or hands-on component.
 
 RULES:
-- Extract ALL course-specific content. Do not skip or summarize (except COURSE_SUMMARY).
+- Extract ALL content present in the text. Do not skip or summarize (except COURSE_SUMMARY).
 - Preserve tables as Markdown tables (| col1 | col2 | format). Set has_table=true.
-- Standard university boilerplate — add name to boilerplate_policies, do NOT create a chunk:
-  * ADA, FERPA, Title IX, Honor Code, Attendance Policy, Makeup Work Policy and similar policies
-  * "Technology Services (IT) - Main Campus" / "Canvas LMS Technical Support" IT helpdesk blocks
-  * Standard Student Rule 7 language in ATTENDANCE_AND_MAKEUP
-  Only create a chunk if the instructor added course-specific content on top of the boilerplate.
+- UNIVERSITY_POLICIES is the catch-all for any policy text that reads as institution-wide rather than course-specific. When in doubt between COURSE_OVERVIEW and UNIVERSITY_POLICIES, ask: would this paragraph appear verbatim in another course's syllabus? If yes → UNIVERSITY_POLICIES.
 - title field: use the actual section heading from the document, max ~80 chars. Never use the document header (college name, course name, section number) as the title.
 - COURSE_OVERVIEW content: start from the catalog description or course-specific policies. Do NOT include the document header (college/dept name, course title, section, meeting times) — that information is already in course_metadata.
 - Never use "MISC" or "OTHER" as a category. Use the closest match.
 - Each chunk should be a coherent section. Don't split mid-paragraph.
 - For completeness_check: list categories absent from the syllabus as missing_sections.
-  Do NOT include COURSE_SUMMARY in missing_sections — it is always generated.
+  Do NOT include COURSE_SUMMARY or UNIVERSITY_POLICIES in missing_sections.
   Only include SAFETY in missing_sections if the course clearly has a lab/hands-on component.
   Add warnings for missing grade weights, missing dates, missing contact info, etc.
 - Escape all special characters properly. Output must be valid JSON.
@@ -523,8 +521,12 @@ def extract_pdf_text(pdf_path: Path) -> str:
 
 
 def parse_pdf(client, pdf_path: Path) -> dict:
-    """Extract PDF text and parse structured JSON via TAMU API. Retries on failure."""
-    pdf_text = extract_pdf_text(pdf_path)
+    """Extract PDF text, pre-strip boilerplate, then parse structured JSON via TAMU API."""
+    pdf_text, boilerplate_log = strip_pdf(pdf_path)
+    if not pdf_text.strip():
+        # Fallback: if stripper returns nothing, use raw text
+        pdf_text = extract_pdf_text(pdf_path)
+        boilerplate_log = []
     user_message = f"{PROMPT}\n\n---\n\nSYLLABUS TEXT:\n{pdf_text}"
 
     for attempt in range(MAX_RETRIES + 1):
@@ -594,9 +596,10 @@ def parse_pdf(client, pdf_path: Path) -> dict:
                         "content": "\n".join(lines),
                     })
 
-            # Inject source filename into metadata for traceability
+            # Inject source filename, parse time, and boilerplate strip log
             parsed["_source_file"] = pdf_path.name
             parsed["_parsed_at"] = datetime.now().isoformat()
+            parsed["_boilerplate_stripped"] = boilerplate_log
 
             return parsed
 
@@ -695,13 +698,13 @@ def main():
         else:
             progress_index[pdf_path.name] = len(progress_rows)
             progress_rows.append(row)
-        write_progress_csv(progress_rows)
-        append_progress_jsonl(row)
-
-        # Save immediately
+        # Save JSON first so it's never lost due to CSV write failure
         out_path = OUTPUT_DIR / pdf_path.name.replace(".pdf", ".json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
+
+        write_progress_csv(progress_rows)
+        append_progress_jsonl(row)
 
         if "error" in result:
             fail_count += 1
