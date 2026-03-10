@@ -28,26 +28,22 @@ from rag.search_v3 import fetch_anchor_chunks
 
 
 def router_order(query: str, trace=None) -> RouterResult:
-    """Router_Stage: open span, classify query, close span, return RouterResult."""
-    router_span = None
+    """Router_Stage: open generation, classify query (generation closed inside classify_query)."""
+    from rag.prompts import ROUTER_PROMPT
+
+    router_obs = None
     if trace is not None:
         try:
-            router_span = trace.span(
+            router_obs = trace.generation(
                 name="Router_Stage",
-                input={"query": query},
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+                input=[{"role": "user", "content": ROUTER_PROMPT.format(query=query)}],
             )
         except Exception:
-            router_span = None
+            router_obs = None
 
-    router_result = classify_query(query, router_span=router_span)
-
-    if router_span is not None:
-        try:
-            router_span.end()
-        except Exception:
-            pass
-
-    return router_result
+    # classify_query calls router_obs.end() with usage counts
+    return classify_query(query, router_span=router_obs)
 
 
 def db_order(
@@ -168,6 +164,7 @@ def run_pipeline(
         return [], router_result, [], True
 
     # --- Retrieval_Stage span ---
+    dk = compute_dynamic_k(router_result.function, len(router_result.course_ids))
     retrieval_span = None
     if trace is not None:
         try:
@@ -178,6 +175,8 @@ def run_pipeline(
                     "function": router_result.function,
                     "retrieval_mode": router_result.retrieval_mode,
                     "course_ids": router_result.course_ids,
+                    "retrieve_k": dk["retrieve_k"],
+                    "rerank_k": dk["rerank_k"],
                 },
             )
         except Exception:
@@ -192,15 +191,46 @@ def run_pipeline(
             chunks, _, _ = db_order("discover", router_result, trace=retrieval_span)
             reranked = deduplicate_chunks(chunks)
         else:
-            anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
             if router_result.recurrent_search:
-                # Skip eval_q generation — use rewritten query directly for
-                # corpus-wide semantic discovery (avoids anchoring to anchor course)
+                # Anchor pass sub-span
+                anchor_span = None
+                if retrieval_span is not None:
+                    try:
+                        anchor_span = retrieval_span.span(
+                            "Anchor_Pass",
+                            input={"course_ids": router_result.course_ids},
+                        )
+                    except Exception:
+                        anchor_span = None
+                anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
+                if anchor_span is not None:
+                    try:
+                        anchor_span.end(output={"n_chunks": len(anchor), "data_gaps": len(data_gaps)})
+                    except Exception:
+                        pass
+
+                # Discover pass sub-span (Voyage_Embeddings + Reranker nest inside)
+                discover_span = None
+                if retrieval_span is not None:
+                    try:
+                        discover_span = retrieval_span.span(
+                            "Discover_Pass",
+                            input={"query": search_query},
+                        )
+                    except Exception:
+                        discover_span = None
                 discovery, _, _ = db_order(
-                    "discover", router_result, discovery_query=None, trace=retrieval_span
+                    "discover", router_result, discovery_query=None,
+                    trace=discover_span or retrieval_span,
                 )
+                if discover_span is not None:
+                    try:
+                        discover_span.end(output={"n_chunks": len(discovery)})
+                    except Exception:
+                        pass
                 reranked = deduplicate_chunks(anchor + discovery)
             else:
+                anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
                 reranked = deduplicate_chunks(anchor)
     except Exception as e:
         if retrieval_span is not None:
@@ -216,6 +246,14 @@ def run_pipeline(
                 "n_results": len(reranked),
                 "data_gaps": len(data_gaps),
                 "data_integrity": data_integrity,
+                "results_summary": [
+                    {
+                        "course_id": c.get("course_id"),
+                        "chunk_index": c.get("chunk_index"),
+                        "score": c.get("score"),
+                    }
+                    for c in reranked
+                ],
             })
         except Exception:
             pass

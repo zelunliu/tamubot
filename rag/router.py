@@ -195,7 +195,7 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
     except Exception as e:
         if router_span is not None:
             try:
-                router_span.update(level="ERROR", status_message=str(e))
+                router_span.end(level="ERROR", status_message=str(e))
             except Exception:
                 pass
         raise
@@ -206,11 +206,18 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         result = RouterResult(rewritten_query=query, category_confidence=0.0)
         if router_span is not None:
             try:
-                router_span.update(metadata={
-                    "function": result.function,
-                    "course_ids": [],
-                    "parse_error": True,
-                })
+                router_span.end(
+                    usage=(
+                        {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
+                        if llm_result and llm_result.input_tokens is not None
+                        else None
+                    ),
+                    metadata={
+                        "function": result.function,
+                        "course_ids": [],
+                        "parse_error": True,
+                    },
+                )
             except Exception:
                 pass
         return result
@@ -249,11 +256,16 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
         # function and retrieval_mode auto-derived in __post_init__
     )
 
-    # Record router metadata into the span
+    # End the router observation with usage counts and parsed output
     if router_span is not None:
         try:
-            router_span.update(
+            router_span.end(
                 output=data,
+                usage=(
+                    {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
+                    if llm_result and llm_result.input_tokens is not None
+                    else None
+                ),
                 metadata={
                     "function": result.function,
                     "retrieval_mode": result.retrieval_mode,
@@ -263,8 +275,6 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
                     "category_confidence": result.category_confidence,
                     "recurrent_search": result.recurrent_search,
                     "rewritten_query": result.rewritten_query,
-                    "input_tokens": llm_result.input_tokens if llm_result else None,
-                    "output_tokens": llm_result.output_tokens if llm_result else None,
                     "thinking_tokens": llm_result.thinking_tokens if llm_result else None,
                 },
             )

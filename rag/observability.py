@@ -105,9 +105,31 @@ class LFSpan:
         })
         return LFSpan(self._client, self._trace_id, child_id, parent_id=self.id)
 
+    def generation(
+        self,
+        name: str,
+        model: Optional[str] = None,
+        input: Any = None,
+        metadata: Optional[dict] = None,
+    ) -> "LFGeneration":
+        """Create a child generation nested under this span."""
+        child_id = _uuid()
+        self._client._enqueue("generation-create", {
+            "id": child_id,
+            "traceId": self._trace_id,
+            "parentObservationId": self.id,
+            "name": name,
+            "model": model,
+            "startTime": _now(),
+            "input": input,
+            "metadata": metadata,
+        })
+        return LFGeneration(self._client, self._trace_id, child_id)
+
     def end(
         self,
         output: Any = None,
+        usage: Optional[dict] = None,
         metadata: Optional[dict] = None,
         level: Optional[str] = None,
         status_message: Optional[str] = None,
@@ -128,12 +150,13 @@ class LFSpan:
     def update(
         self,
         output: Any = None,
+        usage: Optional[dict] = None,
         metadata: Optional[dict] = None,
         level: Optional[str] = None,
         status_message: Optional[str] = None,
     ) -> None:
         """Alias for end() — called mid-span to attach metadata."""
-        self.end(output=output, metadata=metadata, level=level, status_message=status_message)
+        self.end(output=output, usage=usage, metadata=metadata, level=level, status_message=status_message)
 
 
 class LFTrace:

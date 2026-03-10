@@ -170,7 +170,10 @@ def generate(
             generation_span = trace.generation(
                 name="Generator_Stage",
                 model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=user_message,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
                 metadata={
                     "function": function,
                     "intent_type": intent_type,
@@ -332,7 +335,10 @@ def generate_comparison(
             extraction_span = trace.generation(
                 name="Comparison_Extraction",
                 model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=question,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question},
+                ],
                 metadata={
                     "function": "metadata_combined",
                     "course_ids": course_ids,
@@ -497,11 +503,38 @@ def generate_stream(
         else config.THINKING_BUDGET_METADATA
     )
 
+    # Generator_Stage generation span
+    generation_span = None
+    if trace is not None:
+        try:
+            generation_span = trace.generation(
+                name="Generator_Stage",
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                metadata={
+                    "function": function,
+                    "intent_type": intent_type,
+                    "course_ids": course_ids or [],
+                    "n_sources": len(results),
+                    "system_prompt_length": len(system_prompt),
+                    "data_integrity": data_integrity,
+                    "n_data_gaps": len(data_gaps) if data_gaps else 0,
+                    "streaming": True,
+                    "thinking_budget": thinking_budget,
+                },
+            )
+        except Exception:
+            generation_span = None
+
     full_text_parts: list[str] = []
     # Buffer to detect and suppress <thinking>...</thinking> blocks at stream start
     think_buf = ""
     in_thinking = False
     thinking_done = False
+    usage_out: list = []
 
     for token in stream_llm(
         messages=[
@@ -511,6 +544,7 @@ def generate_stream(
         temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
         max_tokens=4096,
         thinking_budget=thinking_budget,
+        usage_out=usage_out,
     ):
         full_text_parts.append(token)
 
@@ -556,3 +590,18 @@ def generate_stream(
         if trace_id:
             from rag.observability import run_groundedness_scoring_background
             run_groundedness_scoring_background(question, contexts, complete_text, trace_id)
+
+    if generation_span is not None:
+        try:
+            usage = (
+                {"input": usage_out[0], "output": usage_out[1]}
+                if len(usage_out) >= 2 and usage_out[0] is not None
+                else None
+            )
+            generation_span.end(
+                output=complete_text,
+                usage=usage,
+                metadata={"thinking_tokens": usage_out[2] if len(usage_out) >= 3 else None},
+            )
+        except Exception:
+            pass

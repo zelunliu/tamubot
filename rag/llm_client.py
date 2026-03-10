@@ -66,6 +66,7 @@ def stream_llm(
     temperature: float = 0.1,
     max_tokens: int = 4096,
     thinking_budget: int = 0,
+    usage_out: list | None = None,
 ) -> Iterator[str]:
     """Streaming LLM call — yields text tokens as they arrive.
 
@@ -78,6 +79,9 @@ def stream_llm(
         max_tokens:      Max output tokens.
         thinking_budget: Thinking tokens for Gemini (0 = disabled).
                          Ignored on TAMU gateway path.
+        usage_out:       Optional list; after stream ends, populated with
+                         [input_tokens, output_tokens, thinking_tokens] on
+                         the Gemini path.  TAMU path: not populated.
 
     Yields:
         str: Text tokens as they arrive.
@@ -85,7 +89,7 @@ def stream_llm(
     if config.USE_TAMU_API:
         yield from _stream_tamu(messages, temperature, max_tokens)
     else:
-        yield from _stream_gemini(messages, temperature, max_tokens, thinking_budget)
+        yield from _stream_gemini(messages, temperature, max_tokens, thinking_budget, usage_out=usage_out)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +220,7 @@ def _stream_gemini(
     temperature: float,
     max_tokens: int,
     thinking_budget: int,
+    usage_out: list | None = None,
 ) -> Iterator[str]:
     """Streaming call via Google Gemini direct — yields tokens."""
     system_instruction, contents = _extract_messages(messages)
@@ -223,10 +228,21 @@ def _stream_gemini(
         system_instruction, temperature, max_tokens, False, None, thinking_budget
     )
     client = config.get_genai_client()
+    last_chunk = None
     for chunk in client.models.generate_content_stream(
         model=config.GENERATION_MODEL,
         contents=contents,
         config=cfg,
     ):
+        last_chunk = chunk
         if chunk.text:
             yield chunk.text
+    # Populate usage from final chunk metadata (Gemini only)
+    if usage_out is not None and last_chunk is not None:
+        meta = getattr(last_chunk, "usage_metadata", None)
+        if meta:
+            usage_out.extend([
+                getattr(meta, "prompt_token_count", None),
+                getattr(meta, "candidates_token_count", None),
+                getattr(meta, "thoughts_token_count", None) or 0,
+            ])
