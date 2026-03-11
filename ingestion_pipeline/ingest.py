@@ -191,9 +191,20 @@ def upsert_course(db, course_doc: dict):
     )
 
 
+def _crn_from_filename(filepath: Path) -> str | None:
+    """Extract CRN from filename pattern like 202611_CSCE_670_600_46627.json."""
+    parts = filepath.stem.split("_")
+    if parts and parts[-1].isdigit():
+        return parts[-1]
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest parsed syllabi into MongoDB Atlas")
     parser.add_argument("--department", type=str, help="Filter by department prefix (e.g. CSCE)")
+    parser.add_argument("--crns-file", type=str,
+                        help="JSON file with 'crns' list — ingest only those CRNs "
+                             "(e.g. tamu_data/evals/eval_corpus.json)")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
     args = parser.parse_args()
 
@@ -205,6 +216,17 @@ def main():
     if args.department:
         dept = args.department.upper()
         json_files = [f for f in json_files if f"_{dept}_" in f.name]
+
+    if args.crns_file:
+        with open(args.crns_file) as f:
+            corpus = json.load(f)
+        target_crns = {str(c) for c in corpus.get("crns", [])}
+        if not target_crns:
+            print(f"ERROR: No CRNs found in {args.crns_file}")
+            sys.exit(1)
+        json_files = [f for f in json_files if _crn_from_filename(f) in target_crns]
+        print(f"  --crns-file: filtered to {len(json_files)} files "
+              f"matching {len(target_crns)} corpus CRNs")
 
     print(f"Found {len(json_files)} JSON files to ingest")
     if not json_files:

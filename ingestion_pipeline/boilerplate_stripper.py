@@ -38,20 +38,26 @@ BOILERPLATE_REGISTRY: dict[str, list[str]] = {
     "TAMU_POLICY": [
         "university policies",
         "academic integrity statement and policy",
+        "academic integrity statements and policy",  # plural variant seen in some PDFs
         "notice of nondiscrimination",
+        "non-discrimination policy",                 # alternate phrasing (3+ files)
         "civil rights, free speech, and title ix policies",
         "americans with disabilities act (ada) policy",
         "pregnancy accommodations",
         "statement on mental health and wellness",
-        # FERPA header sometimes wraps across two bold lines in the PDF
+        # FERPA header — wraps across lines in different ways across PDFs
         "statement on the family educational rights and privacy act (ferpa)",
+        "statement on the family educational rights and privacy act",  # no trailing (ferpa)
         "statement on the family educational rights and",
         "privacy act (ferpa)",
+        "(ferpa)",                                   # orphaned second wrap line
         "free speech and civil discourse",
         "additional university policies for galveston campus",
+        "additional university policies for the galveston campus",  # "the" variant
         "college and department policies",
         "university attendance policy",
         "makeup work policy",
+        "course evaluation",             # HelioCampus eval boilerplate
     ],
     # IT helpdesk / tool support blocks (zero course-specific content)
     "TECH_SUPPORT": [
@@ -64,13 +70,16 @@ BOILERPLATE_REGISTRY: dict[str, list[str]] = {
         "peer teacher central",
         "university writing center",
         "learning resources",
+        "gradescope technical support",  # Gradescope helpdesk info
     ],
     # Additional institutional template sections confirmed across files
     "INSTITUTIONAL": [
-        "additional course details",
         "course copyright",
+        "plagiarism and copyright",                  # variant seen in 3+ files
         "respect for all",
         "absence documentation",
+        "accessibility statement",       # Disability accommodation boilerplate
+        "late days table",               # Template table repeated verbatim
     ],
 }
 
@@ -82,6 +91,18 @@ _HEADER_MAP: dict[str, str] = {
 }
 
 ALL_BOILERPLATE_HEADERS: frozenset[str] = frozenset(_HEADER_MAP)
+
+# Known TAMU boilerplate that appears at body font size (not detectable by font
+# metadata).  ONLY include long, specific phrases where false-positive risk is
+# negligible.  Do NOT add short generic words like "Reporting" or "Fabrication".
+BODY_BOILERPLATE_HEADERS: list[str] = [
+    "aggie honor code",
+    "preferred name and preferred gender pronouns",
+    "submission of work policy",
+    "regrading policy",
+    "course copyright statement",
+    "course copyright",
+]
 
 
 def classify_header(text: str) -> str | None:
@@ -138,6 +159,59 @@ def strip_markdown_boilerplate(md_text: str) -> tuple[str, list[dict]]:
                 kept.append(content)
 
     return "\n\n".join(kept), strip_log
+
+
+def strip_body_level_boilerplate(text: str) -> tuple[str, list[dict]]:
+    """Strip boilerplate sections whose headers appear at body font size.
+
+    These headers have no font-size prefix in annotated text and therefore
+    cannot be caught by strip_font_annotated_boilerplate.  We match only
+    long, unambiguous phrases listed in BODY_BOILERPLATE_HEADERS.
+
+    A block starts when a line (stripped, lowercased) exactly matches an entry.
+    It ends at the next font-annotated header line ([Xpt...] prefix) or EOF.
+
+    Returns:
+        filtered_text  — text with body-level boilerplate blocks removed
+        strip_log      — list of {header, type, chars, content} dicts
+    """
+    import re as _re
+
+    FONT_PREFIX = _re.compile(r"^\[(\d+\.?\d*)pt")
+    _BP_SET = {h.lower() for h in BODY_BOILERPLATE_HEADERS}
+
+    lines = text.splitlines()
+    out_lines: list[str] = []
+    strip_log: list[dict] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped_lower = line.strip().lower().rstrip(":")
+
+        if stripped_lower in _BP_SET:
+            # Collect block until next font-annotated header or EOF
+            header_text = line.strip()
+            block: list[str] = []
+            j = i + 1
+            while j < len(lines):
+                if FONT_PREFIX.match(lines[j]):
+                    break
+                block.append(lines[j])
+                j += 1
+            content = "\n".join(block).strip()
+            strip_log.append({
+                "header": header_text,
+                "type": "BODY_BOILERPLATE",
+                "chars": len(header_text) + len(content),
+                "content": content,
+            })
+            i = j  # skip header + body block
+        else:
+            out_lines.append(line)
+            i += 1
+
+    return "\n".join(out_lines), strip_log
 
 
 # ── Core strip function ───────────────────────────────────────────────────────
@@ -284,8 +358,15 @@ def pdf_to_annotated_markdown(pdf_path: Path) -> tuple[str, dict]:
             "char_count_in": 0, "char_count_out": 0,
         }
 
-    # 0.5pt resolution prevents collapsing nearby sizes (e.g. 10.5 → 10)
-    body_size: float = Counter(round(l["size"] * 2) / 2 for l in raw_lines).most_common(1)[0][0]
+    # 0.5pt resolution prevents collapsing nearby sizes (e.g. 10.5 → 10).
+    # Weight by character count, not line count: short table-cell lines (e.g. 10pt)
+    # would otherwise beat out longer body paragraphs and corrupt the body-size
+    # estimate — causing the stripper to treat all body-font content as headers.
+    char_weights: dict[float, int] = {}
+    for l in raw_lines:
+        bucket = round(l["size"] * 2) / 2
+        char_weights[bucket] = char_weights.get(bucket, 0) + len(l["text"])
+    body_size: float = max(char_weights, key=char_weights.__getitem__)
 
     annotated_count = plain_count = 0
     out_lines: list[str] = []
@@ -335,14 +416,16 @@ def strip_font_annotated_boilerplate(text: str) -> tuple[str, list[dict]]:
     import re as _re
 
     FONT_PREFIX = _re.compile(r"^\[(\d+\.?\d*)pt( bold)?\] (.+)$")
-    BODY_HEADER = _re.compile(r"^<!-- body_font:\d+\.?\d*pt -->$")
+    BODY_HEADER = _re.compile(r"^<!-- body_font:(\d+\.?\d*)pt -->$")
 
     # Preserve the body_font comment line, skip it for section parsing
     all_lines = text.splitlines()
     body_comment = ""
+    body_size = 0.0
     parse_lines = all_lines
-    if all_lines and BODY_HEADER.match(all_lines[0]):
+    if all_lines and (bm := BODY_HEADER.match(all_lines[0])):
         body_comment = all_lines[0]
+        body_size = float(bm.group(1))
         parse_lines = all_lines[1:]
 
     sections: list[tuple[str | None, dict, list[str]]] = []
@@ -353,13 +436,23 @@ def strip_font_annotated_boilerplate(text: str) -> tuple[str, list[dict]]:
     for line in parse_lines:
         m = FONT_PREFIX.match(line)
         if m:
-            sections.append((cur_header, cur_meta, cur_lines))
-            cur_header = m.group(3).strip()
-            cur_meta = {
-                "font_size": float(m.group(1)),
-                "bold": m.group(2) is not None,
-            }
-            cur_lines = []
+            size = float(m.group(1))
+            bold = m.group(2) is not None
+            text = m.group(3).strip()
+            # Start a new section if:
+            #   (a) line is clearly above body size (normal structural header), OR
+            #   (b) its text exactly matches the boilerplate registry — handles PDFs
+            #       where sub-headers sit BELOW body font size (e.g. 10.5pt bold in a
+            #       13pt body doc) but are still known institutional boilerplate.
+            is_structural = body_size == 0.0 or size >= body_size + 1.0
+            is_known_bp = classify_header(text) is not None
+            if is_structural or is_known_bp:
+                sections.append((cur_header, cur_meta, cur_lines))
+                cur_header = text
+                cur_meta = {"font_size": size, "bold": bold}
+                cur_lines = []
+            else:
+                cur_lines.append(line)
         else:
             cur_lines.append(line)
     sections.append((cur_header, cur_meta, cur_lines))
@@ -393,7 +486,13 @@ def strip_font_annotated_boilerplate(text: str) -> tuple[str, list[dict]]:
     if body_comment:
         kept.insert(0, body_comment)
 
-    return "\n".join(kept), strip_log
+    first_pass_text = "\n".join(kept)
+
+    # Second pass: strip body-level boilerplate (headers with no font prefix)
+    second_pass_text, body_strip_log = strip_body_level_boilerplate(first_pass_text)
+    strip_log.extend(body_strip_log)
+
+    return second_pass_text, strip_log
 
 
 def annotated_to_clean_markdown(annotated_text: str) -> str:

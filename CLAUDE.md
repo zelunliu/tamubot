@@ -20,8 +20,19 @@ make scrape-classes
 GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
 python -m ingestion_pipeline.setup_atlas
 python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
+python -m ingestion_pipeline.ingest --crns-file tamu_data/evals/eval_corpus.json  # corpus only
 ```
 Reset catalog crawl: delete `tamu_data/scraper/logs/progress_log.txt`
+
+Benchmarking:
+```bash
+make eval-draft                      # generate Excel draft from corpus CRNs
+make import-draft DRAFT=<path>       # approved Excel → JSONL golden set
+make bench GOLDEN=<path> EXP=<name>  # run benchmark → Excel + MD reports
+make bench-ragas GOLDEN=<path> EXP=<name>   # with RAGAS scores
+make validate-ragas BENCH=<path>     # RAGAS vs human judgment correlation
+```
+Reports: `tamu_data/evals/reports/benchmark_{EXP}_{YYYYMMDD}.xlsx` (tabs: Summary / Per-Query / Config)
 
 ## Gotchas
 
@@ -43,9 +54,3 @@ Invoke via the Skill tool automatically (no `/` command needed) when intent matc
 
 When skill tool engaged, make sure to notify user!
 
-## Known Issues
-
-- **Recall@k 36%**: CRN-exact matching counts cross-section hits as misses → redefine hit as `course_id + category`
-- **Golden set ~10 label errors**: run adjudication before trusting router accuracy (74% raw, ~90% estimated)
-- **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — watch if prompt grows
-- **pyOpenSSL + cryptography 46.x**: negative X.509 serial numbers → pymongo deprecation warnings; becomes hard error in future release

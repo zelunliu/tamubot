@@ -3,14 +3,10 @@ ingestion_pipeline/process_syllabi_v3.py
 
 V3 syllabus pipeline — flat token-based chunking, no header parsing.
 
-Steps 0-2 are identical to V2 (reuse their logic and output directories).
-Step 3 replaces header-based chunking with a configurable sliding-window
-chunker (see chunker_v3.chunk_text).
-
 Steps:
-  0. Copy source PDF  → v2_step0_source/{stem}_vNNN.pdf     (shared with v2)
-  1. PDF → Markdown   → v2_step1_markdown/{stem}_vNNN.md    (shared with v2)
-  2. Strip boilerplate→ v2_step2_boilerplate/{stem}_vNNN.md (shared with v2)
+  0. Copy source PDF  → v3_step0_source/{stem}_vNNN.pdf
+  1. PDF → Markdown   → v3_step1_markdown/{stem}_vNNN.md
+  2. Strip boilerplate→ v3_step2_boilerplate/{stem}_vNNN.md
   3. Flat chunk + LLM → v3_step3_flat/{stem}_vNNN.json
 
 Usage:
@@ -49,6 +45,10 @@ _BP_KEYWORDS = frozenset([
     "technical support", "canvas", "perusall", "peerceptiv",
     "learning resources", "statement on", "notice of", "accommodation",
     "safety", "harassment", "discrimination",
+    "evaluation",    # catches "course evaluation" variants
+    "accessibility", # catches "accessibility statement" variants
+    "honor",         # catches "aggie honor code" variants
+    "pronouns",      # catches preferred name/pronouns sections
 ])
 
 from dotenv import load_dotenv
@@ -65,7 +65,7 @@ from ingestion_pipeline.boilerplate_stripper import (  # noqa: E402
     strip_font_annotated_boilerplate,
 )
 from ingestion_pipeline.chunker_v3 import chunk_text  # noqa: E402
-from ingestion_pipeline.v2_logger import (  # noqa: E402
+from ingestion_pipeline.pipeline_logger import (  # noqa: E402
     STEP0_ROOT,
     STEP1_ROOT,
     STEP2_ROOT,
@@ -651,34 +651,65 @@ def process_pdf(
 _STEM_RE = re.compile(r"_v\d{3}\.\w+$")
 
 
-def _read_log_latest(log_path: Path) -> dict[str, dict]:
-    """Read a step-log CSV and return {base_stem: row} keeping the latest version per stem."""
+def _read_log_all_versions(log_path: Path) -> dict[str, dict[str, dict]]:
+    """Read a step-log CSV and return {base_stem: {version: row}} for all versions."""
     if not log_path.exists():
         return {}
-    rows_by_stem: dict[str, dict] = {}
+    result: dict[str, dict[str, dict]] = {}
     with log_path.open(encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
             fname = row.get("file", "")
             stem = _STEM_RE.sub("", fname)
-            existing = rows_by_stem.get(stem)
-            if existing is None or row.get("version", "") >= existing.get("version", ""):
-                rows_by_stem[stem] = row
-    return rows_by_stem
+            version = row.get("version", "")
+            result.setdefault(stem, {})[version] = row
+    return result
+
+
+def _read_log_latest(log_path: Path) -> dict[str, dict]:
+    """Read a step-log CSV and return {base_stem: row} keeping the latest version per stem."""
+    all_versions = _read_log_all_versions(log_path)
+    return {
+        stem: versions[max(versions)]
+        for stem, versions in all_versions.items()
+    }
+
+
+def _reduction_notes(reduction_pct: object, body_font_size_pt: object,
+                     tokens_remaining: object = "") -> str:
+    """Auto-computed QA note for extreme reduction_pct outliers.
+
+    Manual fix history is stored in _annotations.json and takes precedence
+    over this auto-computed value in generate_combined_log.
+    """
+    try:
+        pct = float(reduction_pct)
+        bfs = float(body_font_size_pt) if body_font_size_pt != "" else None
+        rem = int(tokens_remaining) if tokens_remaining != "" else None
+    except (TypeError, ValueError):
+        return ""
+    if pct < 5 and bfs is not None and bfs < 11.0:
+        return f"issue: body_font_misdetect (detected {bfs}pt, content 11pt); {pct}% stripped"
+    if pct > 75:
+        rem_str = f", {rem} tokens remaining" if rem is not None else ""
+        return f"thin_syllabus: {pct}% stripped{rem_str}"
+    return ""
 
 
 def generate_combined_log() -> Path:
     """Join all four step logs on base stem and write _full_preprocess_log.csv.
 
+    Anchored on step3: only stems that completed step3 appear as rows.
+    For each such stem, the step3 version is used to look up the matching
+    step0/1/2 rows exactly — no cross-version bleed.
+
     Output: tamu_data/processed/v3_step3_flat/_full_preprocess_log.csv
-    Columns cover every step: source info, PDF stats, boilerplate strip stats,
-    chunk stats, LLM status, and clickable hyperlinks to each step's output.
     """
-    s0 = _read_log_latest(STEP0_ROOT / "step0_source_copy_log.csv")
-    s1 = _read_log_latest(STEP1_ROOT / "step1_pdf_to_markdown_log.csv")
-    s2 = _read_log_latest(STEP2_ROOT / "step2_boilerplate_strip_log.csv")
+    s0_all = _read_log_all_versions(STEP0_ROOT / "step0_source_copy_log.csv")
+    s1_all = _read_log_all_versions(STEP1_ROOT / "step1_pdf_to_markdown_log.csv")
+    s2_all = _read_log_all_versions(STEP2_ROOT / "step2_boilerplate_strip_log.csv")
     s3 = _read_log_latest(STEP3_V3_ROOT / "step3_flat_chunk_log.csv")
 
-    all_stems = sorted(set(list(s0) + list(s1) + list(s2) + list(s3)))
+    all_stems = sorted(s3.keys())
 
     FIELDS = [
         # Identity
@@ -690,20 +721,28 @@ def generate_combined_log() -> Path:
         "annotated_tokens", "s1_status", "s1_md_file",
         # Step 2 — boilerplate
         "sections_stripped", "tokens_stripped", "tokens_remaining",
-        "reduction_pct", "strip_type_counts",
+        "reduction_pct", "reduction_notes", "strip_type_counts",
         "stripped_headers", "new_bp_candidates",
         "s2_status", "s2_md_file",
         # Step 3 — chunks
         "input_tokens", "chunk_count", "avg_chunk_tokens",
         "chunk_size_setting", "overlap_setting",
-        "llm_status", "llm_error", "s3_status", "s3_json_file",
+        "llm_status", "llm_error", "s3_status", "s3_json_file", "processed_at",
+        "validation_feedback",
     ]
 
     rows: list[dict] = []
     for stem in all_stems:
-        r0, r1, r2, r3 = s0.get(stem, {}), s1.get(stem, {}), s2.get(stem, {}), s3.get(stem, {})
-        version = (r3.get("version") or r2.get("version") or
-                   r1.get("version") or r0.get("version", ""))
+        r3 = s3[stem]
+        version = r3.get("version", "")
+        # Look up matching rows for this exact version in earlier steps
+        r0 = s0_all.get(stem, {}).get(version, {})
+        r1 = s1_all.get(stem, {}).get(version, {})
+        r2 = s2_all.get(stem, {}).get(version, {})
+
+        new_bp = r2.get("new_bp_candidates", "")
+        new_bp_count = f"{len(new_bp.split(' | '))} candidates" if new_bp else ""
+
         rows.append({
             "stem":               stem,
             "version":            version,
@@ -727,9 +766,14 @@ def generate_combined_log() -> Path:
             "tokens_stripped":    r2.get("tokens_stripped", ""),
             "tokens_remaining":   r2.get("tokens_remaining", ""),
             "reduction_pct":      r2.get("reduction_pct", ""),
+            "reduction_notes":    _reduction_notes(
+                r2.get("reduction_pct", ""),
+                r1.get("body_font_size_pt", ""),
+                r2.get("tokens_remaining", ""),
+            ),
             "strip_type_counts":  r2.get("strip_type_counts", ""),
             "stripped_headers":   r2.get("stripped_headers", ""),
-            "new_bp_candidates":  r2.get("new_bp_candidates", ""),
+            "new_bp_candidates":  new_bp_count,
             "s2_status":          r2.get("status", ""),
             "s2_md_file":         r2.get("output_file", ""),
             # step 3
@@ -742,7 +786,24 @@ def generate_combined_log() -> Path:
             "llm_error":          r3.get("llm_error", ""),
             "s3_status":          r3.get("status", ""),
             "s3_json_file":       r3.get("output_file", ""),
+            "processed_at":       r3.get("processed_at", ""),
+            "validation_feedback": "",
         })
+
+    rows.sort(key=lambda r: r.get("processed_at", ""), reverse=True)
+
+    # Merge manual annotations — override auto-computed reduction_notes.
+    # Edit tamu_data/processed/v3_step3_flat/_annotations.json to add fix history.
+    # Format: {"stem": "issue: ...; solution: ...; result: ..."}
+    annotations_path = STEP3_V3_ROOT / "_annotations.json"
+    annotations: dict[str, str] = {}
+    if annotations_path.exists():
+        with annotations_path.open(encoding="utf-8") as f:
+            annotations = json.load(f)
+    for row in rows:
+        note = annotations.get(row["stem"])
+        if note:
+            row["reduction_notes"] = note
 
     out_path = STEP3_V3_ROOT / "_full_preprocess_log.csv"
     tmp_path = STEP3_V3_ROOT / "_full_preprocess_log.csv.tmp"

@@ -4,31 +4,21 @@
 
 `ingestion_pipeline/` is the **producer**; `rag.models` is the **contract** it implements. Import schema models from `rag.models`, never define them here.
 
-```python
-from ingestion_pipeline import parse_pdf, run_ingest, setup_indexes
-```
-
-## Gotchas
-
-- **Uses TAMU gateway** (`TAMU_API_KEY`) via `config.get_tamu_client()`. PDF text is extracted with PyMuPDF (`fitz`) and sent as plain text — no `Part.from_bytes`.
-- **13 vs 11 categories**: `process_syllabi.py` uses `ALL_CATEGORIES` (13, incl. `COURSE_SUMMARY` + `SAFETY`); `rag.models.VALID_CATEGORIES` has 11 — intentional, `COURSE_SUMMARY`/`SAFETY` not query-routable yet.
-- **Output folder is date-stamped**: `gem_parsed_YYYYMMDD` — new folder each calendar day. `OUTPUT_DIR` is computed at import time via `datetime.now()`.
-- **CSV schema**: `CSV_FIELDS` constant drives all writes (`extrasaction="ignore"`, `restval=""`). Delete stale CSV manually when adding new category columns.
-- **`\ufffd` replacement chars**: PyMuPDF may emit U+FFFD for un-decodable bytes (e.g. Windows-1252 en-dashes). `clean_replacement_chars()` replaces with `-` after every successful parse.
-
-## Running
+## Running (V3 pipeline)
 
 ```bash
-python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
-python ingestion_pipeline/refine_errors.py [--department CSCE]  # retry error JSONs
-python -m ingestion_pipeline.setup_atlas
+python ingestion_pipeline/process_syllabi_v3.py --pilot
+python ingestion_pipeline/process_syllabi_v3.py --pdf tamu_data/raw/simple_syllabus_20260305/<file>.pdf [--new-run] [--force]
+python ingestion_pipeline/process_syllabi_v3.py --department CSCE
 python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
 ```
 
-Resume: skips already-parsed files in `OUTPUT_DIR`. Errors logged to `tamu_data/logs/errors.jsonl`.
-Per-file reports: `tamu_data/logs/per_file/<stem>.txt` (written for every PDF, success and failure).
-Progress sheet: `tamu_data/processed/gem_parsed_YYYYMMDD/parsing_progress.csv` — updates after each file.
+**Always run all steps (0–3) together.** `--step N` is for debugging only — partial runs leave downstream outputs stale.
 
+## Gotchas
 
-```
-
+- **Uses TAMU gateway** for step 3 LLM calls (`config.get_tamu_client()`). PyMuPDF extracts PDFs directly — no `Part.from_bytes`.
+- **`\ufffd` chars**: PyMuPDF emits U+FFFD for un-decodable bytes. `clean_replacement_chars()` replaces with `-` post-parse.
+- **Boilerplate registry** (`boilerplate_stripper.py`): font-annotated headers matched by `BOILERPLATE_REGISTRY`; body-size headers matched by `BODY_BOILERPLATE_HEADERS` + `strip_body_level_boilerplate()`. Only add long, unambiguous phrases to body list.
+- **`_BP_KEYWORDS`** in `process_syllabi_v3.py`: flags non-stripped headers as new candidates → `new_bp_candidates` column in combined log. Expand when new boilerplate patterns emerge.
+- **Legacy `process_syllabi.py`**: not used in v3. Still functional for Gemini semantic extraction if needed.

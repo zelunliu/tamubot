@@ -37,6 +37,7 @@ USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 if USE_MONGODB:
     from rag import generator  # keep for format_context_xml fallback
     from rag.pipeline import generator_order, run_pipeline
+    from rag.search_v3 import get_syllabus_urls
 else:
     from typing import Any, List
 
@@ -206,6 +207,20 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                 else:
                     answer = "No relevant information found in the knowledge base."
                 answer_placeholder.markdown(answer)
+
+            # Render syllabus links for all retrieved courses
+            if source_docs:
+                course_ids = list({doc["course_id"] for doc in source_docs if doc.get("course_id")})
+                try:
+                    url_map = get_syllabus_urls(course_ids)
+                except Exception:
+                    url_map = {}
+                if url_map:
+                    links = "  ".join(
+                        f"[{cid} Syllabus]({url})" for cid, url in sorted(url_map.items())
+                    )
+                    answer_placeholder.markdown(answer + "\n\n---\n**Syllabi:** " + links)
+                    answer += "\n\n---\n**Syllabi:** " + links
 
             # Close the parent trace and flush all buffered spans
             if lf_trace is not None:

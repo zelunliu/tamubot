@@ -34,6 +34,35 @@ from evals.eval_statistics import adjusted_wald_ci, mcnemar_exact, wilcoxon_test
 run_probe(query, tag, session_id, ragas, index, total) -> dict   # from run_probe.py
 ```
 
+## A/B Benchmarking Workflow
+
+```bash
+# One-time: populate tamu_data/evals/eval_corpus.json with ~25 CRNs
+
+# One-time: generate + review eval questions
+make eval-draft                                            # → tamu_data/evals/drafts/eval_draft_YYYYMMDD.xlsx
+# (user reviews Excel: set approved=False to reject, edit question/reference_answer)
+make import-draft DRAFT=tamu_data/evals/drafts/eval_draft_20260311.xlsx TAG=v1
+# → tamu_data/evals/golden_sets/golden_20260311_v1.jsonl
+
+# Per-experiment (re-ingest corpus with new chunk config, then benchmark):
+CHUNK_SIZE=600 OVERLAP=100 make ingest-corpus
+make bench GOLDEN=tamu_data/evals/golden_sets/golden_20260311_v1.jsonl EXP=cs600_ov100
+# → tamu_data/evals/reports/benchmark_cs600_ov100_YYYYMMDD.xlsx + .md
+
+# With RAGAS (slower, ~30s/question):
+make bench-ragas GOLDEN=... EXP=cs600_ov100
+
+# After filling human_judgment column in benchmark Excel:
+make validate-ragas BENCH=tamu_data/evals/reports/benchmark_cs600_ov100_20260311.xlsx
+```
+
+**Key files:**
+- `tamu_data/evals/eval_corpus.json` — fixed ~25 CRNs for all experiments
+- `tamu_data/evals/drafts/` — Excel drafts for user review
+- `tamu_data/evals/golden_sets/` — approved JSONL golden sets
+- `tamu_data/evals/reports/` — benchmark Excel (3 tabs: Summary/Per-Query/Config) + MD
+
 ## Known Issues
 
 - **Golden set ~10 label errors**: run adjudication before trusting router accuracy (74% raw → ~90% est.)

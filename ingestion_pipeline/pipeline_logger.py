@@ -1,7 +1,7 @@
 """
-ingestion_pipeline/v2_logger.py
+ingestion_pipeline/pipeline_logger.py
 
-Versioned step logging for the V2 syllabus pipeline.
+Versioned step logging for the V3 syllabus pipeline.
 
 Flat output: all versions of a file live in the same step root directory,
 distinguished by _vNNN suffix (e.g. 202611_CSCE_670_v001.md, _v002.md).
@@ -22,13 +22,12 @@ from datetime import datetime
 from pathlib import Path
 
 # Step root directories (no vNNN subfolders)
-STEP0_ROOT = Path("tamu_data/processed/v2_step0_source")
-STEP1_ROOT = Path("tamu_data/processed/v2_step1_markdown")
-STEP2_ROOT = Path("tamu_data/processed/v2_step2_boilerplate")
-STEP3_ROOT = Path("tamu_data/processed/v2_step3_chunked")
+STEP0_ROOT = Path("tamu_data/processed/v3_step0_source")
+STEP1_ROOT = Path("tamu_data/processed/v3_step1_markdown")
+STEP2_ROOT = Path("tamu_data/processed/v3_step2_boilerplate")
 STEP3_V3_ROOT = Path("tamu_data/processed/v3_step3_flat")
 
-ALL_STEP_ROOTS = [STEP0_ROOT, STEP1_ROOT, STEP2_ROOT, STEP3_ROOT, STEP3_V3_ROOT]
+ALL_STEP_ROOTS = [STEP0_ROOT, STEP1_ROOT, STEP2_ROOT, STEP3_V3_ROOT]
 
 # Matches _v001. in filenames (not directory names)
 _VERSION_IN_FILENAME = re.compile(r"_v(\d{3})\.")

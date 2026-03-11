@@ -1,0 +1,5 @@
+{
+  "description": "Fixed eval corpus for A/B chunking benchmarks (~25 CSCE courses). Edit CRNs once, then run: make ingest-corpus",
+  "department": "CSCE",
+  "crns": []
+}

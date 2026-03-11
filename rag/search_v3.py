@@ -394,6 +394,23 @@ def fetch_anchor_chunks(
     return chunks, data_gaps, integrity
 
 
+def get_syllabus_urls(course_ids: list[str]) -> dict[str, str]:
+    """Return a mapping of course_id → syllabus_url for the given course IDs.
+
+    Looks up the courses_v3 collection. Courses without a URL are omitted.
+    """
+    db = _get_db()
+    docs = db[COURSES_COLLECTION].find(
+        {"course_id": {"$in": course_ids}},
+        {"course_id": 1, "syllabus_url": 1},
+    )
+    return {
+        d["course_id"]: d["syllabus_url"]
+        for d in docs
+        if d.get("syllabus_url")
+    }
+
+
 def get_missing_sections(course_id: str) -> list[str]:
     """Return category names documented as missing for a course.
 
