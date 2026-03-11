@@ -13,26 +13,6 @@ source .venv/Scripts/activate && streamlit run app.py   # Windows Git Bash
 make test | lint | typecheck | format | eval-router | probe | probe-full
 ```
 
-Pipeline (always from repo root):
-```bash
-make scrape-catalog
-make scrape-classes
-GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
-python -m ingestion_pipeline.setup_atlas
-python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
-python -m ingestion_pipeline.ingest --crns-file tamu_data/evals/eval_corpus.json  # corpus only
-```
-Reset catalog crawl: delete `tamu_data/scraper/logs/progress_log.txt`
-
-Benchmarking:
-```bash
-make eval-draft                      # generate Excel draft from corpus CRNs
-make import-draft DRAFT=<path>       # approved Excel → JSONL golden set
-make bench GOLDEN=<path> EXP=<name>  # run benchmark → Excel + MD reports
-make bench-ragas GOLDEN=<path> EXP=<name>   # with RAGAS scores
-make validate-ragas BENCH=<path>     # RAGAS vs human judgment correlation
-```
-Reports: `tamu_data/evals/reports/benchmark_{EXP}_{YYYYMMDD}.xlsx` (tabs: Summary / Per-Query / Config)
 
 ## Gotchas
 
