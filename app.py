@@ -172,9 +172,11 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             router_result = None
             data_gaps: list = []
             data_integrity = True
+            conflicted_ids: list = []
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    source_docs, router_result, data_gaps, data_integrity = run_pipeline(prompt, trace=lf_trace)
+                    result = run_pipeline(prompt, trace=lf_trace)
+                    source_docs, router_result, data_gaps, data_integrity, conflicted_ids = result
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
@@ -191,6 +193,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     router_result=router_result,
                     data_gaps=data_gaps,
                     data_integrity=data_integrity,
+                    conflicted_course_ids=conflicted_ids,
                     trace=lf_trace,
                 ) if router_result is not None else iter([])
                 for token in stream:

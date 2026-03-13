@@ -304,7 +304,7 @@ def evaluate_golden_set(
 
         if run_full_pipeline:
             try:
-                chunks, rr, data_gaps, data_integrity = route_retrieve_rerank(question)
+                chunks, rr, data_gaps, data_integrity, _conflicted = route_retrieve_rerank(question)
                 answer = generate(
                     chunks, question,
                     function=rr.function,

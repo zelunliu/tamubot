@@ -184,7 +184,8 @@ _FUNCTION_PROMPTS: dict[str, str] = {
         "a specific course. The context includes the anchor course's content and the most relevant "
         "discovered courses. Explain what makes each discovered course a good complement, grounding "
         "your reasoning in the anchor course's learning outcomes, prerequisites, and topics. "
-        "Present course recommendations clearly, one per paragraph or as a bulleted list."
+        "Present course recommendations clearly, one per paragraph or as a bulleted list. "
+        "Recommend at most 3 courses — prioritize depth of explanation over breadth."
     ),
     "semantic_general": (
         "The user has a broad question not tied to a specific course. "

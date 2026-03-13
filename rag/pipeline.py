@@ -66,7 +66,6 @@ def db_order(
     fn = router_result.function
     dk = compute_dynamic_k(fn, len(router_result.course_ids))
     retrieve_k = dk["retrieve_k"]
-    rerank_k = dk["rerank_k"]
     search_q = discovery_query or router_result.rewritten_query
 
     if pass_type == "anchor":
@@ -82,13 +81,15 @@ def db_order(
                 search_q, course_id=cid, k=retrieve_k, parent_span=trace
             )
             all_chunks.extend(course_chunks)
-        reranked = reranker.rerank(search_q, all_chunks, top_k=rerank_k, parent_span=trace)
+        all_reranked = reranker.rerank(search_q, all_chunks, top_k=len(all_chunks), parent_span=trace)
+        reranked = reranker.stratified_select(all_reranked, router_result.specific_categories)
         return reranked, [], True
 
     # discover pass (recurrent discovery or semantic_general)
     if fn == "semantic_general":
         results = search.search_semantic(search_q, top_k=retrieve_k, parent_span=trace)
-        reranked = reranker.rerank(search_q, results, top_k=rerank_k, parent_span=trace)
+        all_reranked = reranker.rerank(search_q, results, top_k=len(results), parent_span=trace)
+        reranked = reranker.stratified_select(all_reranked, router_result.specific_categories)
         return reranked, [], True
 
     if fn == "out_of_scope" or not router_result.course_ids:
@@ -98,8 +99,52 @@ def db_order(
     all_results = search.search_semantic(search_q, top_k=retrieve_k, parent_span=trace)
     anchor_ids = set(router_result.course_ids)
     discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
-    reranked = reranker.rerank(search_q, discovery_chunks, top_k=rerank_k, parent_span=trace)
+    all_reranked = reranker.rerank(search_q, discovery_chunks, top_k=len(discovery_chunks), parent_span=trace)
+    reranked = reranker.stratified_select(all_reranked, router_result.specific_categories)
     return reranked, [], True
+
+
+def _apply_schedule_filter(
+    anchor_course_ids: list[str],
+    discovery_chunks: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Fetch meeting times from courses_v3 and remove conflicting discovery courses."""
+    from rag.schedule import filter_conflicting_courses, parse_meeting_times
+    from rag.search_v3 import get_meeting_times
+
+    anchor_mt_map = get_meeting_times(anchor_course_ids)
+    anchor_interval = None
+    for cid in anchor_course_ids:
+        anchor_interval = parse_meeting_times(anchor_mt_map.get(cid))
+        if anchor_interval:
+            break
+
+    if anchor_interval is None:
+        return discovery_chunks, []  # anchor is async — nothing to filter
+
+    disc_cids = list({c.get("course_id") for c in discovery_chunks if c.get("course_id")})
+    disc_mt_map = get_meeting_times(disc_cids)
+    return filter_conflicting_courses(discovery_chunks, anchor_interval, disc_mt_map)
+
+
+def _cap_discovery_courses(
+    chunks: list[dict],
+    anchor_course_ids: set[str],
+    max_courses: int,
+) -> list[dict]:
+    """Keep all anchor chunks + chunks from at most max_courses unique discovery courses."""
+    admitted: list[str] = []
+    result = []
+    for chunk in chunks:
+        cid = chunk.get("course_id", "")
+        if cid in anchor_course_ids:
+            result.append(chunk)
+        elif cid in admitted:
+            result.append(chunk)
+        elif len(admitted) < max_courses:
+            admitted.append(cid)
+            result.append(chunk)
+    return result
 
 
 def generator_order(
@@ -109,6 +154,7 @@ def generator_order(
     router_result: RouterResult,
     data_gaps: Optional[list] = None,
     data_integrity: bool = True,
+    conflicted_course_ids: Optional[list] = None,
     trace=None,
 ) -> "str | Iterator[str]":
     """Generator_Stage: eval search string (recurrent) or answer stream (final).
@@ -144,6 +190,7 @@ def generator_order(
         specific_only=router_result.specific_only,
         data_gaps=data_gaps or [],
         data_integrity=data_integrity,
+        conflicted_course_ids=conflicted_course_ids or [],
         trace=trace,
     )
 
@@ -151,7 +198,7 @@ def generator_order(
 def run_pipeline(
     query: str,
     trace=None,
-) -> tuple[list[dict], RouterResult, list[tuple[str, str]], bool]:
+) -> tuple[list[dict], RouterResult, list[tuple[str, str]], bool, list[str]]:
     """Full pipeline: router_order → db_order(s) → ready for generator_order.
 
     Langfuse trace hierarchy:
@@ -161,12 +208,13 @@ def run_pipeline(
           ├─ Retrieval_Stage  (+ Voyage_Embeddings, MongoDB_*, Voyage_Reranker inside)
           └─ Generator_Stage
 
-      Recurrent (5 flat steps):
+      Recurrent (6 flat steps):
         TamuBot_Complete_Pipeline
           ├─ Router_Stage
           ├─ Anchor_Pass       (direct MongoDB fetch, no embeddings)
           ├─ EvalSearch_Stage  (LLM generates discovery query from anchor content)
           ├─ Discover_Pass     (+ Voyage_Embeddings, MongoDB_*, Voyage_Reranker inside)
+          ├─ Schedule_Filter   (removes courses with conflicting meeting times)
           └─ Generator_Stage
 
     Args:
@@ -174,13 +222,13 @@ def run_pipeline(
         trace: Optional Langfuse trace.
 
     Returns:
-        (reranked_chunks, router_result, data_gaps, data_integrity)
+        (reranked_chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
     """
     router_result = router_order(query, trace)
     search_query = router_result.rewritten_query or query
 
     if not router_result.requires_retrieval:
-        return [], router_result, [], True
+        return [], router_result, [], True, []
 
     dk = compute_dynamic_k(router_result.function, len(router_result.course_ids))
     data_gaps: list[tuple[str, str]] = []
@@ -208,9 +256,11 @@ def run_pipeline(
             for c in chunks
         ]
 
+    conflicted_ids: list[str] = []
+
     try:
         if router_result.recurrent_search:
-            # ── Recurrent: 5 flat steps directly under the trace ──────────────
+            # ── Recurrent: 6 flat steps directly under the trace ──────────────
             # Step 2: Anchor_Pass — direct MongoDB lookup, no embeddings
             anchor_span = _span("Anchor_Pass", input={"course_ids": router_result.course_ids})
             anchor, data_gaps, data_integrity = db_order("anchor", router_result)
@@ -235,7 +285,22 @@ def run_pipeline(
                 "n_chunks": len(discovery), "results_summary": _results_summary(discovery),
             })
 
-            reranked = deduplicate_chunks(anchor + discovery)
+            # Step 5: Schedule_Filter — remove courses conflicting with anchor schedule
+            filter_span = _span("Schedule_Filter", input={"anchor_course_ids": router_result.course_ids})
+            discovery, conflicted_ids = _apply_schedule_filter(router_result.course_ids, discovery)
+            _end_span(filter_span, output={
+                "n_after_filter": len(discovery),
+                "conflicted_course_ids": conflicted_ids,
+            })
+
+            combined = deduplicate_chunks(anchor + discovery)
+            all_reranked = reranker.rerank(search_query, combined, top_k=len(combined), parent_span=trace)
+            reranked = reranker.stratified_select(all_reranked, router_result.specific_categories)
+            reranked = _cap_discovery_courses(
+                reranked,
+                anchor_course_ids=set(router_result.course_ids),
+                max_courses=config.RECURRENT_MAX_RECOMMENDED_COURSES,
+            )
 
         elif not router_result.course_ids:
             # ── semantic_general: corpus-wide vector search ────────────────────
@@ -268,4 +333,4 @@ def run_pipeline(
     except Exception:
         raise
 
-    return reranked, router_result, data_gaps, data_integrity
+    return reranked, router_result, data_gaps, data_integrity, conflicted_ids

@@ -75,6 +75,14 @@ PER_COURSE_K = FUNCTION_RETRIEVAL_CONFIG
 MAX_RETRIEVE_K: int = 60
 MAX_RERANK_K: int = 20
 
+# Maximum unique discovery courses to recommend in recurrent path (after schedule filter).
+RECURRENT_MAX_RECOMMENDED_COURSES: int = 3
+
+# Stratified selection: chunks per (course_id, category) slot after reranking.
+CHUNKS_PER_SLOT: int = 2
+# Fallback when no specific categories given: top-N per unique course_id.
+STRATIFIED_FALLBACK_PER_COURSE: int = 6
+
 # --- Retrieval backend ---
 # "mongodb" (default) or "vertex" (legacy fallback)
 RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "mongodb")

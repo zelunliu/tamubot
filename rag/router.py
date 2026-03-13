@@ -263,8 +263,8 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
 def route_retrieve_rerank(
     query: str,
     trace=None,
-) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool]:
-    """Backward-compat wrapper — delegates to pipeline.run_pipeline()."""
+) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool, list[str]]:
+    """Wrapper — delegates to pipeline.run_pipeline()."""
     from rag.pipeline import run_pipeline  # lazy import to avoid circular
     return run_pipeline(query, trace=trace)
 

@@ -405,7 +405,7 @@ def generate_comparison(
             extraction_span = None
 
     # Look up which categories are missing from each course's original syllabus
-    from rag.search import get_missing_sections
+    from rag.search_v3 import get_missing_sections
     missing_per_course = {cid: get_missing_sections(cid) for cid in course_ids}
     missing_note_lines = []
     for cid, missing in missing_per_course.items():
@@ -508,6 +508,7 @@ def generate_stream(
     specific_only: bool = False,
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
+    conflicted_course_ids: list[str] | None = None,
     trace=None,
 ):
     """Streaming variant of generate(). Yields text chunks as they arrive.
@@ -541,6 +542,15 @@ def generate_stream(
     if course_ids and len(course_ids) > 1 and function != "recurrent":
         yield generate_comparison(results, question, course_ids, trace)
         return
+
+    # Schedule conflict notice (recurrent path only)
+    if conflicted_course_ids:
+        names = ", ".join(conflicted_course_ids)
+        plural = len(conflicted_course_ids) > 1
+        yield (
+            f"_Note: {names} {'were' if plural else 'was'} excluded — "
+            f"{'their' if plural else 'its'} meeting time conflicts with your anchor course._\n\n"
+        )
 
     # Prepend data integrity disclaimer before streaming begins
     if not data_integrity and data_gaps:
@@ -590,10 +600,11 @@ def generate_stream(
             generation_span = None
 
     full_text_parts: list[str] = []
-    # Buffer to detect and suppress <thinking>...</thinking> blocks at stream start
+    # Buffer to detect and suppress <thinking>...</thinking> blocks anywhere in the stream
     think_buf = ""
     in_thinking = False
-    thinking_done = False
+    _T_START = "<thinking>"
+    _T_END = "</thinking>"
     usage_out: list = []
 
     for token in stream_llm(
@@ -607,36 +618,38 @@ def generate_stream(
         usage_out=usage_out,
     ):
         full_text_parts.append(token)
-
-        if thinking_done:
-            yield token
-            continue
-
         think_buf += token
-        if not in_thinking:
-            if "<thinking>" in think_buf:
-                in_thinking = True
-                # Yield anything before the <thinking> tag
-                before = think_buf.split("<thinking>", 1)[0]
-                if before:
-                    yield before
-                think_buf = ""
-            elif len(think_buf) > 20:
-                # No thinking tag incoming — flush buffer and stop monitoring
-                thinking_done = True
-                yield think_buf
-                think_buf = ""
-        else:
-            if "</thinking>" in think_buf:
-                # Discard thinking block; yield what follows
-                after = think_buf.split("</thinking>", 1)[1].lstrip("\n")
-                thinking_done = True
-                in_thinking = False
-                think_buf = ""
-                if after:
-                    yield after
 
-    # Flush any remaining buffer (shouldn't happen, but be safe)
+        # Process buffer in a loop — one pass may reveal another tag
+        while True:
+            if in_thinking:
+                end_idx = think_buf.find(_T_END)
+                if end_idx != -1:
+                    think_buf = think_buf[end_idx + len(_T_END):].lstrip("\n")
+                    in_thinking = False
+                else:
+                    # Still inside thinking — discard but keep a tail in case
+                    # </thinking> is split across tokens
+                    keep = len(_T_END) - 1
+                    think_buf = think_buf[-keep:] if len(think_buf) > keep else think_buf
+                    break
+            else:
+                start_idx = think_buf.find(_T_START)
+                if start_idx != -1:
+                    if start_idx > 0:
+                        yield think_buf[:start_idx]
+                    think_buf = think_buf[start_idx + len(_T_START):]
+                    in_thinking = True
+                else:
+                    # No open tag — yield everything except a tail that could be
+                    # a partial <thinking> tag spanning the next token boundary
+                    safe_len = max(0, len(think_buf) - (len(_T_START) - 1))
+                    if safe_len > 0:
+                        yield think_buf[:safe_len]
+                        think_buf = think_buf[safe_len:]
+                    break
+
+    # Flush remaining buffer
     if think_buf and not in_thinking:
         yield think_buf
 

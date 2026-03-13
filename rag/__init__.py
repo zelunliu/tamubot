@@ -5,7 +5,7 @@ from rag.observability import compute_ragas_metrics, get_langfuse, run_ragas_bac
 
 # router must be fully initialized before pipeline imports
 from rag.pipeline import db_order, generator_order, router_order, run_pipeline
-from rag.reranker import rerank, rerank_multi_course
+from rag.reranker import rerank, rerank_multi_course, stratified_select
 from rag.router import (
     FUNCTION_CATEGORY_STRATEGIES,
     RouterResult,
@@ -28,7 +28,7 @@ __all__ = [
     "compute_dynamic_k", "deduplicate_chunks", "FUNCTION_CATEGORY_STRATEGIES",
     "generate", "generate_stream", "generate_comparison",
     "hybrid_search", "search_semantic", "search_by_course_categories", "get_missing_sections", "fetch_anchor_chunks",
-    "rerank", "rerank_multi_course",
+    "rerank", "rerank_multi_course", "stratified_select",
     "get_langfuse", "run_ragas_background", "compute_ragas_metrics",
     "run_pipeline", "router_order", "db_order", "generator_order",
 ]

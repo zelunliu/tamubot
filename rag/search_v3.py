@@ -411,6 +411,28 @@ def get_syllabus_urls(course_ids: list[str]) -> dict[str, str]:
     }
 
 
+def get_meeting_times(course_ids: list[str]) -> dict[str, str | None]:
+    """Return a mapping of course_id → meeting_times string from courses_v3.
+
+    Courses with no meeting_times field (async/online) map to None.
+    When multiple sections exist for the same course_id, the first non-None value wins.
+    """
+    db = _get_db()
+    docs = db[COURSES_COLLECTION].find(
+        {"course_id": {"$in": course_ids}},
+        {"course_id": 1, "meeting_times": 1},
+    )
+    result: dict[str, str | None] = {}
+    for d in docs:
+        cid = d["course_id"]
+        mt = d.get("meeting_times")
+        if cid not in result or (mt is not None and result[cid] is None):
+            result[cid] = mt
+    for cid in course_ids:
+        result.setdefault(cid, None)
+    return result
+
+
 def get_missing_sections(course_id: str) -> list[str]:
     """Return category names documented as missing for a course.
 
