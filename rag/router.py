@@ -10,7 +10,7 @@ mechanically from the extracted variables — there is no intent classification 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 import config
 from rag.llm_client import call_llm
@@ -47,15 +47,15 @@ def _derive_retrieval_mode(
 ) -> str:
     """Derive retrieval_mode from course presence and recurrent_search flag.
 
-    - No course IDs → "semantic" (full-corpus vector search, no anchor)
-    - recurrent_search=True → "hybrid" (two-stage: anchor metadata fetch + corpus hybrid)
-    - course IDs, no recurrent_search → "metadata" (exact index lookup, bypass vector)
+    - No course IDs → "semantic" (full-corpus vector search, no course filter)
+    - recurrent_search=True → "hybrid" (two-stage: anchor fetch + corpus-wide discovery)
+    - course IDs, no recurrent_search → "hybrid_course" (query-driven hybrid per course)
     """
     if not course_ids:
         return "semantic"
     if recurrent_search:
         return "hybrid"
-    return "metadata"
+    return "hybrid_course"
 
 
 def _derive_function(
@@ -67,28 +67,19 @@ def _derive_function(
 ) -> str:
     """Derive the retrieval function name from extracted variables.
 
-    Function matrix:
-    course_ids  recurrent_search  intent_type  specific_categories  specific_only  → function
-    empty       any               not None     any                  any            → semantic_general
-    empty       any               None         any                  any            → out_of_scope
-    present     True              any          empty                —              → recurrent_default
-    present     True              any          populated            True           → recurrent_specific
-    present     True              any          populated            False          → recurrent_combined
-    present     False             any          empty                —              → metadata_default
-    present     False             any          populated            True           → metadata_specific
-    present     False             any          populated            False          → metadata_combined
+    Function matrix (v3 — 4 functions):
+    course_ids  recurrent_search  intent_type  → function
+    empty       any               not None     → semantic_general
+    empty       any               None         → out_of_scope
+    present     True              any          → recurrent
+    present     False             any          → hybrid_course
+
+    Note: specific_categories and specific_only are still extracted by the router
+    and passed to the generator for prompt framing — they no longer drive function selection.
     """
     if not course_ids:
         return "semantic_general" if intent_type is not None else "out_of_scope"
-
-    if recurrent_search:
-        if not specific_categories:
-            return "recurrent_default"
-        return "recurrent_specific" if specific_only else "recurrent_combined"
-    else:
-        if not specific_categories:
-            return "metadata_default"
-        return "metadata_specific" if specific_only else "metadata_combined"
+    return "recurrent" if recurrent_search else "hybrid_course"
 
 
 # ---------------------------------------------------------------------------
@@ -145,28 +136,9 @@ def _normalize_course_id(raw: str) -> str:
 # Retrieval category registry (pure Python, no LLM)
 # ---------------------------------------------------------------------------
 
-def _get_combined_categories(router_result: "RouterResult") -> list[str]:
-    """DEFAULT_SUMMARY + specific categories, deduped, order preserved."""
-    seen: set[str] = set()
-    cats: list[str] = []
-    for c in config.DEFAULT_SUMMARY_CATEGORIES + router_result.specific_categories:
-        if c not in seen:
-            seen.add(c)
-            cats.append(c)
-    return cats
-
-
-# Maps each retrieval function to a callable that returns the categories to fetch.
-# For recurrent_* functions, categories are used for the anchor course metadata fetch (Stage 1).
-# Adding a new retrieval function = adding one entry here; no logic change elsewhere.
-FUNCTION_CATEGORY_STRATEGIES: dict[str, Callable[["RouterResult"], list[str]]] = {
-    "metadata_default":   lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "metadata_specific":  lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "metadata_combined":  _get_combined_categories,
-    "recurrent_default":  lambda r: list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "recurrent_specific": lambda r: r.specific_categories or list(config.DEFAULT_SUMMARY_CATEGORIES),
-    "recurrent_combined": _get_combined_categories,
-}
+# Deprecated in v3 — categories no longer drive retrieval function selection.
+# Kept as empty dict to avoid import errors in existing callers.
+FUNCTION_CATEGORY_STRATEGIES: dict = {}
 
 
 # ---------------------------------------------------------------------------

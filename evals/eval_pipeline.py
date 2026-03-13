@@ -7,7 +7,7 @@ traces (router → retrieval → generation), and writes two output files:
 
 Usage:
     python scripts/eval_pipeline.py                    # full suite
-    python scripts/eval_pipeline.py --function metadata_specific  # single function
+    python scripts/eval_pipeline.py --function hybrid_course  # single function
     python scripts/eval_pipeline.py --dry-run          # router only, skip retrieval+gen
 """
 
@@ -63,7 +63,7 @@ TEST_SUITE: list[TestCase] = [
     # Purely factual, targeting a specific syllabus category.
     TestCase(
         query="What is the grading breakdown for CSCE 638?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="GRADING category — exact factual lookup, high category confidence",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["GRADING"],
@@ -71,7 +71,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What textbooks or materials are required for CSCE 670?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="MATERIALS category — tests synonym expansion ('textbooks')",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["MATERIALS"],
@@ -79,7 +79,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Can I use ChatGPT or AI tools in CSCE 638?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="AI_POLICY — tests slang rewriting (ChatGPT → AI policy)",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["AI_POLICY"],
@@ -87,7 +87,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What are the prerequisites for CSCE 638?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="PREREQUISITES — factual prerequisite lookup",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["PREREQUISITES"],
@@ -95,7 +95,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What is the late work policy for CSCE 670?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="ATTENDANCE_AND_MAKEUP — 'late work' rewrite rule",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["ATTENDANCE_AND_MAKEUP"],
@@ -104,7 +104,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="When does CSCE 638 meet?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="SCHEDULE — meeting time lookup with keyword 'when'",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["SCHEDULE"],
@@ -112,7 +112,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Who is the instructor for CSCE 670?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="INSTRUCTOR — instructor identity lookup",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["INSTRUCTOR"],
@@ -123,7 +123,7 @@ TEST_SUITE: list[TestCase] = [
     # Factual, no specific category — returns DEFAULT_SUMMARY_CATEGORIES.
     TestCase(
         query="Tell me about CSCE 638",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="General overview request — no specific category signal",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
@@ -131,7 +131,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Give me an overview of CSCE 670",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Explicit overview request — should return COURSE_OVERVIEW + PREREQUISITES + LEARNING_OUTCOMES",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=[],
@@ -139,7 +139,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What is CSCE 638 about?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Short broad question — should trigger metadata_default not metadata_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
@@ -150,7 +150,7 @@ TEST_SUITE: list[TestCase] = [
     # Factual, specific categories mentioned but not exclusive (specific_only=False).
     TestCase(
         query="Tell me about CSCE 638, especially the grading",
-        function_expected="metadata_combined",
+        function_expected="hybrid_course",
         description="BOUNDARY CASE: broad + specific — 'especially' signals not-exclusive focus",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["GRADING"],
@@ -159,7 +159,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Give me an overview of CSCE 670, with a focus on learning outcomes",
-        function_expected="metadata_combined",
+        function_expected="hybrid_course",
         description="BOUNDARY CASE: overview + emphasis — 'with a focus on' signals combined intent",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["LEARNING_OUTCOMES"],
@@ -172,7 +172,7 @@ TEST_SUITE: list[TestCase] = [
     # recurrent_search=False → metadata path (bypass vector search).
     TestCase(
         query="Is CSCE 638 strict about its AI policy?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="AI_POLICY + evaluative ('strict') — known course, specific category → metadata_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["AI_POLICY"],
@@ -181,7 +181,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Is the grading for CSCE 670 fair?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="GRADING + evaluative ('fair') — known course, specific category → metadata_specific",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["GRADING"],
@@ -192,7 +192,7 @@ TEST_SUITE: list[TestCase] = [
     # Advisory/subjective question about a KNOWN course — metadata bypass.
     TestCase(
         query="Is CSCE 638 a good course for machine learning research?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Advisory + CAREER semantic type — known course, no specific category → metadata_default",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
@@ -200,7 +200,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Is CSCE 670 worth taking?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Evaluative ('worth taking') — known course, GENERAL semantic type → metadata_default",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=[],
@@ -208,7 +208,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="How hard is CSCE 638?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="DIFFICULTY semantic type — known course, no specific category → metadata_default",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
@@ -218,7 +218,7 @@ TEST_SUITE: list[TestCase] = [
     # ── metadata_specific (evaluative with explicit category, continued) ──
     TestCase(
         query="Does CSCE 638 have a heavy workload based on the grading structure?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="DIFFICULTY + GRADING explicit — known course → metadata_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["GRADING"],
@@ -227,7 +227,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Is CSCE 670 good preparation for a PhD in information retrieval, given its learning outcomes?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="CAREER + LEARNING_OUTCOMES explicit — known course → metadata_specific",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=["LEARNING_OUTCOMES"],
@@ -238,7 +238,7 @@ TEST_SUITE: list[TestCase] = [
     # ── recurrent_* — two-stage: anchor course → corpus discovery ────────
     TestCase(
         query="What course should I take with CSCE 638?",
-        function_expected="recurrent_default",
+        function_expected="recurrent",
         description="Course pairing discovery — known anchor, no specific category → recurrent_default",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=[],
@@ -248,7 +248,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What courses are similar to CSCE 670?",
-        function_expected="recurrent_default",
+        function_expected="recurrent",
         description="Course similarity discovery — anchor course, no specific category → recurrent_default",
         expected_course_ids=["CSCE 670"],
         expected_specific_categories=[],
@@ -257,7 +257,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What TAMU course follows CSCE 638, given its learning outcomes?",
-        function_expected="recurrent_specific",
+        function_expected="recurrent",
         description="Course sequencing discovery anchored on LEARNING_OUTCOMES → recurrent_specific",
         expected_course_ids=["CSCE 638"],
         expected_specific_categories=["LEARNING_OUTCOMES"],
@@ -270,7 +270,7 @@ TEST_SUITE: list[TestCase] = [
     # Factual comparisons across two courses — same function, parallel fetch.
     TestCase(
         query="Compare the AI policies of CSCE 638 and CSCE 670",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="Multi-course AI_POLICY comparison — factual side-by-side",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=["AI_POLICY"],
@@ -278,7 +278,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="What are the grading differences between CSCE 638 and CSCE 670?",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="Multi-course GRADING comparison — tests multi-course parallel fetch",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=["GRADING"],
@@ -286,7 +286,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Compare CSCE 638 and CSCE 670 prerequisites",
-        function_expected="metadata_specific",
+        function_expected="hybrid_course",
         description="Multi-course PREREQUISITES — tests prerequisite extraction across courses",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=["PREREQUISITES"],
@@ -297,7 +297,7 @@ TEST_SUITE: list[TestCase] = [
     # Both courses are known → metadata regardless of semantic_intent.
     TestCase(
         query="Is CSCE 638 harder than CSCE 670?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Multi-course DIFFICULTY comparison — both known, no specific category → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
@@ -306,7 +306,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Which course, CSCE 638 or CSCE 670, is better for an ML career?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Multi-course CAREER advisory — both known → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
@@ -315,7 +315,7 @@ TEST_SUITE: list[TestCase] = [
     ),
     TestCase(
         query="Should I take CSCE 638 or CSCE 670 first?",
-        function_expected="metadata_default",
+        function_expected="hybrid_course",
         description="Multi-course PLANNING advisory — both known, course sequencing → metadata_default",
         expected_course_ids=["CSCE 638", "CSCE 670"],
         expected_specific_categories=[],
@@ -693,9 +693,7 @@ def write_markdown_report(
     """Generate a comprehensive markdown report for human/Gemini Deep Research analysis."""
 
     functions = [
-        "metadata_default", "metadata_specific", "metadata_combined",
-        "recurrent_default", "recurrent_specific", "recurrent_combined",
-        "semantic_general", "out_of_scope",
+        "hybrid_course", "recurrent", "semantic_general", "out_of_scope",
     ]
 
     # ── Aggregate stats ────────────────────────────────────────────────
@@ -752,21 +750,19 @@ def write_markdown_report(
         "",
         "Functions are derived mechanically from extracted variables (no intent classification).",
         "",
-        "| course_ids | recurrent_search | semantic_intent | specific_categories | specific_only | function |",
-        "|---|---|---|---|---|---|",
-        "| empty | any | True | any | any | `semantic_general` |",
-        "| empty | any | False | any | any | `out_of_scope` |",
-        "| present | True | any | empty | — | `recurrent_default` |",
-        "| present | True | any | populated | True | `recurrent_specific` |",
-        "| present | True | any | populated | False | `recurrent_combined` |",
-        "| present | False | any | empty | — | `metadata_default` |",
-        "| present | False | any | populated | True | `metadata_specific` |",
-        "| present | False | any | populated | False | `metadata_combined` |",
+        "| course_ids | recurrent_search | semantic_intent | function |",
+        "|---|---|---|---|",
+        "| empty | any | True | `semantic_general` |",
+        "| empty | any | False | `out_of_scope` |",
+        "| present | True | any | `recurrent` |",
+        "| present | False | any | `hybrid_course` |",
         "",
-        "**Retrieval mode:** `recurrent_search=True` → `hybrid` (2-stage); known courses → `metadata`; no IDs → `semantic`.",
+        "Note: `specific_categories` and `specific_only` are still extracted for generator prompt framing.",
         "",
-        "**No reranking on metadata path** — exact index lookups, already correct.",
-        "**Recurrent path:** anchor metadata fetch → corpus-wide hybrid → rerank discovery chunks.",
+        "**Retrieval mode:** `recurrent_search=True` → `hybrid` (2-stage anchor+discover); known courses → `hybrid_course` (per-course filtered); no IDs → `semantic`.",
+        "",
+        "**hybrid_course path:** per-course hybrid search (vector + BM25) filtered by course_id → cross-course rerank.",
+        "**Recurrent path:** anchor fetch (all chunks) → eval search string → corpus-wide discovery → rerank.",
         "",
         "---",
         "",

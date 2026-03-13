@@ -94,39 +94,21 @@ class TestFormatContextXmlPrimacyRecency:
 class TestTemperatureRouting:
     """Test temperature configuration for function types."""
 
-    def test_metadata_functions_deterministic(self):
-        """All metadata_* functions should use 0.0 temperature."""
-        metadata_functions = [
-            "metadata_default",
-            "metadata_specific",
-            "metadata_combined",
-        ]
-        for func in metadata_functions:
-            assert _FUNCTION_TEMPERATURES[func] == 0.0, f"{func} should be 0.0"
+    def test_hybrid_course_deterministic(self):
+        """hybrid_course should use 0.0 temperature (factual extraction)."""
+        assert _FUNCTION_TEMPERATURES["hybrid_course"] == 0.0
 
     def test_semantic_general_synthesis_temperature(self):
         """semantic_general should use 0.2 temperature (synthesis)."""
         assert _FUNCTION_TEMPERATURES["semantic_general"] == 0.2
 
-    def test_recurrent_functions_synthesis_temperature(self):
-        """All recurrent_* functions should use 0.2 temperature (synthesis)."""
-        recurrent_functions = [
-            "recurrent_default",
-            "recurrent_specific",
-            "recurrent_combined",
-        ]
-        for func in recurrent_functions:
-            assert (
-                _FUNCTION_TEMPERATURES[func] == 0.2
-            ), f"{func} should be 0.2"
+    def test_recurrent_synthesis_temperature(self):
+        """recurrent should use 0.2 temperature (advisory synthesis)."""
+        assert _FUNCTION_TEMPERATURES["recurrent"] == 0.2
 
     def test_out_of_scope_deterministic(self):
         """out_of_scope should use 0.0 temperature."""
         assert _FUNCTION_TEMPERATURES["out_of_scope"] == 0.0
-
-    def test_administrative_deterministic(self):
-        """administrative should use 0.0 temperature."""
-        assert _FUNCTION_TEMPERATURES["administrative"] == 0.0
 
 
 class TestValidateCitationsGate1:

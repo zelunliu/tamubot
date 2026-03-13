@@ -8,12 +8,9 @@ import re
 
 # Functions that require citation validation
 _FACTUAL_FUNCTIONS = frozenset([
-    "metadata_default",
-    "metadata_specific",
-    "metadata_combined",
-    "recurrent_default",
-    "recurrent_specific",
-    "recurrent_combined",
+    "hybrid_course",
+    "recurrent",
+    "semantic_general",
 ])
 
 

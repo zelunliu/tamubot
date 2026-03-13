@@ -156,22 +156,35 @@ and do NOT use training data to fill the gap.
 7. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
 """
 
+# hybrid_course framing variants — selected in build_system_prompt based on
+# specific_categories and specific_only extracted by the router.
+_HYBRID_COURSE_DEFAULT = (
+    "The user is asking for a general overview of a course. "
+    "Provide key facts covering the course structure, prerequisites, learning outcomes, "
+    "grading, and any other relevant aspects from the context. "
+    "Include the course ID and section. Label information by section where multiple sections are present."
+)
+_HYBRID_COURSE_SPECIFIC = (
+    "The user is asking about specific course details. "
+    "Focus precisely on the requested topic(s) and be complete and accurate. "
+    "Include the course ID and section. Name the instructor where relevant."
+)
+_HYBRID_COURSE_COMBINED = (
+    "The user is asking about specific course details in the context of a broader overview. "
+    "Cover both the requested topic(s) and the general course overview. "
+    "Include the course ID and section."
+)
+
 # Primary prompt per function — describes the factual framing of the response.
+# For hybrid_course, build_system_prompt selects the right variant from the three above.
 _FUNCTION_PROMPTS: dict[str, str] = {
-    "metadata_default": (
-        "The user is asking for a general overview of a course. "
-        "Provide key facts about course overview, prerequisites, and learning outcomes. "
-        "Include the course ID and section. Label information by section where multiple sections are present."
-    ),
-    "metadata_specific": (
-        "The user is asking about specific course details. "
-        "Focus on the requested categories and be precise and complete. "
-        "Include the course ID and section. Name the instructor where relevant."
-    ),
-    "metadata_combined": (
-        "The user is asking about specific course details in the context of a broader overview. "
-        "Cover both the requested categories and the general course overview. "
-        "Include the course ID and section."
+    "hybrid_course": _HYBRID_COURSE_DEFAULT,   # fallback; actual variant selected in build_system_prompt
+    "recurrent": (
+        "The user wants to find courses that pair with, complement, follow from, or are similar to "
+        "a specific course. The context includes the anchor course's content and the most relevant "
+        "discovered courses. Explain what makes each discovered course a good complement, grounding "
+        "your reasoning in the anchor course's learning outcomes, prerequisites, and topics. "
+        "Present course recommendations clearly, one per paragraph or as a bulleted list."
     ),
     "semantic_general": (
         "The user has a broad question not tied to a specific course. "
@@ -180,22 +193,6 @@ _FUNCTION_PROMPTS: dict[str, str] = {
         "Provide a helpful answer based only on the available context. "
         "If the evidence is insufficient to answer fully, state: "
         "'I don't have enough data to answer this accurately based on the available syllabi.'"
-    ),
-    "recurrent_default": (
-        "The user wants to find courses that pair well with or complement a specific course. "
-        "The context includes the anchor course's overview and the most relevant discovered courses. "
-        "Explain what makes each discovered course a good complement, grounding your reasoning "
-        "in the anchor course's content (prerequisites, learning outcomes, covered topics)."
-    ),
-    "recurrent_specific": (
-        "The user wants to find courses that complement a specific course, with focus on particular categories. "
-        "Use the category-specific evidence from both the anchor course and the discovered courses "
-        "to explain the pairing rationale. Ground all recommendations in the provided context."
-    ),
-    "recurrent_combined": (
-        "The user wants course recommendations complementing a specific course, with both a "
-        "broad overview and category-specific focus. Use all available evidence from the anchor "
-        "and discovered courses to explain why each recommendation fits."
     ),
 }
 
@@ -229,17 +226,12 @@ UNCERTAINTY_INJECTION = (
 )
 
 # Per-function generation temperature (function-based stochasticity).
-# metadata_*: 0.0 (deterministic extraction, maximum fidelity to context).
-# semantic_general, recurrent_*: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
-# out_of_scope, administrative: 0.0 (high compliance/policy requirement, deterministic).
+# hybrid_course: 0.0 (deterministic extraction, maximum fidelity to context).
+# recurrent, semantic_general: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
+# out_of_scope: 0.0 (canned response, no generation).
 _FUNCTION_TEMPERATURES: dict[str, float] = {
-    "metadata_default":   0.0,
-    "metadata_specific":  0.0,
-    "metadata_combined":  0.0,
-    "semantic_general":   0.2,
-    "recurrent_default":  0.2,
-    "recurrent_specific": 0.2,
-    "recurrent_combined": 0.2,
-    "out_of_scope":       0.0,
-    "administrative":     0.0,
+    "hybrid_course":    0.0,
+    "recurrent":        0.2,
+    "semantic_general": 0.2,
+    "out_of_scope":     0.0,
 }

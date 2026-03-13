@@ -2,7 +2,7 @@
 
 The golden set ground truth is derived mechanically from strata in generate_golden_set.py.
 When the synthesis LLM produces a question that escapes its stratum framing (e.g. asks
-about prerequisites under the metadata_default stratum), the label is wrong even though
+about prerequisites under the hybrid_course_default stratum), the label is wrong even though
 the router is right.
 
 This script:
@@ -52,15 +52,14 @@ import config
 
 MATRIX_DESCRIPTION = """\
 Function derivation matrix (pure Python rules, no LLM):
-  course_ids  recurrent_search  semantic_intent  specific_categories  specific_only  → function
-  empty       any               True             any                  any            → semantic_general
-  empty       any               False            any                  any            → out_of_scope
-  present     True              any              empty                —              → recurrent_default
-  present     True              any              populated            True           → recurrent_specific
-  present     True              any              populated            False          → recurrent_combined
-  present     False             any              empty                —              → metadata_default
-  present     False             any              populated            True           → metadata_specific
-  present     False             any              populated            False          → metadata_combined
+  course_ids  recurrent_search  semantic_intent  → function
+  empty       any               True             → semantic_general
+  empty       any               False            → out_of_scope
+  present     True              any              → recurrent
+  present     False             any              → hybrid_course
+
+Note: specific_categories and specific_only are still extracted by the router
+and used for generator prompt framing, but no longer drive function selection.
 
 Key variables:
   course_ids        — course(s) the student is asking about ([] if none named)

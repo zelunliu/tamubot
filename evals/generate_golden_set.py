@@ -7,11 +7,11 @@ Generates 50 stratified questions from live MongoDB chunks and exports to:
 Each golden item carries ground truth for ALL pipeline stages:
 
   Router stage:
-    expected_function          — one of the 8 router functions
+    expected_function          — one of 4 functions: hybrid_course, recurrent, semantic_general, out_of_scope
     expected_course_ids        — [] for no-category strata / semantic_general
     expected_specific_categories — [] for default/general strata
-    expected_semantic_intent   — True for recurrent_*, metadata_default_advisory, semantic_general
-    expected_recurrent_search  — True only for recurrent_* strata
+    expected_semantic_intent   — True for recurrent, hybrid_course_advisory, semantic_general
+    expected_recurrent_search  — True only for recurrent stratum
 
   Retrieval stage:
     source_crn                 — CRN of the chunk that grounded the question
@@ -98,12 +98,14 @@ def weighted_sample_categories(n: int, rng: random.Random | None = None) -> list
 # ---------------------------------------------------------------------------
 
 STRATUM_MAP: dict[str, dict] = {
-    # ── No-category strata (56%) ──────────────────────────────────────
-    "metadata_default": {
-        "n_questions":         10,
-        "has_category":        False,
-        "expected_semantic_intent": False,
-        "description":         "General overview — no specific category",
+    # ── hybrid_course strata (54%) ────────────────────────────────────
+    "hybrid_course_default": {
+        "expected_function":         "hybrid_course",
+        "n_questions":               14,
+        "has_category":              False,
+        "expected_semantic_intent":  False,
+        "expected_recurrent_search": False,
+        "description":               "General overview — no specific category → hybrid_course",
         "framing": (
             "Ask a broad, general question about the course that does NOT focus on "
             "any specific syllabus category. Use the course ID from the excerpt. "
@@ -111,17 +113,15 @@ STRATUM_MAP: dict[str, dict] = {
             "Examples: 'Tell me about CSCE 638', 'What is CSCE 670 about?', "
             "'Give me an overview of this course', 'What should I know before enrolling?'"
         ),
-        "use_course_id":       True,
+        "use_course_id": True,
     },
-    "metadata_default_advisory": {
-        # Evaluative question about a KNOWN course — metadata path (no vector search).
-        # Formerly 'hybrid_default'; expected_function now metadata_default per new routing.
-        "expected_function":   "metadata_default",
-        "n_questions":         10,
-        "has_category":        False,
-        "expected_semantic_intent": True,
+    "hybrid_course_advisory": {
+        "expected_function":         "hybrid_course",
+        "n_questions":               8,
+        "has_category":              False,
+        "expected_semantic_intent":  True,
         "expected_recurrent_search": False,
-        "description":         "Advisory question about a known course — no specific category → metadata_default",
+        "description":               "Advisory/evaluative question about a known course → hybrid_course",
         "framing": (
             "Ask a subjective or advisory question about the course WITHOUT naming "
             "a specific syllabus category. Use evaluative or career-oriented language. "
@@ -130,31 +130,15 @@ STRATUM_MAP: dict[str, dict] = {
             "'Is this good for a career in data science?', "
             "'Should I take this before CSCE 670?', 'Would you recommend this course?'"
         ),
-        "use_course_id":       True,
+        "use_course_id": True,
     },
-    "semantic_general": {
-        "n_questions":         8,
-        "has_category":        False,
-        "expected_semantic_intent": True,
-        "description":         "Discovery question — no specific course ID",
-        "framing": (
-            "Ask a discovery, cross-course, or advisory question about TAMU academics "
-            "WITHOUT mentioning any specific course ID. The question should be answerable "
-            "by searching across courses or using general academic knowledge. "
-            "Examples: 'Which TAMU CS courses cover machine learning?', "
-            "'What courses are good preparation for a PhD in AI?', "
-            "'What are the typical grading norms in TAMU graduate CS courses?', "
-            "'Which courses have the lightest workload in CSCE?'"
-        ),
-        "use_course_id":       False,
-    },
-
-    # ── Category-specific strata (40%) ───────────────────────────────
-    "metadata_specific": {
-        "n_questions":         10,
-        "has_category":        True,
-        "expected_semantic_intent": False,
-        "description":         "Purely factual, asking about one specific category",
+    "hybrid_course_specific": {
+        "expected_function":         "hybrid_course",
+        "n_questions":               10,
+        "has_category":              True,
+        "expected_semantic_intent":  False,
+        "expected_recurrent_search": False,
+        "description":               "Specific category question, specific_only=True → hybrid_course",
         "framing": (
             "Ask a direct factual question about the specific category shown in the excerpt. "
             "The question must clearly imply or name this category. "
@@ -165,35 +149,15 @@ STRATUM_MAP: dict[str, dict] = {
             "Examples for PREREQUISITES: 'What are the prerequisites for CSCE 638?' "
             "Examples for MATERIALS: 'What textbooks are required for CSCE 670?'"
         ),
-        "use_course_id":       True,
+        "use_course_id": True,
     },
-    "metadata_specific_evaluative": {
-        # Evaluative question about a KNOWN course with explicit category — metadata path.
-        # Formerly 'hybrid_specific'; expected_function now metadata_specific per new routing.
-        "expected_function":   "metadata_specific",
-        "n_questions":         6,
-        "has_category":        True,
-        "expected_semantic_intent": True,
+    "hybrid_course_combined": {
+        "expected_function":         "hybrid_course",
+        "n_questions":               5,
+        "has_category":              True,
+        "expected_semantic_intent":  False,
         "expected_recurrent_search": False,
-        "description":         "Evaluative question that explicitly names a specific category → metadata_specific",
-        "framing": (
-            "Ask an evaluative or advisory question that explicitly names the category "
-            "from the excerpt as the subject. Use evaluative language. "
-            "Use the course ID from the excerpt. "
-            "Examples for GRADING: 'Is the grading for CSCE 638 fair?' "
-            "Examples for AI_POLICY: 'Is the AI policy for CSCE 638 strict?' "
-            "Examples for SCHEDULE: 'Does the CSCE 638 schedule seem manageable?' "
-            "Examples for PREREQUISITES: 'Are the CSCE 638 prerequisites too demanding?'"
-        ),
-        "use_course_id":       True,
-    },
-    "metadata_combined": {
-        "expected_function":   "metadata_combined",
-        "n_questions":         4,
-        "has_category":        True,
-        "expected_semantic_intent": False,
-        "expected_recurrent_search": False,
-        "description":         "General overview with a specific category as emphasis → metadata_combined",
+        "description":               "Overview with category emphasis, specific_only=False → hybrid_course",
         "framing": (
             "Ask a general question about the course that mentions the category from "
             "the excerpt as background context — not as the exclusive focus. "
@@ -203,15 +167,17 @@ STRATUM_MAP: dict[str, dict] = {
             "'Give me an overview of CSCE 670 with a focus on learning outcomes', "
             "'What should I know about CSCE 638, including its AI policy?'"
         ),
-        "use_course_id":       True,
+        "use_course_id": True,
     },
-    "recurrent_default": {
-        "expected_function":   "recurrent_default",
-        "n_questions":         4,
-        "has_category":        False,
-        "expected_semantic_intent": True,
+
+    # ── recurrent (10%) ───────────────────────────────────────────────
+    "recurrent": {
+        "expected_function":         "recurrent",
+        "n_questions":               5,
+        "has_category":              False,
+        "expected_semantic_intent":  True,
         "expected_recurrent_search": True,
-        "description":         "Course discovery/pairing — known anchor course, seeking complementary courses",
+        "description":               "Course discovery/pairing — anchor course, seeking complementary courses",
         "framing": (
             "Ask a question that seeks to find OTHER courses that pair with, follow, or "
             "complement the course in the excerpt. Use the course ID from the excerpt as the anchor. "
@@ -221,21 +187,43 @@ STRATUM_MAP: dict[str, dict] = {
             "'What should I take after CSCE 638?', "
             "'What goes well with CSCE 638?'"
         ),
-        "use_course_id":       True,
+        "use_course_id": True,
     },
 
-    # ── Out-of-scope (4%) ─────────────────────────────────────────────
+    # ── semantic_general (16%) ────────────────────────────────────────
+    "semantic_general": {
+        "expected_function":         "semantic_general",
+        "n_questions":               8,
+        "has_category":              False,
+        "expected_semantic_intent":  True,
+        "expected_recurrent_search": False,
+        "description":               "Discovery question — no specific course ID",
+        "framing": (
+            "Ask a discovery, cross-course, or advisory question about TAMU academics "
+            "WITHOUT mentioning any specific course ID. The question should be answerable "
+            "by searching across courses or using general academic knowledge. "
+            "Examples: 'Which TAMU CS courses cover machine learning?', "
+            "'What courses are good preparation for a PhD in AI?', "
+            "'What are the typical grading norms in TAMU graduate CS courses?', "
+            "'Which courses have the lightest workload in CSCE?'"
+        ),
+        "use_course_id": False,
+    },
+
+    # ── out_of_scope (4%) ─────────────────────────────────────────────
     "out_of_scope": {
-        "n_questions":         2,
-        "has_category":        False,
-        "expected_semantic_intent": False,
-        "description":         "Off-topic — not about TAMU academics",
-        "framing":             None,   # synthetic only, no MongoDB sampling
-        "use_course_id":       False,
+        "expected_function":         "out_of_scope",
+        "n_questions":               2,
+        "has_category":              False,
+        "expected_semantic_intent":  False,
+        "expected_recurrent_search": False,
+        "description":               "Off-topic — not about TAMU academics",
+        "framing":                   None,
+        "use_course_id":             False,
     },
 }
 
-# Total = 10+10+8+10+6+4+2 = 50
+# Total: 14+8+10+5+5+8+2 = 52 — trimmed to 50 by generate_golden_set's all_questions[:n_total]
 
 # Synthetic off-topic questions — drawn randomly for out_of_scope
 OUT_OF_SCOPE_QUESTIONS: list[str] = [
@@ -399,12 +387,24 @@ Respond with ONLY the question text, nothing else.
 """
 
     try:
-        resp = client.models.generate_content(
-            model=config.GENERATION_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.8, max_output_tokens=120),
-        )
-        question = resp.text.strip().strip('"').strip("'")
+        if config.USE_TAMU_API:
+            tamu = config.get_tamu_client()
+            stream = tamu.chat.completions.create(
+                model=config.TAMU_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,
+                max_tokens=4096,
+                stream=True,
+            )
+            raw = "".join(chunk.choices[0].delta.content or "" for chunk in stream)
+        else:
+            resp = client.models.generate_content(
+                model=config.GENERATION_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.8, max_output_tokens=120),
+            )
+            raw = resp.text
+        question = raw.strip().strip('"').strip("'")
         if not question.endswith("?"):
             question += "?"
 
@@ -581,8 +581,8 @@ def generate_golden_set(
     else:
         stratum_counts = {k: v["n_questions"] for k, v in STRATUM_MAP.items()}
 
-    no_cat_n  = sum(stratum_counts[s] for s in ("metadata_default", "metadata_default_advisory", "semantic_general", "recurrent_default"))
-    with_cat_n = sum(stratum_counts[s] for s in ("metadata_specific", "metadata_specific_evaluative", "metadata_combined"))
+    no_cat_n  = sum(stratum_counts[s] for s in ("hybrid_course_default", "hybrid_course_advisory", "semantic_general", "recurrent"))
+    with_cat_n = sum(stratum_counts[s] for s in ("hybrid_course_specific", "hybrid_course_combined"))
 
     print(f"\n{'=' * 60}")
     print("  TamuBot Golden Set Generation")

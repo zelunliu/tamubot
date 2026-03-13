@@ -18,7 +18,6 @@ import config
 from rag import reranker
 from rag import search_v3 as search
 from rag.router import (
-    FUNCTION_CATEGORY_STRATEGIES,
     RouterResult,
     classify_query,
     compute_dynamic_k,
@@ -52,10 +51,10 @@ def db_order(
     discovery_query: Optional[str] = None,
     trace=None,
 ) -> tuple[list[dict], list[tuple[str, str]], bool]:
-    """Retrieval pass: 'anchor' (metadata fetch) or 'discover' (vector search).
+    """Retrieval pass: 'anchor', 'hybrid_course', or 'discover'.
 
     Args:
-        pass_type:        "anchor" or "discover"
+        pass_type:        "anchor" | "hybrid_course" | "discover"
         router_result:    RouterResult from router_order()
         discovery_query:  Override search string for the discover pass (recurrent eval query)
         trace:            Parent span (Retrieval_Stage) forwarded to search/reranker calls
@@ -68,16 +67,25 @@ def db_order(
     dk = compute_dynamic_k(fn, len(router_result.course_ids))
     retrieve_k = dk["retrieve_k"]
     rerank_k = dk["rerank_k"]
-
-    if pass_type == "anchor":
-        strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
-        effective_cats = strategy(router_result) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
-        chunks, data_gaps, integrity = fetch_anchor_chunks(router_result.course_ids, effective_cats)
-        return chunks, data_gaps, integrity
-
-    # discover pass
     search_q = discovery_query or router_result.rewritten_query
 
+    if pass_type == "anchor":
+        # Recurrent anchor: fetch all chunks for anchor course(s) — categories ignored in v3
+        chunks, data_gaps, integrity = fetch_anchor_chunks(router_result.course_ids, [])
+        return chunks, data_gaps, integrity
+
+    if pass_type == "hybrid_course":
+        # Per-course filtered hybrid search (vector + BM25), then cross-course rerank
+        all_chunks: list[dict] = []
+        for cid in router_result.course_ids:
+            course_chunks = search.hybrid_search_v3(
+                search_q, course_id=cid, k=retrieve_k, parent_span=trace
+            )
+            all_chunks.extend(course_chunks)
+        reranked = reranker.rerank(search_q, all_chunks, top_k=rerank_k, parent_span=trace)
+        return reranked, [], True
+
+    # discover pass (recurrent discovery or semantic_general)
     if fn == "semantic_general":
         results = search.search_semantic(search_q, top_k=retrieve_k, parent_span=trace)
         reranked = reranker.rerank(search_q, results, top_k=rerank_k, parent_span=trace)
@@ -132,6 +140,8 @@ def generator_order(
         function=router_result.function,
         course_ids=router_result.course_ids,
         intent_type=router_result.intent_type,
+        specific_categories=router_result.specific_categories,
+        specific_only=router_result.specific_only,
         data_gaps=data_gaps or [],
         data_integrity=data_integrity,
         trace=trace,
@@ -240,21 +250,19 @@ def run_pipeline(
             })
 
         else:
-            # ── metadata_*: direct anchor fetch + rerank ──────────────────────
+            # ── hybrid_course: per-course filtered hybrid search + cross-course rerank ──
             retrieval_span = _span("Retrieval_Stage", input={
                 "query": search_query, "function": router_result.function,
                 "retrieval_mode": router_result.retrieval_mode,
                 "course_ids": router_result.course_ids,
                 "retrieve_k": dk["retrieve_k"], "rerank_k": dk["rerank_k"],
             })
-            anchor, data_gaps, data_integrity = db_order("anchor", router_result, trace=retrieval_span)
-            reranked = deduplicate_chunks(
-                reranker.rerank(search_query, anchor, top_k=dk["rerank_k"], parent_span=retrieval_span)
-                if anchor else anchor
+            chunks, data_gaps, data_integrity = db_order(
+                "hybrid_course", router_result, trace=retrieval_span
             )
+            reranked = deduplicate_chunks(chunks)
             _end_span(retrieval_span, output={
-                "n_results": len(reranked), "data_gaps": len(data_gaps),
-                "data_integrity": data_integrity, "results_summary": _results_summary(reranked),
+                "n_results": len(reranked), "results_summary": _results_summary(reranked),
             })
 
     except Exception:

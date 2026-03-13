@@ -53,7 +53,7 @@ def sample_corpus_chunks(n_total: int, corpus_crns: list[str], department: str) 
 
     client = MongoClient(config.MONGODB_URI)
     db = client[config.MONGODB_DB]
-    chunks_col = db["chunks"]
+    chunks_col = db["chunks"]  # v1 collection — used for category-weighted question synthesis only
 
     sampled: list[dict] = []
     for cat, prob in CATEGORY_PROBS.items():
@@ -203,7 +203,7 @@ def main():
         if stratum == "out_of_scope":
             continue
         n_q = stratum_counts[stratum]
-        print(f"\n  [{stratum}]  n={n_q}  —  {spec['description']}")
+        print(f"\n  [{stratum}]  n={n_q}  --  {spec['description']}")
         qs = synthesize_stratum(stratum, spec, all_chunks, n_q, rng)
         all_questions.extend(qs)
 

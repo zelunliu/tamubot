@@ -152,7 +152,7 @@ def run_probe(
     )
     has_citations = "[Source" in answer
     # Gate 1 result: N/A for functions that don't require citations
-    no_citation_fns = {"out_of_scope", "metadata_default"}
+    no_citation_fns = {"out_of_scope"}
     if router_result.function in no_citation_fns:
         gate1_status = "N/A"
     else:
