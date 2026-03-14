@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any, Callable, Optional
 from haystack import component
+import rag.router as _router_mod
 from rag.router import classify_query
 
 
@@ -31,12 +32,15 @@ class LLMRouterComponent:
     @component.output_types(router_result=object)
     def run(self, query: str, trace: Optional[Any] = None) -> dict:
         if self._llm_fn is not None:
-            # Injected llm_fn — patch call_llm in rag.router so classify_query uses it.
-            # This lets tests (and future integrations) swap the LLM backend with one line.
-            import rag.router as _router_mod
-            from unittest.mock import patch
-            with patch.object(_router_mod, "call_llm", self._llm_fn):
+            # Injected llm_fn — temporarily replace call_llm in rag.router so
+            # classify_query uses it.  rag.router imports call_llm at module
+            # level, so patching the name there is sufficient.
+            _original = _router_mod.call_llm
+            try:
+                _router_mod.call_llm = self._llm_fn
                 router_result = classify_query(query, router_span=trace)
+            finally:
+                _router_mod.call_llm = _original
         else:
             router_result = classify_query(query, router_span=trace)
         return {"router_result": router_result}
