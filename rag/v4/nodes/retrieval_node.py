@@ -16,6 +16,7 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
 
     dk = compute_dynamic_k(function, len(course_ids))
     retrieve_k = dk["retrieve_k"]
+    specific_categories = state.get("specific_categories", [])
 
     try:
         if function == "hybrid_course":
@@ -23,12 +24,18 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
             for cid in course_ids:
                 chunks = registry.retriever.hybrid_search(rewritten_query, cid, retrieve_k)
                 all_chunks.extend(chunks)
-            reranked = registry.reranker.rerank(rewritten_query, all_chunks, top_k=len(all_chunks))
+            reranked = registry.reranker.rerank(
+                rewritten_query, all_chunks, top_k=len(all_chunks),
+                specific_categories=specific_categories,
+            )
             return {"retrieved_chunks": reranked, "node_trace": node_trace}
 
         elif function == "semantic_general":
             chunks = registry.retriever.semantic_search(rewritten_query, retrieve_k)
-            reranked = registry.reranker.rerank(rewritten_query, chunks, top_k=len(chunks))
+            reranked = registry.reranker.rerank(
+                rewritten_query, chunks, top_k=len(chunks),
+                specific_categories=specific_categories,
+            )
             return {"retrieved_chunks": reranked, "node_trace": node_trace}
 
         elif function == "recurrent":

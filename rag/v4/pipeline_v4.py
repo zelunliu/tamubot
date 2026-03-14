@@ -1,4 +1,4 @@
-"""v4 pipeline entry point — same 6-tuple return signature as v3 run_pipeline()."""
+"""v4 pipeline entry point — same 5-tuple return signature as v3 run_pipeline()."""
 from __future__ import annotations
 import functools
 from typing import Any, Iterator, Optional
@@ -23,10 +23,13 @@ def _get_graph():
 def run_pipeline_v4(
     query: str,
     trace=None,
-) -> tuple[list[dict], Any, list[tuple[str, str]], bool, list[str], dict]:
-    """Run the v4 pipeline. Returns same 6-tuple as v3 run_pipeline():
+) -> tuple[list[dict], Any, list[tuple[str, str]], bool, list[str]]:
+    """Run the v4 pipeline. Returns same 5-tuple as v3 run_pipeline():
 
-    (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids, timing_ms)
+    (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
+
+    timing_ms is tracked internally in state but not exposed to callers,
+    keeping the return signature identical to v3 run_pipeline().
     """
     import time
 
@@ -48,11 +51,13 @@ def run_pipeline_v4(
     result = graph.invoke(initial_state)
     elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
 
+    # Store timing internally (available via state) but return v3-compatible 5-tuple
+    _ = {**result.get("timing_ms", {}), "total_ms": elapsed_ms}
+
     return (
         result.get("retrieved_chunks", []),
         result.get("router_result"),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
         result.get("conflicted_course_ids", []),
-        {**result.get("timing_ms", {}), "total_ms": elapsed_ms},
     )

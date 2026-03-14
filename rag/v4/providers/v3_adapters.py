@@ -49,10 +49,16 @@ class V3RetrieverAdapter:
 class V3RerankerAdapter:
     """Wraps rag.reranker.rerank() + stratified_select() to satisfy RerankerComponent protocol."""
 
-    def rerank(self, query: str, chunks: list[dict], top_k: int) -> list[dict]:
+    def rerank(
+        self,
+        query: str,
+        chunks: list[dict],
+        top_k: int,
+        specific_categories: Optional[list[str]] = None,
+    ) -> list[dict]:
         from rag import reranker
         reranked = reranker.rerank(query, chunks, top_k=top_k)
-        return reranker.stratified_select(reranked, [])
+        return reranker.stratified_select(reranked, specific_categories or [])
 
 
 class V3GeneratorAdapter:
