@@ -50,6 +50,38 @@ def test_llm_router_component_classify_with_stub():
     assert result.function == "out_of_scope"
 
 
+def test_llm_router_component_uses_injected_llm_fn():
+    """Injected llm_fn must be called instead of the default call_llm."""
+    from rag.v4.components.routers import LLMRouterComponent
+
+    stub_llm_fn = MagicMock()
+    # Return a valid JSON response that classify_query can parse
+    mock_response = MagicMock()
+    mock_response.text = '{"course_ids": [], "rewritten_query": "stub query", "function": "out_of_scope", "intent_type": null, "specific_categories": [], "specific_only": false, "category_confidence": 0.0, "recurrent_search": false}'
+    mock_response.input_tokens = None
+    mock_response.output_tokens = None
+    mock_response.thinking_tokens = None
+    stub_llm_fn.return_value = mock_response
+
+    router = LLMRouterComponent(llm_fn=stub_llm_fn)
+    result = router.classify("what is the weather?")
+
+    # Verify the stub was actually called (not bypassed)
+    stub_llm_fn.assert_called_once()
+    assert result.rewritten_query == "stub query"
+
+
+def test_identity_reranker_rerank_method_satisfies_protocol():
+    """IdentityReranker.rerank() must return list[dict] directly (not wrapped in dict)."""
+    from rag.v4.components.rerankers import IdentityReranker
+    reranker = IdentityReranker()
+    chunks = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    result = reranker.rerank(query="test", chunks=chunks, top_k=2)
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0] == {"text": "a"}
+
+
 def test_all_components_importable():
     from rag.v4.components.embedders import VoyageEmbedder, NullEmbedder
     from rag.v4.components.rerankers import VoyageReranker, IdentityReranker

@@ -39,6 +39,17 @@ class VoyageReranker:
             reranked = stratified_select(reranked, specific_categories)
         return {"chunks": reranked}
 
+    def rerank(
+        self,
+        query: str,
+        chunks: list[dict],
+        top_k: int,
+        specific_categories: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Satisfy RerankerComponent protocol — delegates to run() and unwraps result."""
+        result = self.run(query=query, chunks=chunks, top_k=top_k, specific_categories=specific_categories)
+        return result["chunks"]
+
 
 @component
 class IdentityReranker:
@@ -53,3 +64,14 @@ class IdentityReranker:
         specific_categories: Optional[list[str]] = None,
     ) -> dict:
         return {"chunks": chunks[:top_k] if chunks else []}
+
+    def rerank(
+        self,
+        query: str,
+        chunks: list[dict],
+        top_k: int,
+        specific_categories: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Satisfy RerankerComponent protocol — delegates to run() and unwraps result."""
+        result = self.run(query=query, chunks=chunks, top_k=top_k, specific_categories=specific_categories)
+        return result["chunks"]

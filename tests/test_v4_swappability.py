@@ -22,14 +22,8 @@ def test_graph_with_identity_reranker():
     retriever.hybrid_search.return_value = [{"course_id": "202611_CSCE_221_500", "text": "chunk"}]
     retriever.get_meeting_times.return_value = {}
 
-    # Use real IdentityReranker (not a mock)
+    # Use real IdentityReranker — now satisfies RerankerComponent protocol directly
     identity_reranker = IdentityReranker()
-
-    # Adapt IdentityReranker to satisfy RerankerComponent protocol
-    class IdentityRerankerAdapter:
-        def rerank(self, query, chunks, top_k, specific_categories=None):
-            result = identity_reranker.run(query=query, chunks=chunks, top_k=top_k)
-            return result["chunks"]
 
     generator = MagicMock()
     generator.generate_stream.return_value = iter(["Hello"])
@@ -37,7 +31,7 @@ def test_graph_with_identity_reranker():
     registry = ComponentRegistry(
         router_llm=router,
         retriever=retriever,
-        reranker=IdentityRerankerAdapter(),
+        reranker=identity_reranker,
         generator_llm=generator,
     )
 
