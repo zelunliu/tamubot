@@ -47,7 +47,7 @@ def _make_recurrent_registry():
     )
 
 
-def test_recurrent_full_6_step_path():
+def test_recurrent_full_7_node_path():
     registry = _make_recurrent_registry()
     graph = build_graph(registry)
     result = graph.invoke({
