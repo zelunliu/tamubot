@@ -4,7 +4,7 @@ import functools
 from typing import Any, Iterator, Optional
 
 from rag.v4.graph import build_graph
-from rag.v4.registry_factory import make_v3_registry
+from rag.v4.registry_factory import make_default_registry
 from rag.v4.state import PipelineState
 
 # Module-level compiled graph singleton (built lazily on first call)
@@ -15,7 +15,7 @@ _registry = None
 def _get_graph():
     global _graph, _registry
     if _graph is None:
-        _registry = make_v3_registry()
+        _registry = make_default_registry()
         _graph = build_graph(_registry)
     return _graph
 
