@@ -1,3 +1,14 @@
+[project]
+name = "tamubot"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+v4 = [
+    "langgraph>=1.1.2,<2.0.0",
+    "haystack-ai>=2.25.2,<3.0.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
