@@ -76,9 +76,14 @@ def run_pipeline_v4_with_memory(
 
     Same 5-tuple return as run_pipeline_v4. thread_config enables LangGraph checkpointing.
 
+    Note: `trace` is accepted for API compatibility but is NOT passed into initial_state.
+    Langfuse trace objects are not picklable and would crash SqliteSaver at the first
+    checkpoint. Observability for stateful sessions is handled at the app.py level via
+    the outer trace context — per-node spans are not available on this path.
+
     Args:
         query: User query string
-        trace: Optional Langfuse trace object (NOT checkpointed — stripped before checkpoint)
+        trace: Accepted but intentionally ignored — not picklable, cannot be checkpointed
         thread_config: LangGraph thread config dict, e.g. {"configurable": {"thread_id": "..."}}
 
     Returns:
@@ -93,7 +98,7 @@ def run_pipeline_v4_with_memory(
 
     initial_state: dict = {
         "query": query,
-        "trace": trace,
+        # trace intentionally excluded — not picklable, cannot be checkpointed
         "node_trace": [],
         "timing_ms": {},
         "conflicted_course_ids": [],

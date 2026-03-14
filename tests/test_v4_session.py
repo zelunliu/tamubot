@@ -37,8 +37,18 @@ def test_strip_non_checkpointable_removes_trace_and_stream():
     assert "answer" in stripped
 
 
+def test_inject_trace_adds_trace_to_state():
+    """inject_trace() should add trace object back into state."""
+    manager = SessionManager()
+    mock_trace = object()
+    state = {"query": "test", "answer": "ok"}
+    result = manager.inject_trace(state, mock_trace)
+    assert result["trace"] is mock_trace
+    assert result["query"] == "test"  # other fields preserved
+
+
 def test_two_turns_same_session_share_history():
-    """With InMemorySaver, two invocations with the same thread_id accumulate history."""
+    """With MemorySaver, two invocations with the same thread_id accumulate history."""
     from rag.v4.checkpointer import make_checkpointer
     from rag.v4.graph import build_graph_with_memory
     from rag.v4.interfaces import ComponentRegistry
