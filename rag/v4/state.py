@@ -33,7 +33,14 @@ class PipelineState(TypedDict, total=False):
 
 
 class ConversationMessage(TypedDict, total=False):
-    """Forward declaration for Phase 5 stateful conversations."""
-    role: str       # "user" | "assistant"
+    role: str           # "user" | "assistant"
     content: str
-    router_result: Optional[dict]
+    router_result: Optional[dict]   # serializable summary of RouterResult
+
+
+class ConversationState(PipelineState, total=False):
+    """Extends PipelineState with multi-turn session fields (Phase 5)."""
+    session_id: str
+    history: list[ConversationMessage]          # last N turns (windowed)
+    history_summary: str                         # LLM-compressed older turns
+    turn_number: int

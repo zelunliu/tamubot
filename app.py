@@ -34,12 +34,17 @@ if "messages" not in st.session_state:
 
 USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 
+_session_manager = None
+
 if USE_MONGODB:
     from rag import generator  # keep for format_context_xml fallback
     from rag.pipeline import generator_order, run_pipeline
     from rag.search_v3 import get_syllabus_urls
     if config.USE_V4_PIPELINE:
         from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline  # noqa: F811
+        from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
+        from rag.v4.session import SessionManager
+        _session_manager = SessionManager()
 else:
     from typing import Any, List
 
@@ -177,7 +182,11 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             conflicted_ids: list = []
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    result = run_pipeline(prompt, trace=lf_trace)
+                    if config.USE_V4_PIPELINE and _session_manager is not None:
+                        thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
+                        result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
+                    else:
+                        result = run_pipeline(prompt, trace=lf_trace)
                     source_docs, router_result, data_gaps, data_integrity, conflicted_ids = result
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:

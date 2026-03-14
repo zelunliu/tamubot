@@ -5,7 +5,7 @@ from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
-from rag.v4.state import PipelineState
+from rag.v4.state import PipelineState, ConversationState
 from rag.v4.interfaces import ComponentRegistry
 from rag.v4.nodes.router_node import router_node
 from rag.v4.nodes.anchor_node import anchor_node
@@ -100,3 +100,102 @@ def build_graph(registry: ComponentRegistry, tracer=None):
     graph.add_edge("out_of_scope", END)
 
     return graph.compile()
+
+
+def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, tracer=None):
+    """Build the v4 pipeline graph with conversation memory support (Phase 5).
+
+    Node order:
+    - router runs first (classifies function from the clean current query)
+    - history_inject runs after router (enriches rewritten_query with context)
+    - then the retrieval path runs with the enriched query
+    - history_update runs at the END after generator/out_of_scope
+
+    Args:
+        registry: ComponentRegistry with all providers injected
+        checkpointer: LangGraph checkpointer (MemorySaver, SqliteSaver, etc.)
+        tracer: Optional V4Tracer (ignored until Phase 4)
+
+    Returns:
+        Compiled LangGraph graph with checkpointing support
+    """
+    from rag.v4.nodes.history_inject_node import history_inject_node
+    from rag.v4.nodes.history_update_node import history_update_node
+
+    graph = StateGraph(ConversationState)
+
+    def _bind(fn):
+        return functools.partial(fn, registry=registry)
+
+    # Wrapper: consume answer_stream and trace so they're not checkpointed
+    # by LangGraph between nodes. history_update_node also clears them, but
+    # LangGraph checkpoints writes per-node BEFORE the next node runs.
+    def _strip_non_serializable(fn):
+        """Wrap a node to clear answer_stream and trace from its returned dict."""
+        @functools.wraps(fn)
+        def wrapper(state, **kwargs):
+            result = fn(state, **kwargs)
+            if isinstance(result, dict):
+                result = {
+                    k: (None if k in ("answer_stream", "trace") else v)
+                    for k, v in result.items()
+                }
+            return result
+        return wrapper
+
+    # All pipeline nodes
+    graph.add_node("router", _bind(router_node))
+    graph.add_node("history_inject", _bind(history_inject_node))
+    graph.add_node("anchor", _bind(anchor_node))
+    graph.add_node("eval_search", _bind(eval_search_node))
+    graph.add_node("retrieval", _bind(retrieval_node))
+    graph.add_node("schedule_filter", _bind(schedule_filter_node))
+    graph.add_node("merge", _bind(merge_node))
+    # generator and out_of_scope produce answer_stream (generator objects) — strip before checkpoint
+    graph.add_node("generator", _strip_non_serializable(_bind(generator_node)))
+    graph.add_node("out_of_scope", _strip_non_serializable(_bind(out_of_scope_node)))
+    graph.add_node("history_update", _bind(history_update_node))
+
+    graph.set_entry_point("router")
+
+    # Router → history_inject (always — then dispatch based on function)
+    graph.add_edge("router", "history_inject")
+
+    # history_inject → dispatch (same routing logic as build_graph, but from history_inject)
+    graph.add_conditional_edges(
+        "history_inject",
+        _route_after_router,
+        {
+            "out_of_scope": "out_of_scope",
+            "anchor": "anchor",
+            "retrieval": "retrieval",
+        }
+    )
+
+    # Recurrent path before retrieval
+    graph.add_edge("anchor", "eval_search")
+    graph.add_edge("eval_search", "retrieval")
+
+    # After retrieval: recurrent → schedule_filter, others → generator
+    graph.add_conditional_edges(
+        "retrieval",
+        _route_after_retrieval,
+        {
+            "schedule_filter": "schedule_filter",
+            "generator": "generator",
+        }
+    )
+
+    graph.add_edge("schedule_filter", "merge")
+    graph.add_edge("merge", "generator")
+
+    # After generator/out_of_scope: always update history then END
+    graph.add_edge("generator", "history_update")
+    graph.add_edge("out_of_scope", "history_update")
+    graph.add_edge("history_update", END)
+
+    kwargs = {}
+    if checkpointer is not None:
+        kwargs["checkpointer"] = checkpointer
+
+    return graph.compile(**kwargs)
