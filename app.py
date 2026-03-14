@@ -38,6 +38,8 @@ if USE_MONGODB:
     from rag import generator  # keep for format_context_xml fallback
     from rag.pipeline import generator_order, run_pipeline
     from rag.search_v3 import get_syllabus_urls
+    if config.USE_V4_PIPELINE:
+        from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline  # noqa: F811
 else:
     from typing import Any, List
 
