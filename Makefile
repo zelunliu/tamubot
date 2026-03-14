@@ -1,6 +1,6 @@
 .PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
         ingest-corpus test typecheck lint format eval-router probe probe-full \
-        eval-draft import-draft bench bench-ragas validate-ragas
+        eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4
 
 # --- App ---
 run:
@@ -50,6 +50,12 @@ probe:
 
 probe-full:
 	python evals/run_probe.py --suite all
+
+test-v4:
+	pytest tests/test_v4_*.py -v
+
+probe-v4:
+	USE_V4_PIPELINE=true python evals/run_probe.py --suite smoke
 
 # --- Benchmarking ---
 eval-draft:

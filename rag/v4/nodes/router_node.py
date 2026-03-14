@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Any
 from rag.v4.state import PipelineState
 from rag.v4.exceptions import V4RouterError
+from rag.v4.middleware import error_guard_middleware, timing_middleware
 
 
+@timing_middleware
+@error_guard_middleware
 def router_node(state: PipelineState, registry: Any) -> dict:
     """Classify query using registry.router_llm, write all RouterResult fields to state.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any
 from rag.v4.state import PipelineState
+from rag.v4.middleware import error_guard_middleware, timing_middleware
 
 _OOS_RESPONSE = (
     "Howdy! I'm TamuBot, your Texas A&M academic assistant. "
@@ -10,6 +11,8 @@ _OOS_RESPONSE = (
 )
 
 
+@timing_middleware
+@error_guard_middleware
 def out_of_scope_node(state: PipelineState, registry: Any) -> dict:
     """Write canned response to state. No LLM call."""
     node_trace = list(state.get("node_trace", []))

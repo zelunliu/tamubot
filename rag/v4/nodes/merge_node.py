@@ -4,8 +4,11 @@ from typing import Any
 import config
 from rag.v4.state import PipelineState
 from rag.router import deduplicate_chunks
+from rag.v4.middleware import error_guard_middleware, timing_middleware
 
 
+@timing_middleware
+@error_guard_middleware
 def merge_node(state: PipelineState, registry: Any) -> dict:
     """Merge anchor + discovery, rerank, cap at RECURRENT_MAX_RECOMMENDED_COURSES."""
     anchor_chunks = state.get("anchor_chunks", [])

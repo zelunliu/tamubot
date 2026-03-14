@@ -2,8 +2,11 @@
 from __future__ import annotations
 from typing import Any
 from rag.v4.state import PipelineState
+from rag.v4.middleware import error_guard_middleware, timing_middleware
 
 
+@timing_middleware
+@error_guard_middleware
 def generator_node(state: PipelineState, registry: Any) -> dict:
     """Generate the answer stream. Writes both answer_stream (Iterator) and answer (str)."""
     node_trace = list(state.get("node_trace", []))
