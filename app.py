@@ -181,11 +181,8 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             conflicted_ids: list = []
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    if config.USE_V4_PIPELINE and _session_manager is not None:
-                        thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
-                        result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
-                    else:
-                        result = run_pipeline(prompt, trace=lf_trace)
+                    thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
+                    result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
                     source_docs, router_result, data_gaps, data_integrity, conflicted_ids = result
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
