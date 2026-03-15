@@ -38,13 +38,12 @@ _session_manager = None
 
 if USE_MONGODB:
     from rag import generator  # keep for format_context_xml fallback
-    from rag.pipeline import generator_order, run_pipeline
+    from rag.v3_legacy.pipeline import generator_order  # still used by streaming helpers
+    from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline
+    from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
+    from rag.v4.session import SessionManager
     from rag.search_v3 import get_syllabus_urls
-    if config.USE_V4_PIPELINE:
-        from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline  # noqa: F811
-        from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
-        from rag.v4.session import SessionManager
-        _session_manager = SessionManager()
+    _session_manager = SessionManager()
 else:
     from typing import Any, List
 

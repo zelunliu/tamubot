@@ -1,5 +1,5 @@
 .PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
-        ingest-corpus test typecheck lint format eval-router probe probe-full \
+        ingest-corpus test typecheck lint format eval-router probe probe-v3 probe-full \
         eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4
 
 # --- App ---
@@ -48,6 +48,9 @@ eval-router:
 probe:
 	python evals/run_probe.py --suite smoke
 
+probe-v3:
+	USE_V4_PIPELINE=false python evals/run_probe.py --suite smoke
+
 probe-full:
 	python evals/run_probe.py --suite all
 
@@ -55,7 +58,7 @@ test-v4:
 	pytest tests/test_v4_*.py -v
 
 probe-v4:
-	USE_V4_PIPELINE=true python evals/run_probe.py --suite smoke
+	python evals/run_probe.py --suite smoke
 
 # --- Benchmarking ---
 eval-draft:

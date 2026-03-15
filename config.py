@@ -125,6 +125,6 @@ def get_tamu_client():
 # ---------------------------------------------------------------------------
 # v4 pipeline feature flags
 # ---------------------------------------------------------------------------
-USE_V4_PIPELINE: bool = os.getenv("USE_V4_PIPELINE", "false").lower() == "true"
+USE_V4_PIPELINE: bool = os.getenv("USE_V4_PIPELINE", "true").lower() == "true"
 V4_CHECKPOINTER_BACKEND: str = os.getenv("V4_CHECKPOINTER_BACKEND", "memory")
 V4_MAX_HISTORY_TURNS: int = int(os.getenv("V4_MAX_HISTORY_TURNS", "6"))
