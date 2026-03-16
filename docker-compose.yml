@@ -1,0 +1,34 @@
+services:
+  claude:
+    build: .
+    volumes:
+      - ${HOME}/dev/TAMU_NEW:/workspace
+      - ${HOME}/.claude:/root/.claude
+    env_file: .env
+    environment:
+      - TAMU_BASE_URL=http://api-proxy:8080/tamu
+      - VOYAGE_BASE_URL=http://api-proxy:8080/voyage
+    depends_on: [api-proxy]
+    stdin_open: true
+    tty: true
+
+  api-proxy:
+    build: ./tools/api-proxy
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ${HOME}/dev/TAMU_NEW/logs:/workspace/logs
+
+  app:
+    build: .
+    command: streamlit run app.py --server.port 8501
+    volumes:
+      - ${HOME}/dev/TAMU_NEW:/workspace
+    env_file: .env
+    ports:
+      - "8501:8501"
+    environment:
+      - TAMU_BASE_URL=http://api-proxy:8080/tamu
+      - VOYAGE_BASE_URL=http://api-proxy:8080/voyage
+    depends_on: [api-proxy]

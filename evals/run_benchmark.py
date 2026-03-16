@@ -32,12 +32,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import config
 from rag import (
-    FUNCTION_CATEGORY_STRATEGIES,
     RouterResult,
-    classify_query,
-    compute_dynamic_k,
-    deduplicate_chunks,
     generate,
+    route_retrieve_rerank,
 )
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
@@ -54,20 +51,33 @@ class BenchmarkRow:
     stratum: str
     category: str
     source_crn: str
+    source_course_id: str
 
     # Ground truth
     expected_function: str
 
-    # Router
+    # Router — function + correctness
     router_function: str
     router_function_correct: bool
     router_ms: float
 
+    # Router — all extracted + derived fields
+    router_rewritten_query: str
+    router_course_ids: str          # comma-separated, e.g. "CSCE 670, CSCE 638"
+    router_specific_categories: str # comma-separated, e.g. "GRADING, PREREQUISITES"
+    router_specific_only: bool
+    router_intent_type: str         # empty string when None (out_of_scope)
+    router_category_confidence: float
+    router_recurrent_search: bool
+    router_section: str             # empty string when None
+    router_retrieval_mode: str
+
     # Retrieval
-    retrieved_correct: Optional[bool]  # None when source_crn is blank
+    retrieved_correct: Optional[bool]  # None when source_course_id is blank
     retrieval_ms: float
 
     # Generator
+    answer_full: str
     answer_preview: str
     citation_pass: bool
     generator_ms: float
@@ -82,110 +92,58 @@ class BenchmarkRow:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline stages
+# Pipeline runner
 # ---------------------------------------------------------------------------
 
-def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
-    """Retrieval stage — mirrors eval_pipeline._do_retrieval."""
-    from rag import reranker, search
-
-    search_query = rr.rewritten_query or query
-
-    if not rr.requires_retrieval:
-        return []
-
-    fn = rr.function
-    dk = compute_dynamic_k(fn, len(rr.course_ids))
-    retrieve_k = dk["retrieve_k"]
-    rerank_k = dk["rerank_k"]
-    course_ids = rr.course_ids
-
-    if fn == "semantic_general":
-        results = search.search_semantic(search_query, top_k=retrieve_k)
-        reranked = reranker.rerank(search_query, results, top_k=rerank_k)
-        return deduplicate_chunks(reranked)
-
-    if fn == "out_of_scope" or not course_ids:
-        return []
-
-    strategy = FUNCTION_CATEGORY_STRATEGIES.get(fn)
-    categories = strategy(rr) if strategy else list(config.DEFAULT_SUMMARY_CATEGORIES)
-
-    if fn.startswith("recurrent_"):
-        from rag.generator import generate_eval_search_string
-        from rag.search import fetch_anchor_chunks
-        anchor_chunks, _, _ = fetch_anchor_chunks(course_ids, categories)
-        eval_query = generate_eval_search_string(
-            anchor_chunks, search_query, rr.intent_type or "GENERAL"
-        )
-        all_results = search.hybrid_search(eval_query, filters=None, k=retrieve_k)
-        anchor_ids = set(course_ids)
-        discovery = [c for c in all_results if c.get("course_id") not in anchor_ids]
-        reranked = reranker.rerank(eval_query, discovery, top_k=rerank_k)
-        return deduplicate_chunks(anchor_chunks + reranked)
-
-    if len(course_ids) == 1:
-        return deduplicate_chunks(search.search_by_course_categories(course_ids[0], categories))
-
-    combined: list[dict] = []
-    for cid in course_ids:
-        combined.extend(search.search_by_course_categories(cid, categories))
-    return deduplicate_chunks(combined)
-
-
 def run_one(item: dict, do_ragas: bool) -> BenchmarkRow:
-    """Run one golden set item through router → retrieval → generation."""
+    """Run one golden set item through the full pipeline (router → retrieval → generation)."""
     query = item["question"]
     source_crn = str(item.get("source_crn") or "")
-    source_category = str(item.get("source_category") or "")
+    source_course_id = str(item.get("source_course_id") or "")
+    source_category = str(item.get("source_category") or item.get("category") or "")
     expected_fn = str(item.get("expected_function", ""))
 
     t0 = time.perf_counter()
     error: Optional[str] = None
     chunks: list[dict] = []
     answer = ""
+    rr = RouterResult(rewritten_query=query, category_confidence=0.0)
+    data_gaps: list = []
+    data_integrity = True
 
-    # Router
-    t_router = time.perf_counter()
+    # Router + Retrieval — pipeline returns separate timing for each stage
     try:
-        rr = classify_query(query)
+        chunks, rr, data_gaps, data_integrity, _, pipeline_timing = route_retrieve_rerank(query)
     except Exception as e:
-        rr = RouterResult(rewritten_query=query, category_confidence=0.0)
-        error = f"router: {e}"
-    router_ms = (time.perf_counter() - t_router) * 1000
-
-    # Retrieval
-    t_ret = time.perf_counter()
-    if not error and rr.requires_retrieval:
-        try:
-            chunks = _do_retrieval(rr, query)
-        except Exception as e:
-            error = f"retrieval: {e}"
-    retrieval_ms = (time.perf_counter() - t_ret) * 1000
+        error = f"retrieval: {e}"
+        pipeline_timing = {"router_ms": 0.0, "retrieval_ms": 0.0}
+    router_ms = pipeline_timing["router_ms"]
+    retrieval_ms = pipeline_timing["retrieval_ms"]
 
     # Generation
     t_gen = time.perf_counter()
     if not error:
         try:
-            if rr.function == "out_of_scope":
-                answer = generate([], query, function="out_of_scope")
-            elif chunks or rr.requires_retrieval:
-                answer = generate(
-                    chunks, query,
-                    function=rr.function,
-                    course_ids=rr.course_ids,
-                    intent_type=rr.intent_type,
-                )
+            answer = generate(
+                results=chunks,
+                question=query,
+                function=rr.function,
+                course_ids=rr.course_ids or None,
+                intent_type=rr.intent_type,
+                data_gaps=data_gaps,
+                data_integrity=data_integrity,
+            )
         except Exception as e:
             error = f"generation: {e}"
-    generator_ms = (time.perf_counter() - t_gen) * 1000
-    total_ms = (time.perf_counter() - t0) * 1000
+    generator_ms = round((time.perf_counter() - t_gen) * 1000, 1)
+    total_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    # Recall — did source chunk surface in results?
+    # Recall — did a chunk from the source course+category surface in results?
+    # Matches on course_id (not exact CRN) so cross-section hits count correctly.
     retrieved_correct: Optional[bool] = None
-    if source_crn and not error:
+    if source_course_id and source_category and not error:
         retrieved_correct = any(
-            c.get("crn") == source_crn and c.get("category") == source_category
+            c.get("course_id") == source_course_id and c.get("category") == source_category
             for c in chunks
         )
 
@@ -207,16 +165,27 @@ def run_one(item: dict, do_ragas: bool) -> BenchmarkRow:
         stratum=item.get("stratum", ""),
         category=item.get("category") or "",
         source_crn=source_crn,
+        source_course_id=source_course_id,
         expected_function=expected_fn,
         router_function=rr.function,
         router_function_correct=(rr.function == expected_fn),
-        router_ms=round(router_ms, 1),
+        router_ms=router_ms,
+        router_rewritten_query=rr.rewritten_query or "",
+        router_course_ids=", ".join(rr.course_ids) if rr.course_ids else "",
+        router_specific_categories=", ".join(rr.specific_categories) if rr.specific_categories else "",
+        router_specific_only=rr.specific_only,
+        router_intent_type=rr.intent_type or "",
+        router_category_confidence=rr.category_confidence,
+        router_recurrent_search=rr.recurrent_search,
+        router_section=rr.section or "",
+        router_retrieval_mode=rr.retrieval_mode,
         retrieved_correct=retrieved_correct,
-        retrieval_ms=round(retrieval_ms, 1),
+        retrieval_ms=retrieval_ms,
+        answer_full=answer,
         answer_preview=(answer[:300] + "..." if len(answer) > 300 else answer),
         citation_pass=bool(re.search(r"\[Source \d+\]", answer)),
-        generator_ms=round(generator_ms, 1),
-        total_ms=round(total_ms, 1),
+        generator_ms=generator_ms,
+        total_ms=total_ms,
         ragas_faithfulness=ragas_faithfulness,
         ragas_relevancy=ragas_relevancy,
         error=error,
@@ -279,7 +248,7 @@ def write_excel(
         ("n_questions", n),
         ("Router accuracy",
          f"{n_fn_correct/n:.1%} ({n_fn_correct}/{n})" if n else "N/A"),
-        ("Recall@k (crn+category)",
+        ("Recall@k (course_id+category)",
          f"{recall_hits/len(recall_cases):.1%} ({recall_hits}/{len(recall_cases)})" if recall_cases else "N/A"),
         ("Citation pass rate",
          f"{citation_pass/len(citation_cases):.1%} ({citation_pass}/{len(citation_cases)})" if citation_cases else "N/A"),
@@ -307,21 +276,38 @@ def write_excel(
     ws_pq = wb.create_sheet("Per-Query")
 
     pq_cols = [
+        # Identity
         ("question", 50),
         ("stratum", 25),
         ("category", 20),
         ("source_crn", 12),
+        ("source_course_id", 18),
+        # Routing ground truth + correctness
         ("expected_function", 22),
         ("router_function", 22),
         ("router_function_correct", 12),
+        # Router extracted fields
+        ("router_rewritten_query", 45),
+        ("router_course_ids", 25),
+        ("router_specific_categories", 28),
+        ("router_specific_only", 12),
+        ("router_intent_type", 16),
+        ("router_category_confidence", 14),
+        ("router_recurrent_search", 14),
+        ("router_section", 12),
+        ("router_retrieval_mode", 16),
+        # Retrieval
         ("retrieved_correct", 12),
+        # Generation
         ("citation_pass", 12),
         ("ragas_faithfulness", 14),
         ("ragas_relevancy", 14),
+        # Timing
         ("router_ms", 10),
         ("retrieval_ms", 12),
         ("generator_ms", 12),
         ("total_ms", 10),
+        # Answer + diagnostics
         ("answer_preview", 60),
         ("error", 30),
         # human_judgment column: blank, user fills after viewing answers
@@ -336,8 +322,11 @@ def write_excel(
 
     for row_idx, r in enumerate(rows, start=2):
         values = [
-            r.question, r.stratum, r.category, r.source_crn,
+            r.question, r.stratum, r.category, r.source_crn, r.source_course_id,
             r.expected_function, r.router_function, r.router_function_correct,
+            r.router_rewritten_query, r.router_course_ids, r.router_specific_categories,
+            r.router_specific_only, r.router_intent_type, r.router_category_confidence,
+            r.router_recurrent_search, r.router_section, r.router_retrieval_mode,
             r.retrieved_correct, r.citation_pass,
             r.ragas_faithfulness, r.ragas_relevancy,
             r.router_ms, r.retrieval_ms, r.generator_ms, r.total_ms,
@@ -381,6 +370,115 @@ def write_excel(
         ws_cfg.cell(row=i, column=1, value=k)
         ws_cfg.cell(row=i, column=2, value=str(v))
 
+    # ── Tab 4: Full Answers ───────────────────────────────────────────────
+    ws_fa = wb.create_sheet("Full Answers")
+
+    fa_cols = [
+        ("question", 55),
+        ("answer_full", 100),
+        ("ragas_faithfulness", 16),
+        ("ragas_relevancy", 14),
+        ("error", 30),
+    ]
+    for col_idx, (label, width) in enumerate(fa_cols, start=1):
+        cell = ws_fa.cell(row=1, column=col_idx, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        ws_fa.column_dimensions[cell.column_letter].width = width
+
+    for row_idx, r in enumerate(rows, start=2):
+        fa_values = [r.question, r.answer_full or "", r.ragas_faithfulness, r.ragas_relevancy, r.error]
+        for col_idx, val in enumerate(fa_values, start=1):
+            cell = ws_fa.cell(row=row_idx, column=col_idx, value=val)
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    ws_fa.freeze_panes = "A2"
+    ws_fa.row_dimensions[1].height = 18
+
+    # ── Tab 5: Column Definitions ─────────────────────────────────────────
+    ws_defs = wb.create_sheet("Column Definitions")
+
+    col_defs = [
+        ("Column", "Type", "Description"),
+        # Identity
+        ("question", "str", "The question posed to the bot, from the golden set."),
+        ("stratum", "str", "Sampling stratum used during golden set generation (e.g. metadata_default, semantic_general). Groups questions by query pattern for stratified accuracy analysis."),
+        ("category", "str", "Syllabus section the question targets (e.g. GRADING, PREREQUISITES). From the golden set label."),
+        ("source_crn", "str", "CRN of the specific course section used to write the golden question. Reference only — retrieval match is now course_id-based, not CRN-exact."),
+        ("source_course_id", "str", "Course identifier of the golden source (e.g. 'CSCE 672'). Used for retrieved_correct matching."),
+        # Ground truth
+        ("expected_function", "str", "The router function the question should trigger (e.g. hybrid_course, semantic_general, out_of_scope). Ground truth label from the golden set."),
+        # Router — function + correctness
+        ("router_function", "str", "The routing handler derived from the LLM output. Values: hybrid_course (course-specific query), semantic_general (cross-corpus search), out_of_scope (unrelated query). Derived automatically from course_ids + intent_type + recurrent_search."),
+        ("router_function_correct", "bool", "True if router_function == expected_function. Primary routing accuracy signal."),
+        ("router_ms", "float (ms)", "Wall-clock time for the router LLM call only (classify_query): query → RouterResult. Does not include retrieval."),
+        # Router — extracted fields (LLM output)
+        ("router_rewritten_query", "str", "Query rewritten by the router LLM for better retrieval alignment. The router normalises course references, expands abbreviations, and removes conversational filler. This is what gets embedded and sent to Voyage/MongoDB — not the original question."),
+        ("router_course_ids", "str", "Comma-separated course IDs extracted from the query (e.g. 'CSCE 670, CSCE 638'). Normalised to 'DEPT NNN' format. Empty for general/discovery queries."),
+        ("router_specific_categories", "str", "Comma-separated syllabus section categories the user is specifically asking about (e.g. 'GRADING, PREREQUISITES'). Empty when no specific section is requested. Valid values: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS, GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, UNIVERSITY_POLICIES, SUPPORT_SERVICES."),
+        ("router_specific_only", "bool", "True if the user wants ONLY the specific_categories listed — no other sections. Suppresses context-broadening retrieval. Example: 'What is the grading breakdown?' → specific_only=True. 'Tell me about CSCE 638' → specific_only=False."),
+        ("router_intent_type", "str", "Advisory/evaluative intent detected by the LLM. Empty string = purely factual or out_of_scope. Values: ACADEMIC (study/learning advice), CAREER (job/skills relevance), DIFFICULTY (how hard is it?), PLANNING (schedule/sequence), ADMINISTRATIVE (deadlines/logistics), GENERAL (broad curiosity). Triggers advisory tone in the generator."),
+        ("router_category_confidence", "float 0–1", "Router LLM self-reported confidence that the specific_categories extraction is correct. Low values (<0.5) indicate the user question is ambiguous about which syllabus section it targets. Used for calibration analysis (ECE metric) — does NOT gate retrieval."),
+        ("router_recurrent_search", "bool", "True when the query requires a two-pass discovery search: (1) fetch anchor course content → (2) generate a semantic search string from that content → (3) search for similar courses corpus-wide. Triggered for comparison/recommendation queries (e.g. 'What courses cover X like CSCE 638?')."),
+        ("router_section", "str", "Specific section number extracted from the query (e.g. '500', '601'). Empty when no section is mentioned. Used to narrow retrieval to a single section when the user asks about a specific one."),
+        ("router_retrieval_mode", "str", "Retrieval strategy derived from course_ids and recurrent_search. Values: hybrid (BM25 + vector for course-filtered queries), semantic (vector-only for general discovery), anchor (direct MongoDB fetch for recurrent first pass), none (out_of_scope)."),
+        # Retrieval
+        ("retrieved_correct", "bool / blank", "True if at least one retrieved chunk has course_id == source_course_id AND category == source_category. Blank when source_course_id is missing from the golden item."),
+        ("retrieval_ms", "float (ms)", "Wall-clock time for retrieval only: Voyage embedding + MongoDB search + Voyage reranker. Does not include the router LLM call."),
+        # Generator
+        ("citation_pass", "bool", "True if the generated answer contains at least one [Source N] citation. Regex check — confirms the generator cited something, not that it cited correctly."),
+        ("ragas_faithfulness", "float 0–1 / blank",
+         "RAGAS Faithfulness — measures whether every claim in the answer is grounded in the retrieved chunks.\n\n"
+         "HOW IT WORKS (3 LLM calls):\n"
+         "  1. Decompose: critic LLM reads the answer and extracts a list of atomic claims "
+         "(e.g. 'The final exam is worth 40%', 'Late work is not accepted').\n"
+         "  2. Verify: for each claim, the critic LLM is shown the retrieved chunks and asked "
+         "whether the claim is fully supported, partially supported, or not supported by the context.\n"
+         "  3. Score: faithfulness = supported_claims / total_claims.\n\n"
+         "CRITIC MODEL: TAMU gateway (same model as the generator). Temperature=0.\n"
+         "KNOWN LIMITATION: The critic is the same model family that wrote the answer, so it may be "
+         "lenient on its own phrasing. This is mitigated by temperature=0 and structured prompts.\n\n"
+         "THRESHOLDS: 0.95+ excellent | 0.85–0.95 good | 0.70–0.85 acceptable | <0.70 hallucination risk.\n"
+         "Only populated when --ragas flag is used (~30s per question)."),
+        ("ragas_relevancy", "float 0–1 / blank",
+         "RAGAS Answer Relevancy — measures whether the answer actually addresses the question asked "
+         "(vs. being technically faithful but off-topic).\n\n"
+         "HOW IT WORKS (1 LLM call + embedding similarity):\n"
+         "  1. Generate questions: critic LLM reads only the answer (not the original question) and "
+         "generates N=3 hypothetical questions that this answer appears to be responding to.\n"
+         "  2. Embed: both the N generated questions and the original question are embedded using Voyage-3.\n"
+         "  3. Score: mean cosine similarity between the original question embedding and each generated "
+         "question embedding. High similarity = the answer is specifically about what was asked.\n\n"
+         "CRITIC MODEL: TAMU gateway LLM (question generation) + Voyage-3 (embeddings). "
+         "Temperature=0.\n"
+         "WHY IT'S NOISIER THAN FAITHFULNESS: similarity of question phrasings is inherently fuzzy. "
+         "A correct but verbose answer may score lower than a concise one. "
+         "An answer that says 'I don't know' scores near 0 because the generated questions won't match.\n\n"
+         "THRESHOLDS: 0.85+ excellent | 0.75–0.85 good | 0.65–0.75 acceptable | <0.65 answer is drifting off-topic.\n"
+         "Treat as directional — use alongside faithfulness and human_judgment, not as a standalone gate.\n"
+         "Only populated when --ragas flag is used (~30s per question)."),
+        ("router_ms + retrieval_ms + generator_ms", "—", "The three stages sum to approximately total_ms. Small gap = overhead from Python timing and RAGAS (if enabled)."),
+        ("generator_ms", "float (ms)", "Wall-clock time for the generation LLM call: context assembly + LLM streaming + citation gate."),
+        ("total_ms", "float (ms)", "Total wall-clock time from query receipt to answer complete (router + retrieval + generation)."),
+        ("answer_preview", "str", "First 300 characters of the generated answer. See 'Full Answers' tab for complete text with RAGAS scores alongside each answer."),
+        ("error", "str / blank", "Error message if any pipeline stage failed. Blank on success."),
+        ("human_judgment", "blank → user fills", "Leave blank to fill in after reviewing the Full Answers tab. Suggested values: correct / partial / wrong / hallucinated."),
+    ]
+
+    def_widths = [28, 18, 100]
+    for col_idx, (label, width) in enumerate(zip(["Column", "Type", "Description"], def_widths), start=1):
+        cell = ws_defs.cell(row=1, column=col_idx, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        ws_defs.column_dimensions[cell.column_letter].width = width
+
+    for row_idx, row_vals in enumerate(col_defs[1:], start=2):
+        for col_idx, val in enumerate(row_vals, start=1):
+            cell = ws_defs.cell(row=row_idx, column=col_idx, value=val)
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    ws_defs.freeze_panes = "A2"
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     print(f"  Excel: {output_path}")
@@ -420,8 +518,8 @@ def write_markdown(
     if n:
         lines += [
             f"| Router accuracy | {n_fn_correct/n:.1%} ({n_fn_correct}/{n}) |",
-            f"| Recall@k (crn+category) | {recall_hits/len(recall_cases):.1%} ({recall_hits}/{len(recall_cases)}) |"
-            if recall_cases else "| Recall@k | N/A (no source_crn) |",
+            f"| Recall@k (course_id+category) | {recall_hits/len(recall_cases):.1%} ({recall_hits}/{len(recall_cases)}) |"
+            if recall_cases else "| Recall@k | N/A (no source_course_id) |",
             f"| Citation pass rate | {citation_pass/len(citation_cases):.1%} ({citation_pass}/{len(citation_cases)}) |"
             if citation_cases else "| Citation pass rate | N/A |",
             f"| Mean RAGAS faithfulness | {avg_faith:.2f} |"

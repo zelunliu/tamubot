@@ -1,5 +1,5 @@
 {
-  "description": "Fixed eval corpus for A/B chunking benchmarks (~25 CSCE courses). Edit CRNs once, then run: make ingest-corpus",
+  "description": "Fixed eval corpus — 25 grad-level CSCE courses, Spring 2026 (202611), v3 pipeline",
   "department": "CSCE",
-  "crns": []
+  "crns": ["46648","50668","42640","42743","58435","54978","54784","58706","46646","54988","58437","60319","34516","42432","46627","30874","58438","58439","58440","55144","12644","58633","58445","46626","58432"]
 }

@@ -107,9 +107,9 @@ def main():
         print(f"\nERROR: Need at least {args.min_human_labels} human-labeled rows, got {len(labeled)}.")
         print("\nHow to add labels:")
         print(f"  1. Open: {bench_path}")
-        print(f"  2. Go to Per-Query tab")
-        print(f"  3. Fill the 'human_judgment' column: 1=good answer, 0=bad answer")
-        print(f"  4. Re-run this script")
+        print("  2. Go to Per-Query tab")
+        print("  3. Fill the 'human_judgment' column: 1=good answer, 0=bad answer")
+        print("  4. Re-run this script")
         sys.exit(1)
 
     try:

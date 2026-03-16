@@ -324,7 +324,6 @@ def pdf_to_annotated_markdown(pdf_path: Path) -> tuple[str, dict]:
         stats          — {page_count, body_size, annotated_lines, plain_lines,
                          char_count_in, char_count_out}
     """
-    import re as _re
 
     doc = fitz.open(str(pdf_path))
     page_count = doc.page_count
@@ -717,11 +716,11 @@ if __name__ == "__main__":
     print(f"Files processed : {total}  ({summary['files_ok']} ok)")
     print(f"Avg reduction   : {summary['avg_reduction_pct']}%")
 
-    print(f"\nStripped sections by type:")
+    print("\nStripped sections by type:")
     for bp_type, count in summary["stripped_by_type"].items():
         print(f"  {bp_type:<20} {count:>5} occurrences")
 
-    print(f"\nStripped header frequency (top 40):")
+    print("\nStripped header frequency (top 40):")
     print(f"  {'Header':<55} {'Files':>6}  {'%':>6}")
     print(f"  {'-'*55}  {'------':>6}  {'------':>6}")
     for header, count in list(summary["stripped_header_frequency"].items())[:40]:

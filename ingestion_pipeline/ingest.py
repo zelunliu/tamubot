@@ -22,13 +22,15 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 
 from rag.models import ChunkDoc, CourseDoc
+from rag.models_v3 import ChunkDocV3, CourseDocV3
 
 load_dotenv()
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 DB_NAME = os.getenv("MONGODB_DB", "tamubot")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
-PARSED_DIR = Path("tamu_data/processed/gemini_parsed")
+PARSED_DIR_LEGACY = Path("tamu_data/processed/gemini_parsed")
+PARSED_DIR_V3 = Path("tamu_data/processed/v3_step3_flat")
 
 EMBEDDING_MODEL = "voyage-3"
 EMBEDDING_DIMS = 1024
@@ -77,15 +79,18 @@ def build_chunk_docs(data: dict, source_file: str) -> list[dict]:
     instructor = meta.get("instructor", {})
     instructor_name = instructor.get("name") if instructor else None
 
+    is_v3 = data.get("pipeline_version") == "v3"
+
     docs = []
     for i, chunk in enumerate(data.get("chunks", [])):
-        category = chunk.get("category", "")
+        category = chunk.get("category") or ("SYLLABUS_V3" if is_v3 else "")
+        title = chunk.get("title") or (f"Chunk {i}" if is_v3 else "")
         anchor = build_anchor(course_id, section, term, category)
         validated = ChunkDoc(
             crn=crn,
             chunk_index=i,
             category=category,
-            title=chunk.get("title") or "",
+            title=title,
             content=chunk.get("content") or "",
             has_table=chunk.get("has_table") or False,
             anchor=anchor,
@@ -103,6 +108,8 @@ def build_course_doc(data: dict, source_file: str) -> dict:
     meta = data.get("course_metadata", {})
     chunks = data.get("chunks", [])
     categories = list({c.get("category", "") for c in chunks})
+    if data.get("pipeline_version") == "v3":
+        categories = ["SYLLABUS_V3"]
     completeness = data.get("completeness_check", {})
     validated = CourseDoc(
         crn=meta.get("crn", ""),
@@ -110,7 +117,7 @@ def build_course_doc(data: dict, source_file: str) -> dict:
         section=meta.get("section", ""),
         term=meta.get("term", ""),
         instructor=meta.get("instructor"),
-        teaching_assistants=meta.get("teaching_assistants", []),
+        teaching_assistants=meta.get("teaching_assistants") or [],
         meeting_times=meta.get("meeting_times"),
         location=meta.get("location"),
         credit_hours=meta.get("credit_hours"),
@@ -124,7 +131,56 @@ def build_course_doc(data: dict, source_file: str) -> dict:
     return validated.model_dump()
 
 
-def build_policy_ops(data: dict) -> list[UpdateOne]:
+def build_chunk_docs_v3(data: dict, source_file: str) -> list[dict]:
+    """Build ChunkDocV3 documents for the chunks_v3 collection."""
+    meta = data.get("course_metadata", {})
+    crn = str(meta.get("crn") or "")
+    course_id = meta.get("course_id", "")
+    section = meta.get("section", "")
+    term = meta.get("term", "")
+    instructor = meta.get("instructor", {})
+    instructor_name = instructor.get("name") if instructor else None
+
+    docs = []
+    for i, chunk in enumerate(data.get("chunks", [])):
+        validated = ChunkDocV3(
+            crn=crn,
+            chunk_index=i,
+            content=chunk.get("content") or "",
+            has_table=chunk.get("has_table") or False,
+            course_id=course_id,
+            section=section,
+            term=term,
+            instructor_name=instructor_name,
+            source_file=source_file,
+        )
+        docs.append(validated.model_dump())
+    return docs
+
+
+def build_course_doc_v3(data: dict, source_file: str) -> dict:
+    """Build a CourseDocV3 document for the courses_v3 collection."""
+    meta = data.get("course_metadata", {})
+    chunks = data.get("chunks", [])
+    validated = CourseDocV3(
+        crn=str(meta.get("crn") or ""),
+        course_id=meta.get("course_id", ""),
+        section=meta.get("section", ""),
+        term=meta.get("term", ""),
+        instructor=meta.get("instructor"),
+        teaching_assistants=meta.get("teaching_assistants") or [],
+        meeting_times=meta.get("meeting_times"),
+        location=meta.get("location"),
+        credit_hours=meta.get("credit_hours"),
+        chunk_count=len(chunks),
+        syllabus_url=meta.get("syllabus_url"),
+        doc_id=meta.get("doc_id"),
+        source_file=source_file,
+    )
+    return validated.model_dump()
+
+
+def build_policy_ops(db, data: dict) -> list[UpdateOne]:
     """Build upsert operations for boilerplate policies."""
     crn = data.get("course_metadata", {}).get("crn", "")
     ops = []
@@ -144,7 +200,10 @@ def build_policy_ops(data: dict) -> list[UpdateOne]:
 
 def embed_chunks(voyage: voyageai.Client, chunk_docs: list[dict]) -> list[dict]:
     """Embed chunk docs in batches using Voyage AI. Mutates docs in-place."""
-    texts = [doc["anchor"] + " " + doc["content"] for doc in chunk_docs]
+    texts = [
+        (doc["anchor"] + " " + doc["content"]) if "anchor" in doc else doc["content"]
+        for doc in chunk_docs
+    ]
 
     for start in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[start : start + EMBED_BATCH_SIZE]
@@ -194,6 +253,11 @@ def upsert_course(db, course_doc: dict):
 def _crn_from_filename(filepath: Path) -> str | None:
     """Extract CRN from filename pattern like 202611_CSCE_670_600_46627.json."""
     parts = filepath.stem.split("_")
+    # For V3 filenames like ..._v001.json, crn is before _vNNN
+    if parts and parts[-1].startswith("v") and parts[-1][1:].isdigit():
+        if len(parts) >= 2 and parts[-2].isdigit():
+            return parts[-2]
+    # For legacy filenames
     if parts and parts[-1].isdigit():
         return parts[-1]
     return None
@@ -206,13 +270,18 @@ def main():
                         help="JSON file with 'crns' list — ingest only those CRNs "
                              "(e.g. tamu_data/evals/eval_corpus.json)")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+    parser.add_argument("--v3", action="store_true", help="Ingest from V3 flat JSONs")
     args = parser.parse_args()
 
-    if not PARSED_DIR.exists():
-        print(f"ERROR: Parsed directory not found: {PARSED_DIR}")
+    parsed_dir = PARSED_DIR_V3 if args.v3 else PARSED_DIR_LEGACY
+    if not parsed_dir.exists():
+        print(f"ERROR: Parsed directory not found: {parsed_dir}")
         sys.exit(1)
 
-    json_files = sorted(PARSED_DIR.glob("*.json"))
+    json_files = sorted(parsed_dir.glob("*.json"))
+    # Filter out _annotations.json and _run_meta_vNNN.json
+    json_files = [f for f in json_files if not f.name.startswith("_")]
+
     if args.department:
         dept = args.department.upper()
         json_files = [f for f in json_files if f"_{dept}_" in f.name]
@@ -228,9 +297,12 @@ def main():
         print(f"  --crns-file: filtered to {len(json_files)} files "
               f"matching {len(target_crns)} corpus CRNs")
 
-    print(f"Found {len(json_files)} JSON files to ingest")
+    print(f"Found {len(json_files)} JSON files to ingest from {parsed_dir}")
     if not json_files:
         return
+
+    chunks_col = "chunks_v3" if args.v3 else "chunks"
+    courses_col = "courses_v3" if args.v3 else "courses"
 
     if args.dry_run:
         print("DRY RUN — no database writes will occur")
@@ -240,7 +312,7 @@ def main():
                 if "error" in data:
                     print(f"  {f.name}: SKIP (error file)")
                     continue
-                chunks = build_chunk_docs(data, f.name)
+                chunks = build_chunk_docs_v3(data, f.name) if args.v3 else build_chunk_docs(data, f.name)
                 print(f"  {f.name}: {len(chunks)} chunks")
         return
 
@@ -263,17 +335,33 @@ def main():
 
         try:
             # Build documents
-            chunk_docs = build_chunk_docs(data, filepath.name)
-            course_doc = build_course_doc(data, filepath.name)
-            policy_ops = build_policy_ops(data)
+            if args.v3:
+                chunk_docs = build_chunk_docs_v3(data, filepath.name)
+                course_doc = build_course_doc_v3(data, filepath.name)
+                policy_ops = []
+            else:
+                chunk_docs = build_chunk_docs(data, filepath.name)
+                course_doc = build_course_doc(data, filepath.name)
+                policy_ops = build_policy_ops(db, data)
 
             # Embed
             if chunk_docs:
                 embed_chunks(voyage, chunk_docs)
 
             # Write to MongoDB
-            upsert_course(db, course_doc)
-            upsert_chunks(db, chunk_docs)
+            db[courses_col].update_one(
+                {"crn": course_doc["crn"]}, {"$set": course_doc}, upsert=True
+            )
+            if chunk_docs:
+                ops = [
+                    UpdateOne(
+                        {"crn": doc["crn"], "chunk_index": doc["chunk_index"]},
+                        {"$set": doc},
+                        upsert=True,
+                    )
+                    for doc in chunk_docs
+                ]
+                db[chunks_col].bulk_write(ops, ordered=False)
             if policy_ops:
                 db["policies"].bulk_write(policy_ops, ordered=False)
 
@@ -286,9 +374,10 @@ def main():
             print(f"  [{i+1}/{len(json_files)}] ERROR {filepath.name}: {e}")
 
     print(f"\nIngestion complete: {total_files} files, {total_chunks} chunks")
-    print(f"  Courses: {db['courses'].count_documents({})}")
-    print(f"  Chunks:  {db['chunks'].count_documents({})}")
-    print(f"  Policies: {db['policies'].count_documents({})}")
+    print(f"  Courses ({courses_col}): {db[courses_col].count_documents({})}")
+    print(f"  Chunks  ({chunks_col}):  {db[chunks_col].count_documents({})}")
+    if not args.v3:
+        print(f"  Policies: {db['policies'].count_documents({})}")
     if errors:
         print(f"  Errors ({len(errors)}): {errors}")
 

@@ -25,7 +25,6 @@ Chunk schema:
 import math
 import re
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _tokens_approx(text: str) -> int:

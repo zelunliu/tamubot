@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from evals.generate_golden_set import (
     CATEGORY_PROBS,
-    CATEGORY_WEIGHTS,
     OUT_OF_SCOPE_QUESTIONS,
     STRATUM_MAP,
     synthesize_stratum,
@@ -233,11 +232,11 @@ def main():
     out_path = DRAFTS_DIR / f"eval_draft_{ts}.xlsx"
     export_to_excel(all_questions, out_path)
 
-    print(f"\nDone. Review and edit the draft:")
+    print("\nDone. Review and edit the draft:")
     print(f"  {out_path}")
-    print(f"\n  - 'approved' = False to reject a question")
-    print(f"  - Edit 'question' or 'reference_answer' to correct them")
-    print(f"  - Fill 'human_judgment' (0=bad, 1=good) for RAGAS validation (optional)")
+    print("\n  - 'approved' = False to reject a question")
+    print("  - Edit 'question' or 'reference_answer' to correct them")
+    print("  - Fill 'human_judgment' (0=bad, 1=good) for RAGAS validation (optional)")
     print(f"\nThen import: python evals/import_eval_draft.py --draft {out_path} --tag v1")
 
 

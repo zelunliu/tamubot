@@ -1,6 +1,7 @@
 .PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
         ingest-corpus test typecheck lint format eval-router probe probe-v3 probe-full \
-        eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4
+        eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4 \
+        sandbox-up sandbox-down sandbox-shell
 
 # --- App ---
 run:
@@ -23,11 +24,14 @@ setup-atlas:
 ingest:
 	python -m ingestion_pipeline.ingest
 
+ingest-v3:
+	python -m ingestion_pipeline.ingest --v3
+
 ingest-dept:
 	python -m ingestion_pipeline.ingest --department $(DEPT)
 
 ingest-corpus:
-	python -m ingestion_pipeline.ingest --crns-file tamu_data/evals/eval_corpus.json
+	python -m ingestion_pipeline.ingest --v3 --crns-file tamu_data/evals/eval_corpus.json
 
 # --- Dev / Testing ---
 test:
@@ -75,3 +79,13 @@ bench-ragas:
 
 validate-ragas:
 	python evals/validate_ragas.py --benchmark $(BENCH)
+
+# --- Docker Sandbox ---
+sandbox-up:
+	docker compose up -d
+
+sandbox-down:
+	docker compose down
+
+sandbox-shell:
+	docker exec -it tamubot-claude-1 bash

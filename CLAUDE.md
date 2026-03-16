@@ -6,10 +6,22 @@ Timer starts automatically via `UserPromptSubmit` hook. Notification fires via `
 
 > Module-level detail: `rag/CLAUDE.md`, `ingestion_pipeline/CLAUDE.md`, `evals/CLAUDE.md`
 
+## Docker Sandbox (standard dev entry point)
+
+```bash
+make sandbox-up      # start claude + api-proxy + app containers
+make sandbox-shell   # open bash inside claude container
+make sandbox-down    # tear down all containers
+```
+
+Inside the container: `claude --dangerously-skip-permissions`
+Streamlit: http://localhost:8501
+Docs: `docs/DOCKER_SETUP.md` (Windows 11 WSL2 + Mac) | `docs/API_SAFETY.md` (proxy + rate limits)
+
 ## Commands
 
 ```bash
-source .venv/Scripts/activate && streamlit run app.py   # Windows Git Bash
+source .venv/Scripts/activate && streamlit run app.py   # Windows Git Bash (outside container)
 make test | lint | typecheck | format | eval-router | probe | probe-full
 ```
 
@@ -31,6 +43,7 @@ Invoke via the Skill tool automatically (no `/` command needed) when intent matc
 - **process-syllabi**: user asks to parse/process syllabi or run the ingestion pipeline on PDFs
 - **github-collab**: user says "push", "open a PR", "create a branch", "start a feature", "I merged", "clean up branch", "am I ready to push", or "run checks"
 - **refine-syllabi**: user asks to audit, refine, or improve syllabus parsing quality, check for boilerplate leaks, or iterate on the ingestion prompt
+- **server-ops**: user says "restart localhost/server/app", "start/stop server", "kill the server", "server status", "clear cache", or any variant of managing the local dev server
 
 When skill tool engaged, make sure to notify user!
 

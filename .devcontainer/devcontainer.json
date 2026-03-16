@@ -1,0 +1,8 @@
+{
+  "name": "TAMUBot Dev",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "claude",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "root",
+  "extensions": ["ms-python.python", "charliermarsh.ruff"]
+}

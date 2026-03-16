@@ -110,7 +110,7 @@ def run_probe(
 
     # --- Stage 1+2: route → retrieve → rerank ---
     t0 = time.time()
-    reranked, router_result, data_gaps, data_integrity, _conflicted = route_retrieve_rerank(query, trace=trace)
+    reranked, router_result, data_gaps, data_integrity, _conflicted, _timing = route_retrieve_rerank(query, trace=trace)
     retrieval_elapsed = time.time() - t0
 
     # --- Stage 3: generate (blocking) ---

@@ -910,7 +910,7 @@ def main():
     for s in run_steps:
         print(f"Step {s} dir : {step_roots[s]}/")
     if errors:
-        print(f"\nErrors:")
+        print("\nErrors:")
         for r in errors:
             print(f"  {r['file']}: {r.get('error', '?')}")
 

@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 
 from dotenv import load_dotenv
 
@@ -26,6 +28,9 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-2.5-flash")
 VALIDATION_MODEL = os.getenv("VALIDATION_MODEL", "gemini-2.5-flash-lite")
+
+# --- Google AI rate limiter ---
+GOOGLE_API_RPM: int = int(os.getenv("GOOGLE_API_RPM", "20"))
 
 # --- TAMU AI API (OpenAI-compatible gateway; data privacy + institutional billing) ---
 TAMU_API_KEY = os.getenv("TAMU_API_KEY")
@@ -96,12 +101,41 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
 LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
 
+# --- Google API rate limiter ---
+class _GoogleRateLimiter:
+    """Sliding-window rate limiter: enforces at most `rpm` calls per 60 seconds."""
+
+    def __init__(self, rpm: int) -> None:
+        self._rpm = rpm
+        self._window: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """Block until a call slot is available."""
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                cutoff = now - 60.0
+                self._window = [t for t in self._window if t >= cutoff]
+                if len(self._window) < self._rpm:
+                    self._window.append(now)
+                    return
+                wait = self._window[0] + 60.0 - now
+            time.sleep(max(wait, 0.1))
+
+
+_google_rate_limiter = _GoogleRateLimiter(GOOGLE_API_RPM)
+
 # --- Shared google-genai client (lazy singleton) ---
 _genai_client = None
 
 
 def get_genai_client():
-    """Return a shared google.genai.Client instance, creating it on first call."""
+    """Return a shared google.genai.Client instance, creating it on first call.
+
+    Each call acquires a rate-limit slot (GOOGLE_API_RPM calls/minute).
+    """
+    _google_rate_limiter.acquire()
     global _genai_client
     if _genai_client is None:
         from google import genai

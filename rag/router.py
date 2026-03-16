@@ -263,8 +263,13 @@ def classify_query(query: str, router_span=None) -> "RouterResult":
 def route_retrieve_rerank(
     query: str,
     trace=None,
-) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool, list[str]]:
-    """Wrapper — delegates to pipeline.run_pipeline()."""
+) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool, list[str], dict]:
+    """Wrapper — delegates to pipeline.run_pipeline().
+
+    Returns:
+        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids,
+         timing_ms)  where timing_ms = {"router_ms": float, "retrieval_ms": float}
+    """
     from rag.pipeline import run_pipeline  # lazy import to avoid circular
     return run_pipeline(query, trace=trace)
 
