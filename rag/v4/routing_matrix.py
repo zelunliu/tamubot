@@ -1,9 +1,13 @@
-"""Data-driven routing matrix — replaces if/else function dispatch.
+"""Data-driven routing matrix — reference documentation only.
 
-Each entry defines what retrieval passes are needed and how to generate.
-Keys match the function values derived by router._derive_function().
+This module is NOT wired to the LangGraph graph routing functions in graph.py.
+The graph uses _route_after_router() and _route_after_retrieval() directly.
+This matrix exists as a single source of truth for supported function types
+and their retrieval strategies. If you add a new function type, update both
+this matrix AND the conditional edge functions in graph.py.
 """
 from __future__ import annotations
+
 from typing import TypedDict
 
 

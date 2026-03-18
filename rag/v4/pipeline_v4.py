@@ -1,7 +1,7 @@
 """v4 pipeline entry point — same 5-tuple return signature as v3 run_pipeline()."""
 from __future__ import annotations
-import functools
-from typing import Any, Iterator, Optional
+
+from typing import Any, Optional
 
 from rag.v4.graph import build_graph, build_graph_with_memory
 from rag.v4.registry_factory import make_default_registry
@@ -54,9 +54,6 @@ def run_pipeline_v4(
     graph = _get_graph()
     result = graph.invoke(initial_state)
     elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
-
-    # Store timing internally (available via state) but return v3-compatible 5-tuple
-    _ = {**result.get("timing_ms", {}), "total_ms": elapsed_ms}
 
     return (
         result.get("retrieved_chunks", []),

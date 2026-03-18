@@ -1,20 +1,20 @@
 """Build the v4 LangGraph state machine."""
 from __future__ import annotations
+
 import functools
-from typing import Optional
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from rag.v4.state import PipelineState, ConversationState
 from rag.v4.interfaces import ComponentRegistry
-from rag.v4.nodes.router_node import router_node
 from rag.v4.nodes.anchor_node import anchor_node
 from rag.v4.nodes.eval_search_node import eval_search_node
-from rag.v4.nodes.retrieval_node import retrieval_node
-from rag.v4.nodes.schedule_filter_node import schedule_filter_node
-from rag.v4.nodes.merge_node import merge_node
 from rag.v4.nodes.generator_node import generator_node
+from rag.v4.nodes.merge_node import merge_node
 from rag.v4.nodes.out_of_scope_node import out_of_scope_node
+from rag.v4.nodes.retrieval_node import retrieval_node
+from rag.v4.nodes.router_node import router_node
+from rag.v4.nodes.schedule_filter_node import schedule_filter_node
+from rag.v4.state import ConversationState, PipelineState
 
 
 def _route_after_router(state: PipelineState) -> str:
@@ -42,7 +42,7 @@ def build_graph(registry: ComponentRegistry, tracer=None):
 
     Args:
         registry: ComponentRegistry with all providers injected
-        tracer: Optional V4Tracer (ignored until Phase 4)
+        tracer: Optional V4Tracer (accepted for API compatibility; observability handled via state["trace"])
 
     Returns:
         Compiled LangGraph graph
@@ -114,7 +114,7 @@ def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, trac
     Args:
         registry: ComponentRegistry with all providers injected
         checkpointer: LangGraph checkpointer (MemorySaver, SqliteSaver, etc.)
-        tracer: Optional V4Tracer (ignored until Phase 4)
+        tracer: Optional V4Tracer (accepted for API compatibility; observability handled via state["trace"])
 
     Returns:
         Compiled LangGraph graph with checkpointing support

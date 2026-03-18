@@ -3,16 +3,17 @@
 Runs AFTER generator. Compression triggered when history length > V4_MAX_HISTORY_TURNS.
 """
 from __future__ import annotations
+
 from typing import Any
 
 import config
-from rag.v4.state import PipelineState, ConversationMessage
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import ConversationMessage, ConversationState
 
 
 @timing_middleware
 @error_guard_middleware
-def history_update_node(state: PipelineState, registry: Any) -> dict:
+def history_update_node(state: ConversationState, registry: Any) -> dict:
     """Append current turn to history; compress older turns if needed."""
     history = list(state.get("history", []))
     node_trace = list(state.get("node_trace", []))
@@ -42,7 +43,7 @@ def history_update_node(state: PipelineState, registry: Any) -> dict:
     # Compress if over limit
     max_turns = config.V4_MAX_HISTORY_TURNS
     if len(history) > max_turns * 2:  # *2 because each turn = 2 messages
-        history = _compress_history(history, registry, max_turns)
+        history = _compress_history(history, max_turns)
 
     return {
         "history": history,
@@ -54,8 +55,6 @@ def history_update_node(state: PipelineState, registry: Any) -> dict:
     }
 
 
-def _compress_history(history: list, registry: Any, max_turns: int) -> list:
+def _compress_history(history: list, max_turns: int) -> list:
     """Keep last max_turns turns, drop older messages."""
-    # Simple windowing: keep the last max_turns * 2 messages
-    # LLM compression would be ideal but windowing is sufficient for now
     return history[-(max_turns * 2):]
