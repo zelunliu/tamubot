@@ -35,8 +35,6 @@ def run_pipeline_v4(
     timing_ms is tracked internally in state but not exposed to callers,
     keeping the return signature identical to v3 run_pipeline().
     """
-    import time
-
     initial_state: PipelineState = {
         "query": query,
         "trace": trace,
@@ -50,10 +48,8 @@ def run_pipeline_v4(
         "retrieved_chunks": [],
     }
 
-    t_start = time.perf_counter()
     graph = _get_graph()
     result = graph.invoke(initial_state)
-    elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
 
     return (
         result.get("retrieved_chunks", []),
