@@ -8,9 +8,10 @@ langchain
 # Observability & evaluation
 # Note: langfuse SDK omitted — uses a minimal httpx REST client (db/observability.py)
 # due to langfuse SDK's pydantic.v1 dependency being incompatible with Python 3.14+.
-ragas
 opentelemetry-api
 langchain-google-genai
+langchain-openai
+ragas
 
 # MongoDB Atlas
 pymongo[srv]
@@ -31,3 +32,4 @@ pytest>=8.0
 pytest-asyncio>=0.23
 mypy>=1.8
 ruff>=0.3
+openpyxl>=3.1
