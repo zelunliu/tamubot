@@ -115,3 +115,26 @@ def test_llm_generator_component_satisfy_protocol():
     stream = gen.generate_stream(state)
     tokens = list(stream)
     assert tokens == ["Hello"]
+
+
+def test_llm_router_restores_call_llm_after_run():
+    """LLMRouterComponent.run() must restore rag.router.call_llm after injection."""
+    import rag.router as _router_mod
+    from rag.v4.components.routers import LLMRouterComponent
+    from rag.router import RouterResult
+
+    original_call_llm = _router_mod.call_llm
+
+    # Create a mock LLM function that returns a proper response object
+    fake_llm = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = '{"course_ids": [], "rewritten_query": "test", "function": "out_of_scope", "intent_type": null, "specific_categories": [], "specific_only": false, "category_confidence": 0.0, "recurrent_search": false}'
+    mock_response.input_tokens = None
+    mock_response.output_tokens = None
+    fake_llm.return_value = mock_response
+
+    component = LLMRouterComponent(llm_fn=fake_llm)
+    component.run(query="test")
+
+    assert _router_mod.call_llm is original_call_llm, \
+        "call_llm must be restored to original after LLMRouterComponent.run()"
