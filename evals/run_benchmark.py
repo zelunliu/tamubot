@@ -31,11 +31,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from rag import (
-    RouterResult,
-    generate,
-    route_retrieve_rerank,
-)
+from rag import RouterResult, generator_order
+from rag.v4.pipeline_v4 import run_pipeline_v4
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
 
@@ -47,10 +44,9 @@ REPORTS_DIR = Path("tamu_data/evals/reports")
 @dataclass
 class BenchmarkRow:
     # Identity
+    question_id: int
     question: str
     stratum: str
-    category: str
-    source_crn: str
     source_course_id: str
 
     # Ground truth
@@ -59,31 +55,41 @@ class BenchmarkRow:
     # Router — function + correctness
     router_function: str
     router_function_correct: bool
-    router_ms: float
 
-    # Router — all extracted + derived fields
+    # Router — extracted fields
     router_rewritten_query: str
-    router_course_ids: str          # comma-separated, e.g. "CSCE 670, CSCE 638"
-    router_specific_categories: str # comma-separated, e.g. "GRADING, PREREQUISITES"
-    router_specific_only: bool
-    router_intent_type: str         # empty string when None (out_of_scope)
-    router_category_confidence: float
-    router_recurrent_search: bool
-    router_section: str             # empty string when None
-    router_retrieval_mode: str
+    router_course_ids: str   # comma-separated, e.g. "CSCE 670, CSCE 638"
+    router_intent_type: str  # empty string when None (out_of_scope)
 
     # Retrieval
-    retrieved_correct: Optional[bool]  # None when source_course_id is blank
-    retrieval_ms: float
+    chunks_retrieved: int    # number of chunks returned after reranking
 
-    # Generator
-    answer_full: str
-    answer_preview: str
-    citation_pass: bool
+    # Token estimates (chars/4 — TAMU SSE doesn't expose counts)
+    est_input_tokens: int    # query + all chunk content
+    est_output_tokens: int   # answer length
+
+    # Timing (ms)
+    pipeline_ms: float       # router + retrieval combined (v4 graph)
     generator_ms: float
     total_ms: float
 
-    # RAGAS (optional)
+    # Generator
+    answer_full: str
+    answer_preview: str      # first 120 chars — see Full Answers tab for complete text
+    citation_pass: bool
+
+    # Per-node timing from pipeline timing_ms (inside-graph, not wall-clock)
+    is_recurrent: bool = False
+    router_ms: Optional[float] = None
+    retrieval_ms: Optional[float] = None
+    generator_node_ms: Optional[float] = None
+    # Recurrent path only (None for non-recurrent rows)
+    anchor_ms: Optional[float] = None
+    eval_search_ms: Optional[float] = None
+    schedule_filter_ms: Optional[float] = None
+    merge_ms: Optional[float] = None
+
+    # RAGAS (optional — populated with --ragas flag)
     ragas_faithfulness: Optional[float] = None
     ragas_relevancy: Optional[float] = None
 
@@ -95,12 +101,10 @@ class BenchmarkRow:
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
-def run_one(item: dict, do_ragas: bool) -> BenchmarkRow:
-    """Run one golden set item through the full pipeline (router → retrieval → generation)."""
+def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
+    """Run one golden set item through the full v4 pipeline (router → retrieval → generation)."""
     query = item["question"]
-    source_crn = str(item.get("source_crn") or "")
     source_course_id = str(item.get("source_course_id") or "")
-    source_category = str(item.get("source_category") or item.get("category") or "")
     expected_fn = str(item.get("expected_function", ""))
 
     t0 = time.perf_counter()
@@ -110,42 +114,50 @@ def run_one(item: dict, do_ragas: bool) -> BenchmarkRow:
     rr = RouterResult(rewritten_query=query, category_confidence=0.0)
     data_gaps: list = []
     data_integrity = True
+    conflicted_ids: list = []
 
-    # Router + Retrieval — pipeline returns separate timing for each stage
+    # Router + Retrieval (v4 graph)
+    timing_ms: dict = {}
     try:
-        chunks, rr, data_gaps, data_integrity, _, pipeline_timing = route_retrieve_rerank(query)
+        chunks, rr_result, data_gaps, data_integrity, conflicted_ids, timing_ms = run_pipeline_v4(
+            query, return_timing=True
+        )
+        if rr_result is not None:
+            rr = rr_result
+        else:
+            error = "retrieval: router_result is None (pipeline did not complete)"
     except Exception as e:
         error = f"retrieval: {e}"
-        pipeline_timing = {"router_ms": 0.0, "retrieval_ms": 0.0}
-    router_ms = pipeline_timing["router_ms"]
-    retrieval_ms = pipeline_timing["retrieval_ms"]
+    pipeline_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    # Per-node timing extraction
+    is_recurrent = (rr.function == "recurrent")
+    router_ms = timing_ms.get("router_node")
+    retrieval_ms = timing_ms.get("retrieval_node")
+    generator_node_ms = timing_ms.get("generator_node")
+    anchor_ms = timing_ms.get("anchor_node") if is_recurrent else None
+    eval_search_ms = timing_ms.get("eval_search_node") if is_recurrent else None
+    schedule_filter_ms = timing_ms.get("schedule_filter_node") if is_recurrent else None
+    merge_ms = timing_ms.get("merge_node") if is_recurrent else None
 
     # Generation
     t_gen = time.perf_counter()
     if not error:
         try:
-            answer = generate(
-                results=chunks,
-                question=query,
-                function=rr.function,
-                course_ids=rr.course_ids or None,
-                intent_type=rr.intent_type,
+            stream = generator_order(
+                recurrent=is_recurrent,
+                chunks=chunks,
+                query=query,
+                router_result=rr,
                 data_gaps=data_gaps,
                 data_integrity=data_integrity,
+                conflicted_course_ids=conflicted_ids,
             )
+            answer = "".join(stream)
         except Exception as e:
             error = f"generation: {e}"
     generator_ms = round((time.perf_counter() - t_gen) * 1000, 1)
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
-
-    # Recall — did a chunk from the source course+category surface in results?
-    # Matches on course_id (not exact CRN) so cross-section hits count correctly.
-    retrieved_correct: Optional[bool] = None
-    if source_course_id and source_category and not error:
-        retrieved_correct = any(
-            c.get("course_id") == source_course_id and c.get("category") == source_category
-            for c in chunks
-        )
 
     # RAGAS (optional)
     ragas_faithfulness: Optional[float] = None
@@ -161,31 +173,33 @@ def run_one(item: dict, do_ragas: bool) -> BenchmarkRow:
             pass  # non-fatal
 
     return BenchmarkRow(
+        question_id=question_id,
         question=query,
         stratum=item.get("stratum", ""),
-        category=item.get("category") or "",
-        source_crn=source_crn,
         source_course_id=source_course_id,
         expected_function=expected_fn,
         router_function=rr.function,
         router_function_correct=(rr.function == expected_fn),
-        router_ms=router_ms,
         router_rewritten_query=rr.rewritten_query or "",
         router_course_ids=", ".join(rr.course_ids) if rr.course_ids else "",
-        router_specific_categories=", ".join(rr.specific_categories) if rr.specific_categories else "",
-        router_specific_only=rr.specific_only,
         router_intent_type=rr.intent_type or "",
-        router_category_confidence=rr.category_confidence,
-        router_recurrent_search=rr.recurrent_search,
-        router_section=rr.section or "",
-        router_retrieval_mode=rr.retrieval_mode,
-        retrieved_correct=retrieved_correct,
-        retrieval_ms=retrieval_ms,
-        answer_full=answer,
-        answer_preview=(answer[:300] + "..." if len(answer) > 300 else answer),
-        citation_pass=bool(re.search(r"\[Source \d+\]", answer)),
+        chunks_retrieved=len(chunks),
+        est_input_tokens=max(0, (len(query) + sum(len(c.get("content", "")) for c in chunks)) // 4),
+        est_output_tokens=len(answer) // 4,
+        pipeline_ms=pipeline_ms,
         generator_ms=generator_ms,
         total_ms=total_ms,
+        answer_full=answer,
+        answer_preview=(answer[:120] + "…" if len(answer) > 120 else answer),
+        citation_pass=bool(re.search(r"\[Source \d+\]", answer)),
+        is_recurrent=is_recurrent,
+        router_ms=router_ms,
+        retrieval_ms=retrieval_ms,
+        generator_node_ms=generator_node_ms,
+        anchor_ms=anchor_ms,
+        eval_search_ms=eval_search_ms,
+        schedule_filter_ms=schedule_filter_ms,
+        merge_ms=merge_ms,
         ragas_faithfulness=ragas_faithfulness,
         ragas_relevancy=ragas_relevancy,
         error=error,
@@ -231,8 +245,6 @@ def write_excel(
 
     n = len(rows)
     n_fn_correct = sum(1 for r in rows if r.router_function_correct)
-    recall_cases = [r for r in rows if r.retrieved_correct is not None]
-    recall_hits = sum(1 for r in recall_cases if r.retrieved_correct)
     citation_cases = [r for r in rows if r.router_function != "out_of_scope"]
     citation_pass = sum(1 for r in citation_cases if r.citation_pass)
     ragas_cases = [r for r in rows if r.ragas_faithfulness is not None]
@@ -242,21 +254,26 @@ def write_excel(
     ws_sum = wb.active
     ws_sum.title = "Summary"
 
+    avg_relevancy = sum(r.ragas_relevancy for r in ragas_cases) / len(ragas_cases) if ragas_cases else None
+    avg_chunks = _avg(rows, "chunks_retrieved")
+
     summary_rows = [
         ("Experiment", experiment_name),
         ("Date", datetime.now().strftime("%Y-%m-%d")),
         ("n_questions", n),
         ("Router accuracy",
          f"{n_fn_correct/n:.1%} ({n_fn_correct}/{n})" if n else "N/A"),
-        ("Recall@k (course_id+category)",
-         f"{recall_hits/len(recall_cases):.1%} ({recall_hits}/{len(recall_cases)})" if recall_cases else "N/A"),
         ("Citation pass rate",
          f"{citation_pass/len(citation_cases):.1%} ({citation_pass}/{len(citation_cases)})" if citation_cases else "N/A"),
         ("Mean RAGAS faithfulness",
          f"{avg_faith:.2f}" if avg_faith is not None else "not run (use --ragas)"),
+        ("Mean RAGAS relevancy",
+         f"{avg_relevancy:.2f}" if avg_relevancy is not None else "not run (use --ragas)"),
+        ("Mean chunks retrieved", f"{avg_chunks:.1f}" if avg_chunks is not None else "N/A"),
+        ("Mean est. input tokens", _avg(rows, "est_input_tokens")),
+        ("Mean est. output tokens", _avg(rows, "est_output_tokens")),
         ("Mean total latency (ms)", _avg(rows, "total_ms")),
-        ("Mean router latency (ms)", _avg(rows, "router_ms")),
-        ("Mean retrieval latency (ms)", _avg(rows, "retrieval_ms")),
+        ("Mean pipeline latency (ms)", _avg(rows, "pipeline_ms")),
         ("Mean generator latency (ms)", _avg(rows, "generator_ms")),
         ("Errors", sum(1 for r in rows if r.error)),
     ]
@@ -277,40 +294,34 @@ def write_excel(
 
     pq_cols = [
         # Identity
+        ("q#", 5),
         ("question", 50),
-        ("stratum", 25),
-        ("category", 20),
-        ("source_crn", 12),
+        ("stratum", 22),
         ("source_course_id", 18),
         # Routing ground truth + correctness
-        ("expected_function", 22),
-        ("router_function", 22),
-        ("router_function_correct", 12),
+        ("expected_function", 20),
+        ("router_function", 20),
+        ("router_function_correct", 10),
         # Router extracted fields
-        ("router_rewritten_query", 45),
-        ("router_course_ids", 25),
-        ("router_specific_categories", 28),
-        ("router_specific_only", 12),
+        ("router_rewritten_query", 42),
+        ("router_course_ids", 22),
         ("router_intent_type", 16),
-        ("router_category_confidence", 14),
-        ("router_recurrent_search", 14),
-        ("router_section", 12),
-        ("router_retrieval_mode", 16),
-        # Retrieval
-        ("retrieved_correct", 12),
+        # Retrieval + tokens
+        ("chunks_retrieved", 10),
+        ("est_input_tokens", 14),
+        ("est_output_tokens", 14),
         # Generation
-        ("citation_pass", 12),
+        ("citation_pass", 10),
         ("ragas_faithfulness", 14),
         ("ragas_relevancy", 14),
         # Timing
-        ("router_ms", 10),
-        ("retrieval_ms", 12),
+        ("pipeline_ms", 12),
         ("generator_ms", 12),
         ("total_ms", 10),
-        # Answer + diagnostics
-        ("answer_preview", 60),
+        # Answer preview (short) + diagnostics
+        ("answer_preview", 45),
         ("error", 30),
-        # human_judgment column: blank, user fills after viewing answers
+        # human_judgment column: blank, user fills in Full Answers tab
         ("human_judgment", 14),
     ]
 
@@ -322,14 +333,12 @@ def write_excel(
 
     for row_idx, r in enumerate(rows, start=2):
         values = [
-            r.question, r.stratum, r.category, r.source_crn, r.source_course_id,
+            r.question_id, r.question, r.stratum, r.source_course_id,
             r.expected_function, r.router_function, r.router_function_correct,
-            r.router_rewritten_query, r.router_course_ids, r.router_specific_categories,
-            r.router_specific_only, r.router_intent_type, r.router_category_confidence,
-            r.router_recurrent_search, r.router_section, r.router_retrieval_mode,
-            r.retrieved_correct, r.citation_pass,
-            r.ragas_faithfulness, r.ragas_relevancy,
-            r.router_ms, r.retrieval_ms, r.generator_ms, r.total_ms,
+            r.router_rewritten_query, r.router_course_ids, r.router_intent_type,
+            r.chunks_retrieved, r.est_input_tokens, r.est_output_tokens,
+            r.citation_pass, r.ragas_faithfulness, r.ragas_relevancy,
+            r.pipeline_ms, r.generator_ms, r.total_ms,
             r.answer_preview, r.error,
             "",  # human_judgment — blank for user to fill
         ]
@@ -374,10 +383,12 @@ def write_excel(
     ws_fa = wb.create_sheet("Full Answers")
 
     fa_cols = [
-        ("question", 55),
-        ("answer_full", 100),
+        ("q#", 5),
+        ("question", 50),
+        ("answer_full", 110),
         ("ragas_faithfulness", 16),
         ("ragas_relevancy", 14),
+        ("human_judgment", 14),
         ("error", 30),
     ]
     for col_idx, (label, width) in enumerate(fa_cols, start=1):
@@ -387,10 +398,11 @@ def write_excel(
         ws_fa.column_dimensions[cell.column_letter].width = width
 
     for row_idx, r in enumerate(rows, start=2):
-        fa_values = [r.question, r.answer_full or "", r.ragas_faithfulness, r.ragas_relevancy, r.error]
+        fa_values = [r.question_id, r.question, r.answer_full or "", r.ragas_faithfulness, r.ragas_relevancy, "", r.error]
         for col_idx, val in enumerate(fa_values, start=1):
             cell = ws_fa.cell(row=row_idx, column=col_idx, value=val)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
+        ws_fa.row_dimensions[row_idx].height = 80  # fixed height — double-click row border to auto-fit
 
     ws_fa.freeze_panes = "A2"
     ws_fa.row_dimensions[1].height = 18
@@ -403,28 +415,20 @@ def write_excel(
         # Identity
         ("question", "str", "The question posed to the bot, from the golden set."),
         ("stratum", "str", "Sampling stratum used during golden set generation (e.g. metadata_default, semantic_general). Groups questions by query pattern for stratified accuracy analysis."),
-        ("category", "str", "Syllabus section the question targets (e.g. GRADING, PREREQUISITES). From the golden set label."),
-        ("source_crn", "str", "CRN of the specific course section used to write the golden question. Reference only — retrieval match is now course_id-based, not CRN-exact."),
-        ("source_course_id", "str", "Course identifier of the golden source (e.g. 'CSCE 672'). Used for retrieved_correct matching."),
+        ("source_course_id", "str", "Course identifier of the golden source (e.g. 'CSCE 672'). Provenance reference."),
         # Ground truth
         ("expected_function", "str", "The router function the question should trigger (e.g. hybrid_course, semantic_general, out_of_scope). Ground truth label from the golden set."),
         # Router — function + correctness
-        ("router_function", "str", "The routing handler derived from the LLM output. Values: hybrid_course (course-specific query), semantic_general (cross-corpus search), out_of_scope (unrelated query). Derived automatically from course_ids + intent_type + recurrent_search."),
+        ("router_function", "str", "The routing function selected by the v4 pipeline. Values: hybrid_course (course-specific query), recurrent (cross-corpus discovery), semantic_general (broad search), out_of_scope (unrelated query)."),
         ("router_function_correct", "bool", "True if router_function == expected_function. Primary routing accuracy signal."),
-        ("router_ms", "float (ms)", "Wall-clock time for the router LLM call only (classify_query): query → RouterResult. Does not include retrieval."),
         # Router — extracted fields (LLM output)
-        ("router_rewritten_query", "str", "Query rewritten by the router LLM for better retrieval alignment. The router normalises course references, expands abbreviations, and removes conversational filler. This is what gets embedded and sent to Voyage/MongoDB — not the original question."),
-        ("router_course_ids", "str", "Comma-separated course IDs extracted from the query (e.g. 'CSCE 670, CSCE 638'). Normalised to 'DEPT NNN' format. Empty for general/discovery queries."),
-        ("router_specific_categories", "str", "Comma-separated syllabus section categories the user is specifically asking about (e.g. 'GRADING, PREREQUISITES'). Empty when no specific section is requested. Valid values: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS, GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, UNIVERSITY_POLICIES, SUPPORT_SERVICES."),
-        ("router_specific_only", "bool", "True if the user wants ONLY the specific_categories listed — no other sections. Suppresses context-broadening retrieval. Example: 'What is the grading breakdown?' → specific_only=True. 'Tell me about CSCE 638' → specific_only=False."),
-        ("router_intent_type", "str", "Advisory/evaluative intent detected by the LLM. Empty string = purely factual or out_of_scope. Values: ACADEMIC (study/learning advice), CAREER (job/skills relevance), DIFFICULTY (how hard is it?), PLANNING (schedule/sequence), ADMINISTRATIVE (deadlines/logistics), GENERAL (broad curiosity). Triggers advisory tone in the generator."),
-        ("router_category_confidence", "float 0–1", "Router LLM self-reported confidence that the specific_categories extraction is correct. Low values (<0.5) indicate the user question is ambiguous about which syllabus section it targets. Used for calibration analysis (ECE metric) — does NOT gate retrieval."),
-        ("router_recurrent_search", "bool", "True when the query requires a two-pass discovery search: (1) fetch anchor course content → (2) generate a semantic search string from that content → (3) search for similar courses corpus-wide. Triggered for comparison/recommendation queries (e.g. 'What courses cover X like CSCE 638?')."),
-        ("router_section", "str", "Specific section number extracted from the query (e.g. '500', '601'). Empty when no section is mentioned. Used to narrow retrieval to a single section when the user asks about a specific one."),
-        ("router_retrieval_mode", "str", "Retrieval strategy derived from course_ids and recurrent_search. Values: hybrid (BM25 + vector for course-filtered queries), semantic (vector-only for general discovery), anchor (direct MongoDB fetch for recurrent first pass), none (out_of_scope)."),
-        # Retrieval
-        ("retrieved_correct", "bool / blank", "True if at least one retrieved chunk has course_id == source_course_id AND category == source_category. Blank when source_course_id is missing from the golden item."),
-        ("retrieval_ms", "float (ms)", "Wall-clock time for retrieval only: Voyage embedding + MongoDB search + Voyage reranker. Does not include the router LLM call."),
+        ("router_rewritten_query", "str", "Query rewritten by the router LLM for better retrieval alignment. This is what gets embedded and sent to Voyage/MongoDB."),
+        ("router_course_ids", "str", "Comma-separated course IDs extracted from the query (e.g. 'CSCE 670, CSCE 638'). Empty for general/discovery queries."),
+        ("router_intent_type", "str", "Advisory/evaluative intent detected by the LLM. Empty = purely factual or out_of_scope. Values: ACADEMIC, CAREER, DIFFICULTY, PLANNING, ADMINISTRATIVE, GENERAL."),
+        # Timing
+        ("pipeline_ms", "float (ms)", "Wall-clock time for the v4 graph (router + retrieval combined)."),
+        ("generator_ms", "float (ms)", "Wall-clock time for generation: context assembly + LLM streaming."),
+        ("total_ms", "float (ms)", "Total wall-clock time from query receipt to answer complete."),
         # Generator
         ("citation_pass", "bool", "True if the generated answer contains at least one [Source N] citation. Regex check — confirms the generator cited something, not that it cited correctly."),
         ("ragas_faithfulness", "float 0–1 / blank",
@@ -491,8 +495,6 @@ def write_markdown(
 ) -> None:
     n = len(rows)
     n_fn_correct = sum(1 for r in rows if r.router_function_correct)
-    recall_cases = [r for r in rows if r.retrieved_correct is not None]
-    recall_hits = sum(1 for r in recall_cases if r.retrieved_correct)
     citation_cases = [r for r in rows if r.router_function != "out_of_scope"]
     citation_pass = sum(1 for r in citation_cases if r.citation_pass)
     ragas_cases = [r for r in rows if r.ragas_faithfulness is not None]
@@ -515,18 +517,22 @@ def write_markdown(
         "|--------|-------|",
     ]
 
+    avg_relevancy = sum(r.ragas_relevancy for r in ragas_cases) / len(ragas_cases) if ragas_cases else None
+
     if n:
         lines += [
             f"| Router accuracy | {n_fn_correct/n:.1%} ({n_fn_correct}/{n}) |",
-            f"| Recall@k (course_id+category) | {recall_hits/len(recall_cases):.1%} ({recall_hits}/{len(recall_cases)}) |"
-            if recall_cases else "| Recall@k | N/A (no source_course_id) |",
             f"| Citation pass rate | {citation_pass/len(citation_cases):.1%} ({citation_pass}/{len(citation_cases)}) |"
             if citation_cases else "| Citation pass rate | N/A |",
             f"| Mean RAGAS faithfulness | {avg_faith:.2f} |"
             if avg_faith is not None else "| Mean RAGAS faithfulness | not run |",
+            f"| Mean RAGAS relevancy | {avg_relevancy:.2f} |"
+            if avg_relevancy is not None else "| Mean RAGAS relevancy | not run |",
+            f"| Mean chunks retrieved | {_fmt_ms('chunks_retrieved')} |",
+            f"| Mean est. input tokens | {_fmt_ms('est_input_tokens')} |",
+            f"| Mean est. output tokens | {_fmt_ms('est_output_tokens')} |",
             f"| Mean total latency (ms) | {_fmt_ms('total_ms')} |",
-            f"| Mean router latency (ms) | {_fmt_ms('router_ms')} |",
-            f"| Mean retrieval latency (ms) | {_fmt_ms('retrieval_ms')} |",
+            f"| Mean pipeline latency (ms) | {_fmt_ms('pipeline_ms')} |",
             f"| Mean generator latency (ms) | {_fmt_ms('generator_ms')} |",
             f"| Errors | {sum(1 for r in rows if r.error)} |",
         ]
@@ -588,15 +594,17 @@ def main():
 
     rows: list[BenchmarkRow] = []
     for i, item in enumerate(items, start=1):
+        if i > 1:
+            time.sleep(2)  # avoid RPM spikes (proxy limit: 30/min)
         q_preview = item.get("question", "")[:60]
         print(f"\n[{i:3d}/{len(items)}] {q_preview}...", flush=True)
-        row = run_one(item, do_ragas=args.ragas)
+        row = run_one(item, do_ragas=args.ragas, question_id=i)
         rows.append(row)
         fn_ok = "v" if row.router_function_correct else "x"
         status = row.error or "OK"
         print(
-            f"         fn={fn_ok} router={row.router_ms:.0f}ms "
-            f"ret={row.retrieval_ms:.0f}ms gen={row.generator_ms:.0f}ms  [{status}]"
+            f"         fn={fn_ok} pipeline={row.pipeline_ms:.0f}ms "
+            f"gen={row.generator_ms:.0f}ms  [{status}]"
         )
 
     # Write reports
