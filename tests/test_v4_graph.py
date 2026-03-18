@@ -27,7 +27,7 @@ def _make_mock_registry(function: str = "hybrid_course") -> ComponentRegistry:
     retriever.get_meeting_times.return_value = {}
 
     reranker = MagicMock()
-    reranker.rerank.side_effect = lambda query, chunks, top_k: chunks[:top_k] if chunks else []
+    reranker.rerank.side_effect = lambda query, chunks, top_k, specific_categories=None: chunks[:top_k] if chunks else []
 
     generator = MagicMock()
     generator.generate_stream.return_value = iter(["Hello ", "world"])
@@ -127,3 +127,23 @@ def test_result_is_v3_compatible():
     assert "data_gaps" in result
     assert "data_integrity" in result
     assert "conflicted_course_ids" in result
+
+
+def test_anchor_node_passes_specific_categories():
+    """anchor_node must pass specific_categories from state to fetch_anchor_chunks."""
+    from rag.v4.nodes.anchor_node import anchor_node
+
+    retriever = MagicMock()
+    retriever.fetch_anchor_chunks.return_value = ([], [], True)
+    registry = MagicMock()
+    registry.retriever = retriever
+
+    state = {
+        "course_ids": ["202611_CSCE_221_500"],
+        "specific_categories": ["GRADING", "EXAMS"],
+        "node_trace": [],
+    }
+    anchor_node(state, registry=registry)
+
+    _, call_categories = retriever.fetch_anchor_chunks.call_args[0]
+    assert call_categories == ["GRADING", "EXAMS"]

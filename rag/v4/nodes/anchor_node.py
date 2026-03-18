@@ -1,8 +1,10 @@
 """Anchor node — fetches all chunks for anchor course(s) in the recurrent pass."""
 from __future__ import annotations
+
 from typing import Any
-from rag.v4.state import PipelineState
+
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import PipelineState
 
 
 @timing_middleware
@@ -14,7 +16,8 @@ def anchor_node(state: PipelineState, registry: Any) -> dict:
     node_trace.append("anchor")
 
     try:
-        chunks, data_gaps, data_integrity = registry.retriever.fetch_anchor_chunks(course_ids, [])
+        specific_categories = state.get("specific_categories", [])
+        chunks, data_gaps, data_integrity = registry.retriever.fetch_anchor_chunks(course_ids, specific_categories)
         return {
             "anchor_chunks": chunks,
             "data_gaps": data_gaps,
