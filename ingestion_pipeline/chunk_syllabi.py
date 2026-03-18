@@ -83,7 +83,9 @@ def main():
         sys.exit(1)
 
     if not args.all:
-        sources = sources[: args.files]
+        # Sample evenly across the full list so test runs cover diverse courses
+        step = max(1, len(sources) // args.files)
+        sources = sources[::step][: args.files]
 
     # Output folder
     date_str = datetime.now().strftime("%Y%m%d")
