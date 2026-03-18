@@ -27,13 +27,20 @@ def _get_graph():
 def run_pipeline_v4(
     query: str,
     trace=None,
-) -> tuple[list[dict], Any, list[tuple[str, str]], bool, list[str]]:
-    """Run the v4 pipeline. Returns same 5-tuple as v3 run_pipeline():
+    return_timing: bool = False,
+) -> tuple:
+    """Run the v4 pipeline.
 
-    (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
+    Args:
+        query: User query string
+        trace: Optional Langfuse trace
+        return_timing: If True, returns 6-tuple with timing_ms dict appended.
+                       Default False preserves backwards-compatible 5-tuple.
 
-    timing_ms is tracked internally in state but not exposed to callers,
-    keeping the return signature identical to v3 run_pipeline().
+    Returns:
+        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
+        or if return_timing=True:
+        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids, timing_ms)
     """
     initial_state: PipelineState = {
         "query": query,
@@ -51,13 +58,17 @@ def run_pipeline_v4(
     graph = _get_graph()
     result = graph.invoke(initial_state)
 
-    return (
+    five_tuple = (
         result.get("retrieved_chunks", []),
         result.get("router_result"),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
         result.get("conflicted_course_ids", []),
     )
+
+    if return_timing:
+        return (*five_tuple, result.get("timing_ms", {}))
+    return five_tuple
 
 
 def run_pipeline_v4_with_memory(
