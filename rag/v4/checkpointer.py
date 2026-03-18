@@ -1,9 +1,11 @@
 """Factory for LangGraph checkpointers.
 
 "memory" → MemorySaver (default, no persistence across process restarts)
-"sqlite" → SqliteSaver("sessions.db") (persists across restarts)
+"sqlite" → SqliteSaver (persists across restarts, stored next to checkpointer.py)
 """
 from __future__ import annotations
+
+from pathlib import Path
 from typing import Optional
 
 import config
@@ -23,7 +25,8 @@ def make_checkpointer(backend: Optional[str] = None):
     if backend == "sqlite":
         try:
             from langgraph.checkpoint.sqlite import SqliteSaver
-            return SqliteSaver("sessions.db")
+            db_path = str(Path(__file__).parent / "sessions.db")
+            return SqliteSaver(db_path)
         except ImportError:
             # langgraph-checkpoint-sqlite not installed; fall back to memory
             from langgraph.checkpoint.memory import MemorySaver

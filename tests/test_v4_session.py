@@ -136,3 +136,13 @@ def test_two_different_sessions_are_independent():
 
     # Both ran independently — turn_number should be 1 for both (not accumulated)
     assert result_a.get("turn_number", 1) == result_b.get("turn_number", 1)
+
+
+def test_sqlite_checkpointer_path_is_absolute():
+    """The computed SQLite DB path must be absolute, not CWD-relative."""
+    import os
+    from pathlib import Path
+    import rag.v4.checkpointer as cp_mod
+
+    db_path = str(Path(cp_mod.__file__).parent / "sessions.db")
+    assert os.path.isabs(db_path), f"Expected absolute path, got: {db_path}"
