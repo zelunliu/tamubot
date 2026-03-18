@@ -49,7 +49,7 @@ def generate_eval_search_string(
     """
     # Summarize anchor content, capped to avoid token bloat
     anchor_text = " ".join(
-        f"{c.get('title', '')} {c.get('content', '')}" for c in anchor_chunks
+        f"{c.get('header_text', '')} {c.get('content', '')}" for c in anchor_chunks
     )[:2000]
 
     eval_prompt = (
@@ -412,7 +412,8 @@ def generate_comparison(
         if missing:
             missing_note_lines.append(f"  {cid}: {', '.join(missing)}")
     missing_note = (
-        "Sections confirmed missing from the original syllabi (use \"Not found in original syllabus\" for these fields):\n"
+        "Sections confirmed missing from the original syllabi"
+        " (use \"Not found in original syllabus\" for these fields):\n"
         + "\n".join(missing_note_lines)
         if missing_note_lines else ""
     )
