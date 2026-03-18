@@ -3,8 +3,8 @@ ingestion_pipeline/chunk_syllabi.py
 
 Standalone re-chunker for v3 syllabus pipeline.
 
-Reads *_stripped.md files from v3_step2_boilerplate/, chunks them with
-configurable size/overlap, and writes JSON to a date-stamped output folder.
+Reads clean syllabus *_vNNN.md files from v3_step2_boilerplate/ (not _stripped.md),
+chunks them with configurable size/overlap, and writes JSON to a date-stamped output folder.
 
 No LLM calls. Output is for experimentation and inspection only.
 
@@ -49,12 +49,11 @@ def chunk_file(src: Path, chunk_size: int, overlap: int) -> dict:
         c["token_count"] = _tokens_approx(c["content"])
 
     # Stem without _stripped suffix
-    stem = src.stem  # e.g. 202611_CSCE_670_600_46627_v010_stripped
-    clean_stem = stem.replace("_stripped", "")
+    clean_stem = src.stem  # e.g. 202611_CSCE_670_600_46627_v010
     semester, course_id = _parse_stem(clean_stem)
 
     return {
-        "source_file": src.name,
+        "source_file": src.name,  # e.g. 202611_CSCE_670_600_46627_v010.md
         "course_id": course_id,
         "semester": semester,
         "chunk_size": chunk_size,
@@ -75,8 +74,8 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite existing output files.")
     args = parser.parse_args()
 
-    # Collect source files (alphabetical)
-    sources = sorted(STEP2_ROOT.glob("*_stripped.md"))
+    # Collect source files: versioned .md files, excluding _stripped.md (alphabetical)
+    sources = sorted(f for f in STEP2_ROOT.glob("*.md") if not f.name.endswith("_stripped.md"))
     if not sources:
         print(f"No *_stripped.md files found in {STEP2_ROOT}", file=sys.stderr)
         sys.exit(1)
