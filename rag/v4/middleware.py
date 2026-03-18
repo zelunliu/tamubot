@@ -4,6 +4,7 @@
 @error_guard_middleware — catches V4PipelineError, writes state["error"], graph continues
 """
 from __future__ import annotations
+
 import functools
 import time
 from typing import Any, Callable
@@ -34,6 +35,8 @@ def error_guard_middleware(node_fn: Callable) -> Callable:
     """Decorator: catches V4PipelineError and writes state["error"] instead of crashing.
 
     The graph always reaches END even on partial failure.
+    node_trace from state is preserved in the error dict so the graph trace
+    remains consistent.
     Non-V4PipelineError exceptions are re-raised (unexpected errors should surface).
     """
     @functools.wraps(node_fn)
@@ -41,6 +44,9 @@ def error_guard_middleware(node_fn: Callable) -> Callable:
         try:
             return node_fn(state, **kwargs)
         except V4PipelineError as e:
-            return {"error": f"{node_fn.__name__} failed: {e}"}
+            return {
+                "error": f"{node_fn.__name__} failed: {e}",
+                "node_trace": list(state.get("node_trace", [])),
+            }
 
     return wrapper
