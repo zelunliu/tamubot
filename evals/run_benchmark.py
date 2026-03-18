@@ -275,6 +275,11 @@ def write_excel(
         ("Mean total latency (ms)", _avg(rows, "total_ms")),
         ("Mean pipeline latency (ms)", _avg(rows, "pipeline_ms")),
         ("Mean generator latency (ms)", _avg(rows, "generator_ms")),
+        ("Mean router latency (ms)", _avg(rows, "router_ms")),
+        ("Mean retrieval latency (ms)", _avg(rows, "retrieval_ms")),
+        ("Recurrent questions",
+         f"{sum(1 for r in rows if r.is_recurrent)} ({sum(1 for r in rows if r.is_recurrent)/n:.0%})"
+         if n else "N/A"),
         ("Errors", sum(1 for r in rows if r.error)),
     ]
 
@@ -318,6 +323,15 @@ def write_excel(
         ("pipeline_ms", 12),
         ("generator_ms", 12),
         ("total_ms", 10),
+        # Per-node timing (inside-graph)
+        ("is_recurrent", 10),
+        ("router_ms", 12),
+        ("retrieval_ms", 12),
+        ("generator_node_ms", 16),
+        ("anchor_ms", 12),
+        ("eval_search_ms", 14),
+        ("schedule_filter_ms", 16),
+        ("merge_ms", 10),
         # Answer preview (short) + diagnostics
         ("answer_preview", 45),
         ("error", 30),
@@ -339,6 +353,8 @@ def write_excel(
             r.chunks_retrieved, r.est_input_tokens, r.est_output_tokens,
             r.citation_pass, r.ragas_faithfulness, r.ragas_relevancy,
             r.pipeline_ms, r.generator_ms, r.total_ms,
+            r.is_recurrent, r.router_ms, r.retrieval_ms, r.generator_node_ms,
+            r.anchor_ms, r.eval_search_ms, r.schedule_filter_ms, r.merge_ms,
             r.answer_preview, r.error,
             "",  # human_judgment — blank for user to fill
         ]
@@ -464,6 +480,14 @@ def write_excel(
         ("router_ms + retrieval_ms + generator_ms", "—", "The three stages sum to approximately total_ms. Small gap = overhead from Python timing and RAGAS (if enabled)."),
         ("generator_ms", "float (ms)", "Wall-clock time for the generation LLM call: context assembly + LLM streaming + citation gate."),
         ("total_ms", "float (ms)", "Total wall-clock time from query receipt to answer complete (router + retrieval + generation)."),
+        ("is_recurrent", "bool", "True when the router selected the recurrent function. Recurrent queries span the full corpus looking for topic-adjacent courses rather than fetching from a specific course."),
+        ("router_ms", "float (ms)", "Inside-graph time for the router node (LLM call that classifies function and rewrites query). Sourced from timing_ms['router_node'] — more precise than wall-clock pipeline_ms."),
+        ("retrieval_ms", "float (ms)", "Inside-graph time for the retrieval node (embedding + MongoDB search + reranking). For recurrent queries this covers the cross-corpus search only."),
+        ("generator_node_ms", "float (ms)", "Inside-graph time for the generator node (context assembly + LLM streaming). None for out_of_scope rows. Compare to wall-clock generator_ms — difference is Python overhead."),
+        ("anchor_ms", "float (ms) / blank", "Recurrent path only. Time for anchor_node: fetches schedule and meeting-time anchor chunks for each detected course."),
+        ("eval_search_ms", "float (ms) / blank", "Recurrent path only. Time for eval_search_node: generates an expanded search string via LLM for cross-corpus discovery."),
+        ("schedule_filter_ms", "float (ms) / blank", "Recurrent path only. Time for schedule_filter_node: filters discovery chunks to remove schedule conflicts."),
+        ("merge_ms", "float (ms) / blank", "Recurrent path only. Time for merge_node: deduplicates and merges anchor + discovery chunks into retrieved_chunks."),
         ("answer_preview", "str", "First 300 characters of the generated answer. See 'Full Answers' tab for complete text with RAGAS scores alongside each answer."),
         ("error", "str / blank", "Error message if any pipeline stage failed. Blank on success."),
         ("human_judgment", "blank → user fills", "Leave blank to fill in after reviewing the Full Answers tab. Suggested values: correct / partial / wrong / hallucinated."),
@@ -534,6 +558,8 @@ def write_markdown(
             f"| Mean total latency (ms) | {_fmt_ms('total_ms')} |",
             f"| Mean pipeline latency (ms) | {_fmt_ms('pipeline_ms')} |",
             f"| Mean generator latency (ms) | {_fmt_ms('generator_ms')} |",
+            f"| Mean router latency (ms) | {_fmt_ms('router_ms')} |",
+            f"| Mean retrieval latency (ms) | {_fmt_ms('retrieval_ms')} |",
             f"| Errors | {sum(1 for r in rows if r.error)} |",
         ]
 
@@ -554,6 +580,30 @@ def write_markdown(
         for r in errors:
             q = r.question[:70] + "..." if len(r.question) > 70 else r.question
             lines.append(f"- **{q}** → `{r.error}`")
+
+    # Recurrent path breakdown (only when recurrent rows exist)
+    recurrent_rows = [r for r in rows if r.is_recurrent]
+    if recurrent_rows:
+        n_rec = len(recurrent_rows)
+
+        def _rec_avg(attr: str) -> str:
+            vals = [getattr(r, attr) for r in recurrent_rows if getattr(r, attr) is not None]
+            return f"{sum(vals)/len(vals):.0f}" if vals else "N/A"
+
+        lines += [
+            "",
+            "## Recurrent Path Breakdown",
+            "",
+            f"{n_rec} of {n} questions routed through recurrent path.",
+            "",
+            "| Node | Mean (ms) |",
+            "|------|-----------|",
+            f"| anchor | {_rec_avg('anchor_ms')} |",
+            f"| eval_search | {_rec_avg('eval_search_ms')} |",
+            f"| retrieval | {_rec_avg('retrieval_ms')} |",
+            f"| schedule_filter | {_rec_avg('schedule_filter_ms')} |",
+            f"| merge | {_rec_avg('merge_ms')} |",
+        ]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines), encoding="utf-8")
