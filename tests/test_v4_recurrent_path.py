@@ -95,3 +95,43 @@ def test_recurrent_discovery_course_cap():
         if c["course_id"] != "202611_CSCE_221_500"
     }
     assert len(unique_discovery_courses) <= config.RECURRENT_MAX_RECOMMENDED_COURSES
+
+
+def test_schedule_filter_uses_all_anchor_intervals():
+    """schedule_filter_node must filter using ALL anchor courses, not just the first."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.schedule_filter_node import schedule_filter_node
+
+    # Two anchor courses with different meeting times
+    # anchor A: MW 8:00AM-9:15AM
+    # anchor B: TR 2:00PM-3:15PM
+    # discovery C conflicts with B (TR 2:30PM-3:45PM) but not A
+    # Without fix, C would NOT be filtered (only anchor A is checked)
+    meeting_times = {
+        "ANCHOR_A": "MW 8:00AM - 9:15AM",
+        "ANCHOR_B": "TR 2:00PM - 3:15PM",
+        "DISC_C":   "TR 2:30PM - 3:45PM",
+        "DISC_D":   "WEB ASYNC",
+    }
+
+    retriever = MagicMock()
+    retriever.get_meeting_times.side_effect = lambda cids: {k: meeting_times[k] for k in cids if k in meeting_times}
+    registry = MagicMock()
+    registry.retriever = retriever
+
+    discovery_chunks = [
+        {"course_id": "DISC_C", "text": "conflicts with B"},
+        {"course_id": "DISC_D", "text": "async"},
+    ]
+    state = {
+        "course_ids": ["ANCHOR_A", "ANCHOR_B"],
+        "discovery_chunks": discovery_chunks,
+        "node_trace": [],
+    }
+
+    result = schedule_filter_node(state, registry=registry)
+
+    remaining_ids = {c["course_id"] for c in result["discovery_chunks"]}
+    assert "DISC_C" not in remaining_ids, "DISC_C conflicts with ANCHOR_B and must be filtered"
+    assert "DISC_D" in remaining_ids, "async DISC_D must be kept"
+    assert "DISC_C" in result["conflicted_course_ids"]

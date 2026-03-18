@@ -1,8 +1,10 @@
 """Schedule filter node — removes discovery courses with conflicting meeting times."""
 from __future__ import annotations
+
 from typing import Any
-from rag.v4.state import PipelineState
+
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import PipelineState
 
 
 @timing_middleware
@@ -19,22 +21,30 @@ def schedule_filter_node(state: PipelineState, registry: Any) -> dict:
 
         from rag.schedule import filter_conflicting_courses, parse_meeting_times
 
-        anchor_interval = None
+        # Collect all anchor intervals (one per in-person anchor course)
+        anchor_intervals = []
         for cid in course_ids:
-            anchor_interval = parse_meeting_times(meeting_times.get(cid))
-            if anchor_interval:
-                break
+            interval = parse_meeting_times(meeting_times.get(cid))
+            if interval:
+                anchor_intervals.append(interval)
 
-        if anchor_interval is None:
-            # Anchor is async — nothing to filter
+        if not anchor_intervals:
+            # All anchors are async — nothing to filter
             return {"discovery_chunks": discovery_chunks, "conflicted_course_ids": [], "node_trace": node_trace}
 
         disc_cids = list({c.get("course_id") for c in discovery_chunks if c.get("course_id")})
         disc_mt_map = registry.retriever.get_meeting_times(disc_cids)
-        filtered, conflicted_ids = filter_conflicting_courses(discovery_chunks, anchor_interval, disc_mt_map)
+
+        # A discovery course is filtered if it conflicts with ANY anchor interval
+        all_conflicted_ids: set[str] = set()
+        for anchor_interval in anchor_intervals:
+            _, conflicted = filter_conflicting_courses(discovery_chunks, anchor_interval, disc_mt_map)
+            all_conflicted_ids.update(conflicted)
+
+        filtered = [c for c in discovery_chunks if c.get("course_id") not in all_conflicted_ids]
         return {
             "discovery_chunks": filtered,
-            "conflicted_course_ids": conflicted_ids,
+            "conflicted_course_ids": sorted(all_conflicted_ids),
             "node_trace": node_trace,
         }
     except Exception as e:
