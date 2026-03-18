@@ -1,10 +1,12 @@
 """Merge node — combines anchor + discovery chunks, deduplicates, reranks, caps courses."""
 from __future__ import annotations
+
 from typing import Any
+
 import config
-from rag.v4.state import PipelineState
 from rag.router import deduplicate_chunks
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import PipelineState
 
 
 @timing_middleware
@@ -29,7 +31,7 @@ def merge_node(state: PipelineState, registry: Any) -> dict:
 
         # Cap discovery courses
         anchor_ids = set(course_ids)
-        admitted: list[str] = []
+        admitted: set[str] = set()
         result = []
         for chunk in reranked:
             cid = chunk.get("course_id", "")
@@ -38,7 +40,7 @@ def merge_node(state: PipelineState, registry: Any) -> dict:
             elif cid in admitted:
                 result.append(chunk)
             elif len(admitted) < config.RECURRENT_MAX_RECOMMENDED_COURSES:
-                admitted.append(cid)
+                admitted.add(cid)
                 result.append(chunk)
 
         return {"retrieved_chunks": result, "node_trace": node_trace}
