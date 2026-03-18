@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from ingestion_pipeline.boilerplate_stripper import annotated_to_clean_markdown  # noqa: E402
 from ingestion_pipeline.chunker_v3 import chunk_text, _tokens_approx  # noqa: E402
 
 STEP2_ROOT = Path("tamu_data/processed/v3_step2_boilerplate")
@@ -43,6 +44,7 @@ def _parse_stem(stem: str) -> tuple[str, str]:
 
 def chunk_file(src: Path, chunk_size: int, overlap: int) -> dict:
     text = src.read_text(encoding="utf-8")
+    text = annotated_to_clean_markdown(text)
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     # Add token_count to each chunk
     for c in chunks:
