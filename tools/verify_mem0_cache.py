@@ -4,6 +4,7 @@ Usage:
     PYTHONPATH=. python tools/verify_mem0_cache.py
 """
 from __future__ import annotations
+
 import time
 
 import config
@@ -13,9 +14,9 @@ print(f"SESSION_CACHE_ENABLED  = {config.SESSION_CACHE_ENABLED}")
 print(f"USE_TAMU_API           = {config.USE_TAMU_API}")
 print()
 
-from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
-from rag.v4.session import SessionManager
-import rag.v4.pipeline_v4 as pv4
+import rag.v4.pipeline_v4 as pv4  # noqa: E402
+from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory  # noqa: E402
+from rag.v4.session import SessionManager  # noqa: E402
 
 SESSION_ID = "verify-cache-001"
 session_mgr = SessionManager()
@@ -53,7 +54,7 @@ def run_and_inspect(query: str, label: str) -> dict:
     if hits:
         print(f"  ✅ Cache hits : {hits}")
     else:
-        print(f"  ℹ  No cache hits (first run or cache disabled)")
+        print("  ℹ  No cache hits (first run or cache disabled)")
     print()
     return state
 

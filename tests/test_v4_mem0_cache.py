@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # cache_utils
 # ---------------------------------------------------------------------------
@@ -406,7 +404,7 @@ def test_history_inject_skips_mem0_when_no_session_id():
 
     with patch("config.MEM0_ENABLED", True), \
          patch("rag.v4.mem0_registry.get", return_value=mock_manager):
-        result = history_inject_node(state, registry=MagicMock())
+        history_inject_node(state, registry=MagicMock())
 
     mock_manager.search_context.assert_not_called()
 

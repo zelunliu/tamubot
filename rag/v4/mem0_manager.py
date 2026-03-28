@@ -30,10 +30,10 @@ class Mem0Manager:
     @staticmethod
     def _build_memory(session_id: str):
         """Initialize mem0.Memory with in-memory Qdrant + TAMU LLM + Voyage embedder."""
-        from qdrant_client import QdrantClient
         from mem0 import Memory
-        from mem0.utils.factory import LlmFactory, EmbedderFactory
         from mem0.configs.llms.base import BaseLlmConfig
+        from mem0.utils.factory import EmbedderFactory, LlmFactory
+        from qdrant_client import QdrantClient
 
         # Register custom providers (idempotent — safe to call multiple times)
         LlmFactory.provider_to_class["tamu"] = (

@@ -87,7 +87,11 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
                 existing_cache = state.get("retrieval_cache", {})
                 retrieval_cache_update = {**existing_cache, cache_key: discovery_chunks}
 
-            return {"discovery_chunks": discovery_chunks, "retrieval_cache": retrieval_cache_update, "node_trace": node_trace}
+            return {
+                "discovery_chunks": discovery_chunks,
+                "retrieval_cache": retrieval_cache_update,
+                "node_trace": node_trace,
+            }
 
         else:
             return {"retrieved_chunks": [], "node_trace": node_trace}

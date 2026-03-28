@@ -5,7 +5,6 @@ from typing import Any
 
 import config
 from rag.v4.cache_utils import normalize_query
-from rag.v4.exceptions import V4RouterError
 from rag.v4.middleware import error_guard_middleware, timing_middleware
 from rag.v4.state import PipelineState
 

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from mem0.llms.base import LLMBase
 from mem0.configs.llms.base import BaseLlmConfig
+from mem0.llms.base import LLMBase
 
 
 class TamuMem0LLM(LLMBase):

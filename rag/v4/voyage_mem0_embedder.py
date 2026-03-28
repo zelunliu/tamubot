@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from mem0.embeddings.base import EmbeddingBase
 from mem0.configs.embeddings.base import BaseEmbedderConfig
+from mem0.embeddings.base import EmbeddingBase
 
 
 class VoyageMem0Embedder(EmbeddingBase):
@@ -21,6 +21,7 @@ class VoyageMem0Embedder(EmbeddingBase):
     def _get_client(self):
         if self._client is None:
             import voyageai
+
             import config as app_config
             self._client = voyageai.Client(api_key=app_config.VOYAGE_API_KEY)
         return self._client
