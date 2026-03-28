@@ -50,3 +50,4 @@ Thumbs.db
 # Playwright MCP logs
 .playwright-mcp/
 .worktrees/
+.worktrees/
