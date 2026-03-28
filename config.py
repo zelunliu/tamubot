@@ -162,3 +162,7 @@ def get_tamu_client():
 USE_V4_PIPELINE: bool = os.getenv("USE_V4_PIPELINE", "true").lower() == "true"
 V4_CHECKPOINTER_BACKEND: str = os.getenv("V4_CHECKPOINTER_BACKEND", "memory")
 V4_MAX_HISTORY_TURNS: int = int(os.getenv("V4_MAX_HISTORY_TURNS", "6"))
+
+# --- mem0 integration ---
+MEM0_ENABLED: bool = os.getenv("MEM0_ENABLED", "true").lower() == "true"
+SESSION_CACHE_ENABLED: bool = os.getenv("SESSION_CACHE_ENABLED", "true").lower() == "true"

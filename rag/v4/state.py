@@ -44,3 +44,6 @@ class ConversationState(PipelineState, total=False):
     history: list[ConversationMessage]          # last N turns (windowed)
     history_summary: str                         # LLM-compressed older turns
     turn_number: int
+    router_cache: dict                           # normalize(query) → router_result_dict
+    retrieval_cache: dict                        # cache_key → list[chunk_dict]
+    answer_cache: dict                           # normalize(query) → answer str
