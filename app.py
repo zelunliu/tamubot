@@ -179,9 +179,45 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             data_gaps: list = []
             data_integrity = True
             conflicted_ids: list = []
+
+            # Resolve thread_config early (needed by cache check and pipeline)
+            thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
+
+            # Initialize Mem0Manager once per session
+            if config.MEM0_ENABLED and "mem0_manager" not in st.session_state:
+                try:
+                    from rag.v4.mem0_manager import Mem0Manager
+                    from rag.v4 import mem0_registry
+                    _thread_id = thread_config.get("configurable", {}).get("thread_id", "")
+                    st.session_state.mem0_manager = Mem0Manager(_thread_id)
+                    mem0_registry.register(_thread_id, st.session_state.mem0_manager)
+                except Exception as _mem0_err:
+                    import logging as _log
+                    _log.getLogger("tamubot").warning(f"mem0 initialization failed (non-fatal): {_mem0_err}")
+
+            # --- answer cache check (skip full pipeline on exact-match hit) ---
+            if config.SESSION_CACHE_ENABLED:
+                from rag.v4.pipeline_v4 import get_current_state
+                from rag.v4.cache_utils import normalize_query as _norm
+                _current = get_current_state(thread_config)
+                _cached_answer = _current.get("answer_cache", {}).get(_norm(prompt))
+                if _cached_answer:
+                    answer_placeholder = st.empty()
+                    answer_placeholder.markdown(_cached_answer)
+                    if lf_trace is not None:
+                        try:
+                            lf_trace.update(output=_cached_answer)
+                        except Exception:
+                            pass
+                        try:
+                            lf.flush()
+                        except Exception:
+                            pass
+                    st.session_state.messages.append({"role": "assistant", "content": _cached_answer})
+                    st.stop()
+
             with st.spinner("Routing query and retrieving information..."):
                 try:
-                    thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
                     result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
                     source_docs, router_result, data_gaps, data_integrity, conflicted_ids = result
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")

@@ -100,8 +100,14 @@ def run_pipeline_v4_with_memory(
         checkpointer = make_checkpointer()
         _memory_graph = build_graph_with_memory(_memory_registry, checkpointer=checkpointer)
 
+    # Extract session_id (= thread_id) for mem0 manager lookup in nodes
+    session_id = ""
+    if thread_config:
+        session_id = thread_config.get("configurable", {}).get("thread_id", "")
+
     initial_state: dict = {
         "query": query,
+        "session_id": session_id,  # needed by history nodes to look up Mem0Manager
         # trace intentionally excluded — not picklable, cannot be checkpointed
         "node_trace": [],
         "timing_ms": {},
@@ -126,3 +132,18 @@ def run_pipeline_v4_with_memory(
         result.get("data_integrity", True),
         result.get("conflicted_course_ids", []),
     )
+
+
+def get_current_state(thread_config: dict) -> dict:
+    """Read the current conversation state for a thread (for answer cache checks).
+
+    Returns empty dict if no state exists or graph not yet initialized.
+    """
+    global _memory_graph
+    if _memory_graph is None:
+        return {}
+    try:
+        snapshot = _memory_graph.get_state(thread_config)
+        return snapshot.values if snapshot and snapshot.values else {}
+    except Exception:
+        return {}
