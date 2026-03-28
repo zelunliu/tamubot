@@ -37,6 +37,10 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Keywords that flag a non-stripped header as a potential new boilerplate candidate
 _BP_KEYWORDS = frozenset([
     "policy", "policies", "privacy", "ferpa", "ada", "disability",
@@ -50,10 +54,6 @@ _BP_KEYWORDS = frozenset([
     "honor",         # catches "aggie honor code" variants
     "pronouns",      # catches preferred name/pronouns sections
 ])
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

@@ -4,16 +4,22 @@ These thin wrappers call existing v3 functions so Phase 2 can run end-to-end
 without touching the v3 codebase. Phase 3 replaces these with Haystack components.
 """
 from __future__ import annotations
+
 from typing import Any, Iterator, Optional
 
 
 class V3RouterAdapter:
     """Wraps rag.router.classify_query() to satisfy RouterLLMComponent protocol."""
 
-    def classify(self, query: str, trace: Optional[Any] = None) -> Any:
+    def classify(
+        self,
+        query: str,
+        trace: Optional[Any] = None,
+        prior_course_ids: Optional[list[str]] = None,
+    ) -> Any:
         from rag.router import classify_query
         # Pass trace as router_span for Langfuse observability
-        return classify_query(query, router_span=trace)
+        return classify_query(query, router_span=trace, prior_course_ids=prior_course_ids)
 
 
 class V3RetrieverAdapter:

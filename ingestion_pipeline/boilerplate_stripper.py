@@ -257,7 +257,7 @@ def strip_pdf(pdf_path: Path) -> tuple[str, list[dict]]:
         return "", []
 
     # Body font = most common rounded font size
-    body_size: int = Counter(round(l["size"]) for l in raw_lines).most_common(1)[0][0]
+    body_size: int = Counter(round(ln["size"]) for ln in raw_lines).most_common(1)[0][0]
 
     # Segment into sections
     sections: list[tuple[str | None, int, list[str]]] = []
@@ -348,7 +348,7 @@ def pdf_to_annotated_markdown(pdf_path: Path) -> tuple[str, dict]:
                 })
     doc.close()
 
-    char_count_in = sum(len(l["text"]) for l in raw_lines)
+    char_count_in = sum(len(ln["text"]) for ln in raw_lines)
 
     if not raw_lines:
         return "", {
@@ -362,9 +362,9 @@ def pdf_to_annotated_markdown(pdf_path: Path) -> tuple[str, dict]:
     # would otherwise beat out longer body paragraphs and corrupt the body-size
     # estimate — causing the stripper to treat all body-font content as headers.
     char_weights: dict[float, int] = {}
-    for l in raw_lines:
-        bucket = round(l["size"] * 2) / 2
-        char_weights[bucket] = char_weights.get(bucket, 0) + len(l["text"])
+    for ln in raw_lines:
+        bucket = round(ln["size"] * 2) / 2
+        char_weights[bucket] = char_weights.get(bucket, 0) + len(ln["text"])
     body_size: float = max(char_weights, key=char_weights.__getitem__)
 
     annotated_count = plain_count = 0

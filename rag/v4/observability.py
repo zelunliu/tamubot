@@ -4,6 +4,7 @@ Uses rag.observability.MinimalLangfuseClient but never replaces it.
 If lf_client=None, all methods are no-ops (context manager returns None).
 """
 from __future__ import annotations
+
 import time
 from contextlib import contextmanager
 from typing import Any, Optional

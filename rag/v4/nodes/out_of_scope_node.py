@@ -1,8 +1,10 @@
 """Out-of-scope node — returns canned response without LLM call."""
 from __future__ import annotations
+
 from typing import Any
-from rag.v4.state import PipelineState
+
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import PipelineState
 
 _OOS_RESPONSE = (
     "Howdy! I'm TamuBot, your Texas A&M academic assistant. "

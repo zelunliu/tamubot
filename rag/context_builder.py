@@ -50,7 +50,7 @@ def format_context_xml(results: list[dict]) -> str:
             attrs.append(f'term="{doc["term"]}"')
 
         attr_str = " ".join(attrs)
-        title = doc.get("title", "")
+        title = doc.get("title", "") or doc.get("header_text", "")
         content = doc.get("content", doc.get("policy_name", ""))
 
         # XML escape special characters in content

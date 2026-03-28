@@ -4,6 +4,7 @@ Critical: trace (LFTrace) and answer_stream (Iterator) are NOT picklable.
 SessionManager strips these before checkpoint and re-injects trace after restore.
 """
 from __future__ import annotations
+
 import uuid
 from typing import Any, Optional
 

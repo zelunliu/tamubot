@@ -1,15 +1,16 @@
 """Factory functions for ComponentRegistry instances."""
 from __future__ import annotations
+
 from rag.v4.interfaces import ComponentRegistry
 
 
 def make_v3_registry() -> ComponentRegistry:
     """Build a ComponentRegistry backed by v3 adapters (Phase 2 fallback)."""
     from rag.v4.providers.v3_adapters import (
-        V3RouterAdapter,
-        V3RetrieverAdapter,
-        V3RerankerAdapter,
         V3GeneratorAdapter,
+        V3RerankerAdapter,
+        V3RetrieverAdapter,
+        V3RouterAdapter,
     )
     return ComponentRegistry(
         router_llm=V3RouterAdapter(),
@@ -26,12 +27,12 @@ def make_default_registry() -> ComponentRegistry:
     VoyageReranker for reranking, LLMRouterComponent for routing,
     LLMGeneratorComponent for generation.
     """
-    from rag.v4.components.embedders import VoyageEmbedder
     from rag.v4.components.document_stores import MongoDocumentStore
-    from rag.v4.components.retriever_adapter import MongoRetrieverAdapter
-    from rag.v4.components.rerankers import VoyageReranker
-    from rag.v4.components.routers import LLMRouterComponent
+    from rag.v4.components.embedders import VoyageEmbedder
     from rag.v4.components.generators import LLMGeneratorComponent
+    from rag.v4.components.rerankers import VoyageReranker
+    from rag.v4.components.retriever_adapter import MongoRetrieverAdapter
+    from rag.v4.components.routers import LLMRouterComponent
 
     embedder = VoyageEmbedder()
     store = MongoDocumentStore()

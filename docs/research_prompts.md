@@ -4,6 +4,206 @@ Use each prompt as a separate Gemini Deep Research session.
 
 ---
 
+## PROMPT 10: Reducing Latency and Token Usage While Improving RAGAS Answer Relevancy
+
+I'm running a production LangGraph RAG chatbot (TamuBot, Texas A&M) and want to reduce end-to-end latency and token consumption while improving RAGAS answer relevancy. Please research concrete, evidence-backed techniques and compare specific approaches for my stack.
+
+---
+
+### Goal
+
+Cut total pipeline latency from ~12–15s to under 8s, reduce unnecessary token usage, and raise RAGAS answer relevancy from ~0.50–0.55 to 0.70+, without sacrificing faithfulness (currently 0.87–0.97).
+
+---
+
+### Current State (measured across 3 eval runs, Mar 2026, n=10 each)
+
+**Latency breakdown (mean):**
+| Component | Latency |
+|---|---|
+| Router node | 3,200–3,900 ms |
+| Generator node | 2,800–4,100 ms |
+| Retrieval + rerank | 420–580 ms |
+| Total pipeline | 11,400–14,600 ms |
+
+**Token usage (estimated):**
+- Input: ~3,200 tokens/query (system prompt + XML context, 5 chunks)
+- Output: 186–342 tokens/query (varies by function type)
+- TAMU gateway forces `max_tokens=4096` on all calls — actual usage is <350
+
+**Quality:**
+- RAGAS faithfulness: 0.87–0.97 ✓
+- RAGAS answer relevancy: 0.50–0.55 ✗
+- Router accuracy: 100% across all runs
+
+**Stack constraints:**
+- Router: Gemini 2.5 Flash, `thinking_budget=512`, temp=0, JSON output
+- Generator: Gemini 2.0 Flash via TAMU OpenAI-compatible gateway (SSE streaming, min `max_tokens=4096`)
+- TAMU gateway does NOT expose token counts in SSE response
+- Generator system prompt includes Chain-of-Verification: model writes a `<thinking>` block with a verbatim quote before answering; `<thinking>` is stripped before delivery to user
+- 5 chunks retrieved/reranked per query (Voyage AI rerank-2)
+- Router prompt: ~130 lines, extracts 8 structured fields as JSON
+
+---
+
+### Research Questions
+
+**1. Router latency (3.2–3.9s for JSON extraction)**
+- What is the latency impact of `thinking_budget=512` on Gemini 2.5 Flash for a simple structured extraction task? Does thinking meaningfully improve JSON accuracy vs. a non-thinking call?
+- For a 130-line prompt extracting 8 fields, what techniques reduce latency without accuracy regression: prompt compression, few-shot removal, smaller model, or structured output schema enforcement?
+- Is there a documented latency difference between Gemini 2.5 Flash (thinking) vs. Gemini 2.0 Flash (no thinking) for JSON classification tasks?
+
+**2. Generator latency and token waste**
+- Chain-of-Verification: does forcing a `<thinking>` block with a verbatim quote before answering measurably improve faithfulness in RAG systems? What does the literature say? Is the tradeoff worth ~1–2s of extra generation time?
+- With TAMU gateway forcing `max_tokens=4096` but actual output being <350 tokens, is there a way to reduce latency without reducing `max_tokens`? (e.g., stop sequences, output length control in system prompt)
+- What prompt techniques reduce answer length without reducing answer quality (reducing output tokens → lower generation latency)?
+
+**3. RAGAS answer relevancy at 0.50–0.55**
+- RAGAS AnswerRelevancy measures whether the answer addresses the question. At 0.50–0.55 with faithfulness at 0.87–0.97, what is the most likely cause: over-verbose answers, answers covering topics not asked about, or a metric measurement issue?
+- What prompt changes are most effective for improving answer relevancy specifically: tighter focus instructions, explicit "only answer what was asked" constraints, or output format changes?
+- Does reducing retrieved chunk count (5 → 3) improve relevancy by reducing off-topic context, or does it hurt faithfulness?
+
+---
+
+### Deliverables
+
+1. **Compare 3 approaches** for each of the 3 problem areas above, with trade-offs on: latency impact, quality impact, implementation complexity, and risk
+2. **A ~2-page implementation summary** suitable for pasting directly to an AI coding agent, covering:
+   - Exact changes to make (file, parameter, prompt text)
+   - Expected measurable impact per change
+   - What NOT to change (faithfulness is working; don't break it)
+   - Suggested order of implementation (highest ROI first)
+
+
+---
+
+## PROMPT 8: Conversation Memory State Management for LangGraph RAG
+
+I have a production LangGraph-based RAG chatbot and I want to research the best, easiest-to-implement improvements to its conversation memory. Please do a deep research pass and give me concrete, practical recommendations.
+
+---
+
+### System Overview
+
+The system is a **course-advising chatbot** (Texas A&M University) built on LangGraph with the following pipeline:
+
+**Pipeline nodes (in order):**
+router → history_inject → [conditional: out_of_scope | anchor → eval_search → retrieval → schedule_filter → merge | retrieval] → generator → history_update → END
+
+**State contract (TypedDict):**
+- `query`: raw user question
+- `rewritten_query`: LLM-rewritten query (modified by history_inject_node)
+- `function`: routing decision ("hybrid_course", "recurrent", "semantic_general", "out_of_scope")
+- `course_ids`, `intent_type`, `specific_categories`: router-extracted metadata
+- `retrieved_chunks`: list of document chunks from MongoDB+Voyage AI vector search
+- `answer`: final generated answer string
+- `answer_stream`: streaming iterator (NOT checkpointed — stripped before LangGraph checkpoint)
+- `trace`: Langfuse observability object (NOT checkpointed — stripped before LangGraph checkpoint)
+- `timing_ms`, `node_trace`, `error`: observability metadata
+- `history`: list of ConversationMessage (role, content, router_result)
+- `history_summary`: str (field exists, NEVER populated — reserved)
+- `turn_number`: int
+- `session_id`: str
+
+**Checkpointing:**
+- Uses LangGraph's MemorySaver (default) or SqliteSaver (`V4_CHECKPOINTER_BACKEND=sqlite`)
+- Session ID from Streamlit → mapped to LangGraph `thread_id` via in-memory dict
+- Non-serializable fields (answer_stream, trace) are stripped before each checkpoint via a wrapper
+
+**History management (current):**
+- `history_inject_node`: prepends the last 3 user/assistant turns (6 messages) as plain text to `rewritten_query`
+- `history_update_node`: appends current turn, slides window to last `V4_MAX_HISTORY_TURNS=6` turns (12 messages), then clips — no summarization
+- `history_summary` field exists in state but is never written to
+
+**Router behavior:**
+- Classifies query fresh each turn (does NOT read history)
+- Outputs: course_ids, intent_type, specific_categories, recurrent_search, rewritten_query
+- History is injected AFTER routing to preserve fresh per-turn classification
+
+---
+
+### What Is Already Working Well
+
+- LangGraph checkpointing correctly persists history across turns
+- Router runs on clean query (avoids context contamination of routing)
+- history_inject runs after router and enriches rewritten_query with plain-text context window
+- Non-serializable fields are handled (stripped/re-injected around checkpoints)
+- The system is live and functional; we want improvements, not a rewrite
+
+---
+
+### Pain Points / What Is Missing
+
+1. **History sliding window loses context** — after 6 turns, older context is permanently dropped. The `history_summary` field exists but is never populated.
+
+2. **History injection is text-only** — the last 3 turns are prepended as a plain-text block to the query string. There is no structured message history passed to the generator LLM, only to the retrieval query.
+
+3. **Router is history-blind** — it classifies purely on the current turn. Follow-up queries like "and what about the lab sections?" get classified as new intents rather than continuations, sometimes causing missed context.
+
+4. **Generator doesn't see history messages natively** — the generator LLM receives `rewritten_query` (which may have 3-turn text prepended) + retrieved chunks. There is no explicit `messages: [...]` array with system/user/assistant turns.
+
+5. **No "is follow-up" detection** — the router could tag turns as follow-ups vs new questions, but currently does not. This would change retrieval behavior (e.g., inherit previous course_ids on follow-up).
+
+6. **answer_stream non-serializable problem** — the streaming iterator cannot be checkpointed, so the system collects all tokens into a list and replays. This works but is inelegant.
+
+7. **Two parallel graph implementations** — `build_graph()` (stateless) and `build_graph_with_memory()` duplicate all edge definitions. Changes must be applied twice.
+
+---
+
+### Research Questions
+
+Please answer all of these with a focus on **LangGraph-native solutions** and **minimal additional complexity**:
+
+**1. Conversation history summarization**
+- What is the standard LangGraph pattern for automatic history summarization? (e.g., using a summarization node that fires when history exceeds N turns)
+- Should this run as a dedicated node after history_update, or inline within history_update_node?
+- What LLM call pattern is recommended (separate summarization call vs. asking the generator to compress)?
+- How should `history_summary` be injected into the pipeline — into `rewritten_query` alongside the window, or directly into the generator's system prompt?
+
+**2. Structured message history vs. text injection**
+- Should I pass a proper `messages: [{role, content}]` list to the generator LLM instead of prepending context to `rewritten_query`?
+- What are the trade-offs between text-injection (current) vs. structured multi-turn messages for an OpenAI-compatible API?
+- Can I do both: use structured history for the generator while keeping text injection for retrieval query enrichment?
+
+**3. Follow-up detection and intent continuity**
+- What is the simplest LangGraph pattern to detect follow-up queries (continuation of previous topic) vs. new questions?
+- Should this be a flag the router emits, or a separate node?
+- If a query is a follow-up, what state should be inherited from the previous turn (course_ids, specific_categories, intent_type)?
+
+**4. LangGraph tools and MCP integration**
+- I plan to add tool-use capabilities (web search, calendar lookup, etc.) and MCP servers in the future.
+- How does adding tools/MCP affect conversation memory management? What changes to state design should I make now to avoid rework later?
+- What LangGraph patterns (e.g., ToolNode, interrupt_before/after) interact with checkpointed conversation history?
+
+**5. Simplifying two graph variants**
+- Is there a clean pattern to unify `build_graph()` (stateless) and `build_graph_with_memory()` into a single graph that conditionally enables memory?
+- Or is the dual-graph approach idiomatic in LangGraph?
+
+**6. Session persistence**
+- The session_id → thread_id mapping lives in an in-memory dict and is lost on restart. Should I persist this mapping (e.g., in the same SQLite DB as LangGraph's checkpointer)?
+- What is the idiomatic LangGraph pattern for managing thread IDs across process restarts?
+
+---
+
+### Constraints and Preferences
+
+- **LangGraph-native first**: prefer patterns that use LangGraph's built-in capabilities (checkpointing, interrupt, ToolNode) over external state stores
+- **Minimal complexity**: easy wins over architecturally pure. Incremental improvements over rewrites.
+- **No breaking changes to the pipeline node interface**: each node must remain `fn(state, registry) -> dict`
+- **OpenAI-compatible API**: the system uses TAMU's OpenAI-compatible gateway (streaming only, min max_tokens=4096)
+- **MongoDB + Voyage AI**: retrieval uses MongoDB Atlas vector search + Voyage AI embeddings; stateless per call
+
+---
+
+### Deliverables I Want
+
+1. A **prioritized list** of conversation memory improvements, from easiest/highest-impact to most complex
+2. For each improvement: a concrete description of what changes (which nodes, which state fields, which LangGraph APIs)
+3. Any **LangGraph documentation links or official patterns** I should read
+4. A note on **what NOT to do** (anti-patterns to avoid for this use case)
+
+---
+
 ## PROMPT 7: RAG Evaluation Workflow — Golden Test Set, Stage Isolation, Experiment Tracking, and Hyperparameter Optimization
 
 I'm building **TamuBot**, a production RAG chatbot for Texas A&M University students. I need a **complete, practical evaluation workflow** designed for my exact stack and resource constraints. The goal is to systematically optimize the pipeline — prompts, retrieval parameters, architecture choices — by measuring the right things cheaply at each stage. Give me state-of-the-art techniques grounded in evidence, not generic advice.
@@ -652,4 +852,79 @@ Research:
 5. **Taxonomy reassessment** — keep 8 intents, merge some, or split others? Justify with the boundary collapse data.
 6. **Implementation priority order** — max impact, minimum effort first
 7. **Session management sketch** — 1-page future architecture design
+
+---
+
+## PROMPT 8: Systematic RAG Pipeline Optimization — Parameter Search and Experiment Infrastructure
+
+I'm building **TamuBot**, a production RAG chatbot for Texas A&M University students built on Python 3.12, LangGraph, MongoDB Atlas, Voyage AI, and Gemini Flash. The pipeline is modular and has ~15 tunable parameters. I want to run a structured optimization study (~15–20 experiment runs) to find the parameter combination that maximizes answer quality per unit cost.
+
+**My highest priority is cost/efficiency ratio** — I care about RAGAS quality (faithfulness + answer relevancy), latency, and API token spend simultaneously, not just accuracy in isolation.
+
+### Parameters I'm tuning
+
+**Retrieval:**
+- `retrieve_k` per query function (hybrid_course: 10–40, semantic_general: 15–50, recurrent: 5–25)
+- `rerank_k` per query function (typically retrieve_k / 3–4)
+- `max_retrieve_k` global cap (40–80)
+
+**Ingestion (requires re-embedding, higher cost per trial):**
+- `chunk_size` (200–800 tokens)
+- `chunk_overlap` (0–150 tokens)
+
+**Context:**
+- `chunks_per_slot` (1–4 chunks per (course, category) slot)
+- `stratified_fallback_per_course` (3–10)
+
+**Generation:**
+- `thinking_budget` (0, 512, 1024, 2048)
+- `temperature` (0.0, 0.1, 0.2, 0.3)
+- `generation_model` (categorical: "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash")
+
+**Reranking:**
+- `rerank_model` (categorical: "rerank-2", "rerank-2-lite")
+
+### Evaluation setup
+
+Each run benchmarks against a 50-question golden set with 7 strata (factual lookup, advisory, multi-course comparison, semantic general, recurrent/multi-turn). Metrics captured per run:
+- **RAGAS faithfulness** (0–1, higher = answer grounded in context)
+- **RAGAS answer_relevancy** (0–1, higher = answer targets the question; currently 0.50, main gap)
+- **Mean pipeline latency** (ms)
+- **Estimated API token spend** (input + output tokens, for cost proxy)
+- **Router accuracy** (ground truth function classification)
+- **Citation pass rate**
+
+A full run (50 questions, with RAGAS) costs ~$0.30–0.50 in API calls and takes ~20–30 minutes. Ingestion-requiring runs (chunk_size/overlap changes) add ~15 minutes and ~$0.10. Budget: ~20 runs total.
+
+### What I want from this research
+
+I am **not anchored to any particular optimization paradigm**. I want you to survey the landscape of approaches and recommend what actually works for this problem, including but not limited to:
+
+- **Bayesian optimization / surrogate model methods** (Gaussian processes, TPE, random forests as surrogates) — Optuna, Ax, BoTorch, SMAC3
+- **Design of Experiments** (Sobol sequences, Plackett-Burman, Latin hypercube screening)
+- **Evolutionary / genetic algorithms** — CMA-ES, NSGA-II for multi-objective
+- **Reinforcement learning / bandit approaches** — multi-armed bandit, contextual bandits, RL-based HPO
+- **Gradient-free methods** — Nelder-Mead, Powell, COBYLA for low-budget black-box
+- **RAG-specific optimization frameworks** — AutoRAG, DSPy optimizers, LlamaIndex eval loops, anything built for LLM pipeline tuning
+- **Any hybrid or novel approach** I may not have considered
+
+### Key constraints
+
+1. **Sequential execution** — each run calls paid APIs, cannot parallelize (no distributed search)
+2. **Budget: ~20 runs** — algorithm must be sample-efficient
+3. **Mixed parameter types** — integers (k values), floats (temperature), categoricals (model names), and two-level parameters (chunk_size/overlap) that are expensive to change (require re-ingestion)
+4. **Multi-objective** — I want to jointly optimize quality (RAGAS) AND efficiency (latency + cost), not just one metric
+5. **Stateful / sequential** — ideally the system uses results from prior runs to intelligently choose the next configuration to try (not static grid or random search)
+6. **Open-source preferred** — I want to understand and control the algorithm, not a black box SaaS
+7. **Must handle parameter dependencies** — chunk_size/overlap only need to change infrequently (they require re-ingestion); the other params can be swept cheaply
+
+### Output I want
+
+1. **Ranked comparison table** of approaches on: sample efficiency (expected result quality at run budget), handling of mixed types, multi-objective support, sequential/adaptive capability, Python library maturity, ease of integration
+2. **Recommended approach** with justification — what algorithm/library would you use for this exact setup, and why?
+3. **Concrete workflow** — step by step: how to define the parameter space, how to generate the initial screening configs, how to observe results and update the model, how to recommend the next config
+4. **Handling expensive parameters** — best practice for treating chunk_size/overlap as "outer loop" vs inner-loop parameters given re-ingestion cost
+5. **Stopping criteria** — with only ~20 runs, how do I know when I've found a good enough optimum vs. need more runs?
+6. **GitHub examples** — 2–3 real open-source repos that do something similar (LLM pipeline tuning, RAG optimization, or black-box HPO with limited budget)
+7. **What to avoid** — common pitfalls in low-budget black-box optimization of noisy objectives (RAGAS scores have variance)
 8. **References** — papers/repos on per-intent retrieval tuning, RAG deduplication, structured output prompt engineering

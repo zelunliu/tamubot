@@ -130,3 +130,118 @@ def test_history_inject_caps_at_6_messages():
     # Should contain context but not first turns
     assert "old question 0" not in new_query
     assert "Current question" in new_query
+
+
+# ---------------------------------------------------------------------------
+# History summarization tests
+# ---------------------------------------------------------------------------
+
+def test_history_update_calls_summarize_when_flag_enabled_and_over_limit():
+    """When ENABLE_HISTORY_SUMMARY=True and history exceeds window, summarize_history is called."""
+    from unittest.mock import patch
+    import config
+    from rag.v4.nodes.history_update_node import history_update_node
+
+    n_turns = config.V4_MAX_HISTORY_TURNS + 2
+    long_history = []
+    for i in range(n_turns):
+        long_history.append({"role": "user", "content": f"question {i}"})
+        long_history.append({"role": "assistant", "content": f"answer {i}"})
+
+    mock_registry = MagicMock()
+    mock_registry.generator_llm.summarize_history.return_value = "Mocked summary."
+
+    state = {
+        "query": "final question",
+        "answer": "final answer",
+        "history": long_history,
+        "history_summary": "",
+        "router_result": None,
+        "turn_number": n_turns,
+        "node_trace": [],
+        "timing_ms": {},
+    }
+
+    with patch.object(config, "ENABLE_HISTORY_SUMMARY", True):
+        result = history_update_node(state, registry=mock_registry)
+
+    mock_registry.generator_llm.summarize_history.assert_called_once()
+    assert result["history_summary"] == "Mocked summary."
+    assert len(result["history"]) <= config.V4_MAX_HISTORY_TURNS * 2 + 2
+
+
+def test_history_update_no_summarize_when_flag_disabled():
+    """When ENABLE_HISTORY_SUMMARY=False, summarize_history is never called even over limit."""
+    from unittest.mock import patch
+    import config
+    from rag.v4.nodes.history_update_node import history_update_node
+
+    n_turns = config.V4_MAX_HISTORY_TURNS + 2
+    long_history = []
+    for i in range(n_turns):
+        long_history.append({"role": "user", "content": f"question {i}"})
+        long_history.append({"role": "assistant", "content": f"answer {i}"})
+
+    mock_registry = MagicMock()
+
+    state = {
+        "query": "final question",
+        "answer": "final answer",
+        "history": long_history,
+        "history_summary": "",
+        "router_result": None,
+        "turn_number": n_turns,
+        "node_trace": [],
+        "timing_ms": {},
+    }
+
+    with patch.object(config, "ENABLE_HISTORY_SUMMARY", False):
+        result = history_update_node(state, registry=mock_registry)
+
+    mock_registry.generator_llm.summarize_history.assert_not_called()
+    assert len(result["history"]) <= config.V4_MAX_HISTORY_TURNS * 2 + 2
+
+
+def test_history_inject_includes_summary_when_present():
+    """history_inject_node prepends summary block when history_summary is non-empty."""
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "what are office hours?",
+        "rewritten_query": "what are office hours?",
+        "history": [
+            {"role": "user", "content": "Tell me about CSCE 221"},
+            {"role": "assistant", "content": "CSCE 221 covers data structures."},
+        ],
+        "history_summary": "The student asked about CSCE 221 prerequisites and grading.",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+    new_query = result.get("rewritten_query", state["rewritten_query"])
+    assert "The student asked about CSCE 221 prerequisites" in new_query
+    assert "Current question" in new_query
+
+
+def test_history_inject_summary_appears_before_recent_turns():
+    """Summary block must appear before [Previous context:] block in the enriched query."""
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "any updates?",
+        "rewritten_query": "any updates?",
+        "history": [
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+        ],
+        "history_summary": "Summary of older turns.",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+    new_query = result.get("rewritten_query", state["rewritten_query"])
+    summary_pos = new_query.find("Summary of older turns.")
+    recent_pos = new_query.find("recent question")
+    assert summary_pos != -1, "Summary block not found in enriched query"
+    assert recent_pos != -1, "Recent turn not found in enriched query"
+    assert summary_pos < recent_pos, "Summary must appear before recent turns"

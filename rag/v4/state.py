@@ -1,10 +1,12 @@
 """PipelineState TypedDict — the central data contract for the v4 LangGraph pipeline."""
 from __future__ import annotations
-from typing import Any, Iterator, Optional, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any, Optional
+
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
-    from rag.router import RouterResult
+    pass
 
 
 class PipelineState(TypedDict, total=False):

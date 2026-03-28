@@ -9,7 +9,8 @@ from rag import route_retrieve_rerank, classify_query, RouterResult
 from rag import generate, generate_stream, generate_comparison
 from rag import hybrid_search, search_semantic, search_by_course_categories, get_missing_sections
 from rag import fetch_anchor_chunks
-from rag import rerank, rerank_multi_course
+from rag import rerank, rerank_multi_course, stratified_select
+from rag import run_pipeline
 from rag import get_langfuse, run_ragas_background, compute_ragas_metrics
 from rag import compute_dynamic_k, deduplicate_chunks, FUNCTION_CATEGORY_STRATEGIES
 

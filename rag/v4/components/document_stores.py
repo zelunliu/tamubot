@@ -44,6 +44,7 @@ class MongoDocumentStore:
         return {"$project": {
             "course_id": 1, "chunk_index": 1, "content": 1,
             "header_text": 1, "anchor": 1, "section": 1, "term": 1, "score": 1,
+            "category": 1,
         }}
 
     def hybrid_search(

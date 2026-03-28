@@ -13,11 +13,11 @@ python ingestion_pipeline/process_syllabi_v3.py --department CSCE
 python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
 ```
 
-Pipeline (always from repo root):
+Full pipeline (always from repo root):
 ```bash
 make scrape-catalog
 make scrape-classes
-GOOGLE_API_KEY=... python ingestion_pipeline/process_syllabi.py [--department CSCE] [--retry-errors]
+python ingestion_pipeline/process_syllabi_v3.py --department CSCE
 python -m ingestion_pipeline.setup_atlas
 python -m ingestion_pipeline.ingest [--department CSCE] [--dry-run]
 python -m ingestion_pipeline.ingest --crns-file tamu_data/evals/eval_corpus.json  # corpus only

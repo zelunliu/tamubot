@@ -36,7 +36,12 @@ class LLMRouterComponent:
         return self._llm_fn
 
     @component.output_types(router_result=object)
-    def run(self, query: str, trace: Optional[Any] = None) -> dict:
+    def run(
+        self,
+        query: str,
+        trace: Optional[Any] = None,
+        prior_course_ids: Optional[list[str]] = None,
+    ) -> dict:
         if self._llm_fn is not None:
             # Injected llm_fn — temporarily replace call_llm in rag.router so
             # classify_query uses it. Protected by a module-level lock to prevent
@@ -45,13 +50,18 @@ class LLMRouterComponent:
                 _original = _router_mod.call_llm
                 try:
                     _router_mod.call_llm = self._llm_fn
-                    router_result = classify_query(query, router_span=trace)
+                    router_result = classify_query(query, router_span=trace, prior_course_ids=prior_course_ids)
                 finally:
                     _router_mod.call_llm = _original
         else:
-            router_result = classify_query(query, router_span=trace)
+            router_result = classify_query(query, router_span=trace, prior_course_ids=prior_course_ids)
         return {"router_result": router_result}
 
-    def classify(self, query: str, trace: Optional[Any] = None) -> Any:
+    def classify(
+        self,
+        query: str,
+        trace: Optional[Any] = None,
+        prior_course_ids: Optional[list[str]] = None,
+    ) -> Any:
         """Satisfy RouterLLMComponent protocol."""
-        return self.run(query=query, trace=trace)["router_result"]
+        return self.run(query=query, trace=trace, prior_course_ids=prior_course_ids)["router_result"]

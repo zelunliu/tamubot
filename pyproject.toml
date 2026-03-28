@@ -1,7 +1,7 @@
 [project]
 name = "tamubot"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 
 [project.optional-dependencies]
 v4 = [
@@ -10,13 +10,20 @@ v4 = [
     "haystack-ai>=2.25.2,<3.0.0",
     "mem0ai",
 ]
+spike = [
+    "lightrag-hku",
+]
+
+[tool.setuptools.packages.find]
+include = ["rag*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+pythonpath = ["."]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 ignore_missing_imports = true
 
 [tool.ruff]
@@ -24,3 +31,10 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"evals/*.py" = ["E501"]
+"ingestion_pipeline/process_syllabi.py" = ["E501"]
+"ingestion_pipeline/process_syllabi_v3.py" = ["E501"]
+"ingestion_pipeline/legacy/standardize_syllabi.py" = ["E501"]
+"ingestion_pipeline/test_gemini_parse.py" = ["E501"]

@@ -1,6 +1,8 @@
 """History update node — appends current turn; compresses if > MAX_HISTORY_TURNS.
 
 Runs AFTER generator. Compression triggered when history length > V4_MAX_HISTORY_TURNS.
+When ENABLE_HISTORY_SUMMARY=True, evicted turns are LLM-compressed into history_summary
+instead of being dropped.
 """
 from __future__ import annotations
 
@@ -42,8 +44,14 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
 
     # Compress if over limit
     max_turns = config.V4_MAX_HISTORY_TURNS
+    history_summary = state.get("history_summary", "") or ""
     if len(history) > max_turns * 2:  # *2 because each turn = 2 messages
-        history = _compress_history(history, max_turns)
+        if config.ENABLE_HISTORY_SUMMARY:
+            history, history_summary = _compress_history_with_llm(
+                history, max_turns, history_summary, registry
+            )
+        else:
+            history = _compress_history(history, max_turns)
 
     # --- answer cache ---
     answer_cache_update = {}
@@ -63,6 +71,7 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
 
     return {
         "history": history,
+        "history_summary": history_summary,
         "turn_number": turn_number,
         "node_trace": node_trace,
         "answer_cache": answer_cache_update,
@@ -75,3 +84,23 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
 def _compress_history(history: list, max_turns: int) -> list:
     """Keep last max_turns turns, drop older messages."""
     return history[-(max_turns * 2):]
+
+
+def _compress_history_with_llm(
+    history: list, max_turns: int, existing_summary: str, registry: Any
+) -> tuple[list, str]:
+    """Summarize oldest turns with LLM, keep last max_turns turns.
+
+    Returns (trimmed_history, new_summary).
+    Falls back to plain truncation if registry.generator_llm is None.
+    """
+    keep_count = max_turns * 2
+    turns_to_compress = history[:-keep_count]
+    kept_history = history[-keep_count:]
+
+    generator = getattr(registry, "generator_llm", None)
+    if generator is None:
+        return kept_history, existing_summary
+
+    new_summary = generator.summarize_history(turns_to_compress, existing_summary)
+    return kept_history, new_summary

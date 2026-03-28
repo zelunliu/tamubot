@@ -35,16 +35,16 @@ ingest-corpus:
 
 # --- Dev / Testing ---
 test:
-	pytest tests/ -v
+	.venv/bin/pytest tests/ -v
 
 typecheck:
-	mypy rag/ ingestion_pipeline/ evals/ --ignore-missing-imports
+	.venv/bin/mypy rag/ ingestion_pipeline/ evals/ --ignore-missing-imports
 
 lint:
-	ruff check rag/ ingestion_pipeline/ evals/ app.py config.py
+	.venv/bin/ruff check rag/ ingestion_pipeline/ evals/ app.py config.py
 
 format:
-	ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
+	.venv/bin/ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
 
 eval-router:
 	python evals/eval_router_metrics.py

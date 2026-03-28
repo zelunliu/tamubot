@@ -17,6 +17,8 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    environment:
+      - API_PROXY_TAMU_SESSION=1000
     volumes:
       - ./logs:/workspace/logs
 

@@ -1,8 +1,10 @@
 """Generator node — streams the final answer."""
 from __future__ import annotations
+
 from typing import Any
-from rag.v4.state import PipelineState
+
 from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.state import PipelineState
 
 
 @timing_middleware

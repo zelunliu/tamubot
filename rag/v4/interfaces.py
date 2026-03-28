@@ -4,13 +4,19 @@ These protocols define the method contracts each provider must satisfy.
 Swap any field in ComponentRegistry → different provider, zero graph changes.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class RouterLLMComponent(Protocol):
-    def classify(self, query: str, trace: Optional[Any] = None) -> Any:
+    def classify(
+        self,
+        query: str,
+        trace: Optional[Any] = None,
+        prior_course_ids: Optional[list[str]] = None,
+    ) -> Any:
         """Classify a query and return a RouterResult."""
         ...
 
@@ -68,6 +74,14 @@ class GeneratorLLMComponent(Protocol):
 
     def generate_eval_query(self, query: str, anchor_chunks: list[dict], trace: Optional[Any] = None) -> str:
         """Generate the eval/discovery search string for the recurrent pass."""
+        ...
+
+    def summarize_history(
+        self,
+        turns_to_compress: list[dict],
+        existing_summary: str,
+    ) -> str:
+        """Compress dropped turns + existing summary into a rolling summary string."""
         ...
 
 

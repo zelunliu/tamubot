@@ -1,7 +1,0 @@
-how do csce 638 and csce 670 interlap
-
-Based on the provided context, information for "CSCE 638" is not available.
-
-"CSCE 670 Information Storage and Retrieval" covers the representation, storage, and access to very large multimedia document collections, including fundamental data structures and algorithms of information storage and retrieval systems, and techniques to design and evaluate complete retrieval systems (indexing, compressing, and querying large collections).
-
-

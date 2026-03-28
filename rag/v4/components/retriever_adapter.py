@@ -1,5 +1,6 @@
 """Bridges MongoDocumentStore + VoyageEmbedder into RetrieverComponent protocol."""
 from __future__ import annotations
+
 from typing import Any, Optional
 
 from rag.v4.components.document_stores import MongoDocumentStore

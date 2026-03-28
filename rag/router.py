@@ -145,13 +145,23 @@ FUNCTION_CATEGORY_STRATEGIES: dict = {}
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify_query(query: str, router_span=None) -> "RouterResult":
+def classify_query(
+    query: str,
+    router_span=None,
+    prior_course_ids: Optional[list[str]] = None,
+) -> "RouterResult":
     """Extract structured variables from a user query using Gemini Flash.
 
     Args:
-        query:       The raw user question.
-        router_span: Optional Langfuse span to record router metadata into.
+        query:            The raw user question.
+        router_span:      Optional Langfuse span to record router metadata into.
+        prior_course_ids: Course IDs from the previous turn, prepended as a
+                          context hint so the LLM can resolve pronouns like
+                          "it" or "that course".
     """
+    if prior_course_ids:
+        hint = f"[Context: previous turn mentioned courses: {', '.join(prior_course_ids)}]\n"
+        query = hint + query
     prompt = ROUTER_PROMPT.format(query=query)
 
     llm_result = None

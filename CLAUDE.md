@@ -32,7 +32,7 @@ make test | lint | typecheck | format | eval-router | probe | probe-full
 - **TAMU AI gateway** (`TAMU_API_KEY` set → `USE_TAMU_API=True`): always returns SSE regardless of `stream` param → ALL calls must use `stream=True` + `"".join(chunk.choices[0].delta.content or "" for chunk in stream)`. Base URL: `https://chat-api.tamu.ai/openai` (no `/v1`). Min `max_tokens=4096` or response is empty.
 - **Gemini JSON mode**: with `response_mime_type="application/json"` + schema, free-form Markdown fields silently return empty — always render Markdown in Python from structured data
 - **Langfuse SDK / Python 3.14**: `pydantic.v1` incompatible → custom `MinimalLangfuseClient` in `rag/observability.py`; revert when SDK ships fix
-- **ingestion_pipeline**: stays on direct `GOOGLE_API_KEY` — PDF multimodal (`Part.from_bytes`) not supported by TAMU gateway
+- **ingestion_pipeline v3**: uses TAMU gateway for LLM calls (`config.get_tamu_client()`); PyMuPDF extracts PDFs directly — no `Part.from_bytes`. Legacy `process_syllabi.py` uses direct `GOOGLE_API_KEY` (Gemini)
 
 ## Skills — Auto-Engage
 
@@ -44,6 +44,8 @@ Invoke via the Skill tool automatically (no `/` command needed) when intent matc
 - **github-collab**: user says "push", "open a PR", "create a branch", "start a feature", "I merged", "clean up branch", "am I ready to push", or "run checks"
 - **refine-syllabi**: user asks to audit, refine, or improve syllabus parsing quality, check for boilerplate leaks, or iterate on the ingestion prompt
 - **server-ops**: user says "restart localhost/server/app", "start/stop server", "kill the server", "server status", "clear cache", or any variant of managing the local dev server
+- **task-budget**: any task involving TAMU API, Voyage AI, or Google AI calls (RAG queries, probes, ingestion, benchmarks)
+- **research-prompts**: user asks to generate or write a research prompt
 
 When skill tool engaged, make sure to notify user!
 

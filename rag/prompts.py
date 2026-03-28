@@ -12,6 +12,15 @@ ROUTER_PROMPT = """\
 You are a query parser for a Texas A&M University course assistant.
 Extract structured variables from the user's question and emit JSON.
 
+CONVERSATION CONTEXT
+The query may begin with a [Context: previous turn mentioned courses: ...] line.
+Use those courses to resolve pronouns ("it", "that course", "this class", "those courses")
+in the current question. Always include previously mentioned courses when the student
+refers to them with pronouns or implicit references.
+Examples:
+- context says CSCE 670, query is "compare it with CSCE 638" → course_ids=["CSCE 670", "CSCE 638"]
+- context says CSCE 670, query is "which course has more assignments" → course_ids=["CSCE 670"]
+
 COURSE IDs
 Identify all course IDs mentioned (e.g. "CSCE 638", "CSCE 670").
 Normalize: uppercase department + space + number ("csce638" → "CSCE 638", "CSCE-670" → "CSCE 670").
@@ -76,7 +85,8 @@ Examples:
 - "Compare the grading of CSCE 638 and CSCE 670" → intent_type=null (factual comparison)
 - "Is CSCE 638 harder than CSCE 670?" → intent_type="DIFFICULTY" (evaluative/opinion)
 - "What is the TAMU academic integrity policy?" → intent_type="ACADEMIC" (TAMU discovery, no course_id)
-- "If I don't access Perusall through Canvas, will my grades show up?" → intent_type="ADMINISTRATIVE" (TAMU tool, no course_id)
+- "If I don't access Perusall through Canvas, will my grades show up?"
+  → intent_type="ADMINISTRATIVE" (TAMU tool, no course_id)
 - "What are the best restaurants near TAMU?" → intent_type=null (NOT TAMU academic)
 - "Can you write a cover letter?" → intent_type=null (NOT TAMU academic)
 
@@ -160,13 +170,15 @@ and do NOT use training data to fill the gap.
 # specific_categories and specific_only extracted by the router.
 _HYBRID_COURSE_DEFAULT = (
     "The user is asking for a general overview of a course. "
-    "Provide key facts covering the course structure, prerequisites, learning outcomes, "
-    "grading, and any other relevant aspects from the context. "
-    "Include the course ID and section. Label information by section where multiple sections are present."
+    "Answer the question directly using the most relevant information from the context. "
+    "For broad overview questions, cover the course purpose, key topics, prerequisites, and grading. "
+    "Do not pad the answer with aspects the question did not ask about. "
+    "Include the course ID and section."
 )
 _HYBRID_COURSE_SPECIFIC = (
     "The user is asking about specific course details. "
     "Focus precisely on the requested topic(s) and be complete and accurate. "
+    "Do NOT include information about aspects of the course not asked about. "
     "Include the course ID and section. Name the instructor where relevant."
 )
 _HYBRID_COURSE_COMBINED = (
@@ -216,6 +228,10 @@ _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     ),
     "GENERAL": (
         "Address the advisory aspect of the question using evidence from the course context."
+    ),
+    "ADMINISTRATIVE": (
+        "Address the administrative dimension: explain how the relevant TAMU tool, platform, "
+        "or system works in the context of the student's question, based on available evidence."
     ),
 }
 
