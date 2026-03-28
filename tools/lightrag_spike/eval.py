@@ -32,8 +32,9 @@ from rag.observability import compute_ragas_metrics
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wrappers import WORKING_DIR, make_lightrag
 
-REPORTS_DIR = Path("tamu_data/evals/reports")
-DEFAULT_GOLDEN = Path("tamu_data/evals/golden_sets/golden_20260313_draft_v1_sample10.jsonl")
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPORTS_DIR = _REPO_ROOT / "tamu_data/evals/reports"
+DEFAULT_GOLDEN = _REPO_ROOT / "tamu_data/evals/golden_sets/golden_20260313_draft_v1_sample10.jsonl"
 
 
 def normalize_course_id(cid: str) -> str:
