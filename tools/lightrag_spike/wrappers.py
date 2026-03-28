@@ -33,14 +33,14 @@ def make_tamu_llm_func():
     async def tamu_llm_func(
         prompt: str,
         system_prompt: str | None = None,
-        history_messages: list = [],
+        history_messages: list | None = None,
         keyword_extraction: bool = False,
         **kwargs,
     ) -> str:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        for msg in history_messages:
+        for msg in (history_messages or []):
             messages.append(msg)
         messages.append({"role": "user", "content": prompt})
 
@@ -64,8 +64,9 @@ def make_voyage_embed_func() -> EmbeddingFunc:
     """Return an EmbeddingFunc using Voyage-3 (same model as the v4 pipeline)."""
     import voyageai
 
+    client = voyageai.Client(api_key=config.VOYAGE_API_KEY)
+
     async def voyage_embed(texts: list[str]) -> np.ndarray:
-        client = voyageai.Client(api_key=config.VOYAGE_API_KEY)
         result = await asyncio.to_thread(
             client.embed, texts, model="voyage-3", input_type="document"
         )
