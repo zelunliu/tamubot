@@ -1,13 +1,15 @@
-"""Ingest eval-set CSCE courses from MongoDB chunks_v3 into LightRAG storage.
+"""Ingest all 19 eval-set CSCE courses into a shared LightRAG storage.
+
+Uses boilerplate-stripped .md files from tamu_data/processed/v3_step2_boilerplate/.
+CSCE 650 falls back to MongoDB chunks_v3 (no boilerplate file available).
 
 Usage:
-    python tools/lightrag_spike/ingest.py [--dry-run]
+    python tools/lightrag_spike/ingest.py [--storage-dir storage_19course] [--dry-run]
 
-Fetches chunks for the 19 eval-set CSCE courses and inserts them into LightRAG.
-Runs entity extraction + relationship building via TAMU gateway LLM.
-Graph + vectors are persisted to tools/lightrag_spike/storage/.
-
-Cost note: ~380 LLM calls (one per chunk) via TAMU gateway. One-time cost.
+Options:
+    --storage-dir   Storage dir name under tools/lightrag_spike/ (default: storage_19course)
+    --dry-run       Print what would be ingested without making any API calls
+    --gleaning      Entity extraction gleaning rounds (default: 1, minimum cost)
 """
 
 import argparse
@@ -16,110 +18,140 @@ import sys
 import time
 from pathlib import Path
 
-import pymongo
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-import config
-
-# Add spike dir to path for sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wrappers import WORKING_DIR, make_lightrag
 
-# The 19 courses from the eval golden set
-EVAL_COURSE_IDS = [
-    "CSCE 608",
-    "CSCE 611",
-    "CSCE 612",
-    "CSCE 624",
-    "CSCE 629",
-    "CSCE 632",
-    "CSCE 633",
-    "CSCE 638",
-    "CSCE 641",
-    "CSCE 650",
-    "CSCE 656",
-    "CSCE 665",
-    "CSCE 669",
-    "CSCE 670",
-    "CSCE 672",
-    "CSCE 676",
-    "CSCE 679",
-    "CSCE 681",
-    "CSCE 713",
-]
+import config  # noqa: F401
+from wrappers import SYLLABUS_ENTITY_TYPES, amake_lightrag_improved
+
+SPIKE_DIR = Path(__file__).resolve().parent
+BOILERPLATE_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "tamu_data/processed/v3_step2_boilerplate"
+)
+
+# 18 courses with boilerplate .md files (Spring 2026 section 600)
+BOILERPLATE_COURSES = {
+    "CSCE 608": "202611_CSCE_608_600_46648_v010.md",
+    "CSCE 611": "202611_CSCE_611_600_50668_v010.md",
+    "CSCE 612": "202611_CSCE_612_600_42640_v010.md",
+    "CSCE 624": "202611_CSCE_624_600_58435_v010.md",
+    "CSCE 629": "202611_CSCE_629_600_54978_v010.md",
+    "CSCE 632": "202611_CSCE_632_600_54784_v010.md",
+    "CSCE 633": "202611_CSCE_633_601_58706_v010.md",
+    "CSCE 638": "202611_CSCE_638_600_54988_v010.md",
+    "CSCE 641": "202611_CSCE_641_600_58437_v010.md",
+    "CSCE 656": "202611_CSCE_656_600_42432_v010.md",
+    "CSCE 665": "202611_CSCE_665_600_30874_v010.md",
+    "CSCE 669": "202611_CSCE_669_600_58438_v010.md",
+    "CSCE 670": "202611_CSCE_670_600_46627_v010.md",
+    "CSCE 672": "202611_CSCE_672_600_58439_v010.md",
+    "CSCE 676": "202611_CSCE_676_600_58440_v010.md",
+    "CSCE 679": "202611_CSCE_679_600_55144_v010.md",
+    "CSCE 681": "202611_CSCE_681_600_12644_v010.md",
+    "CSCE 713": "202611_CSCE_713_600_58633_v010.md",
+}
+
+# CSCE 650: no boilerplate file, fetched from MongoDB
+MONGO_COURSES = ["CSCE 650"]
 
 
-def fetch_chunks(course_ids: list[str]) -> list[dict]:
-    """Fetch all chunks for the given course IDs from MongoDB chunks_v3."""
+def load_from_boilerplate(course_id: str) -> str:
+    filename = BOILERPLATE_COURSES[course_id]
+    path = BOILERPLATE_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(f"Boilerplate file not found: {path}")
+    header = f"# {course_id} — Course Syllabus (Spring 2026)\n# This document is the official course syllabus for {course_id}.\n\n"
+    return header + path.read_text(encoding="utf-8")
+
+
+def load_from_mongo(course_id: str) -> str:
+    import pymongo
     client = pymongo.MongoClient(config.MONGODB_URI)
     db = client[config.MONGODB_DB]
-    collection = db["chunks_v3"]
-    chunks = list(collection.find(
-        {"course_id": {"$in": course_ids}},
-        {"_id": 0, "anchor": 1, "content": 1, "course_id": 1,
-         "section": 1, "term": 1, "category": 1, "chunk_index": 1},
-    ).sort([("course_id", 1), ("chunk_index", 1)]))
+    chunks = list(
+        db["chunks_v3"]
+        .find({"course_id": course_id}, {"_id": 0, "anchor": 1, "content": 1, "chunk_index": 1})
+        .sort("chunk_index", 1)
+    )
     client.close()
-    return chunks
+    if not chunks:
+        raise ValueError(f"No chunks found in MongoDB for {course_id}")
+    header = f"# {course_id} — Course Syllabus\n# This document is the official course syllabus for {course_id}.\n\n"
+    body = "\n\n".join(f"{c.get('anchor', '')}\n\n{c.get('content', '')}" for c in chunks)
+    return header + body
 
 
-def format_chunk(chunk: dict) -> str:
-    """Format a chunk as LightRAG input text."""
-    anchor = chunk.get("anchor", "")
-    content = chunk.get("content", "")
-    return f"{anchor}\n\n{content}"
+def load_course(course_id: str) -> tuple[str, str]:
+    """Returns (text, source_label)."""
+    if course_id in BOILERPLATE_COURSES:
+        return load_from_boilerplate(course_id), "boilerplate"
+    return load_from_mongo(course_id), "mongodb"
 
 
-async def run_ingestion(dry_run: bool = False) -> None:
-    chunks = fetch_chunks(EVAL_COURSE_IDS)
-    print(f"Fetched {len(chunks)} chunks from MongoDB across {len(EVAL_COURSE_IDS)} courses")
+async def run_ingestion(storage_dir: Path, gleaning: int, dry_run: bool) -> None:
+    all_courses = list(BOILERPLATE_COURSES.keys()) + MONGO_COURSES
 
     if dry_run:
-        print("[DRY RUN] Skipping LightRAG insertion.")
-        for cid in EVAL_COURSE_IDS:
-            n = sum(1 for c in chunks if c["course_id"] == cid)
-            print(f"  {cid}: {n} chunks")
+        print(f"[DRY RUN] Would ingest {len(all_courses)} courses into {storage_dir}")
+        for cid in all_courses:
+            src = "boilerplate" if cid in BOILERPLATE_COURSES else "mongodb"
+            print(f"  {cid} ({src})")
         return
 
-    # Check for existing storage to avoid re-ingesting
-    graph_file = WORKING_DIR / "graph_chunk_entity_relation.graphml"
-    if graph_file.exists():
-        print(f"WARNING: {graph_file} already exists.")
-        print("Delete tools/lightrag_spike/storage/ to re-ingest from scratch.")
-        answer = input("Continue and add to existing graph? [y/N]: ").strip().lower()
-        if answer != "y":
-            print("Aborted.")
+    if storage_dir.exists():
+        graph_file = storage_dir / "graph_chunk_entity_relation.graphml"
+        if graph_file.exists():
+            print(f"WARNING: {storage_dir} already has a graph. Delete it to re-ingest.")
+            print("Aborting — use a fresh storage dir or delete the existing one.")
             return
 
-    rag = make_lightrag()
-    print(f"LightRAG storage: {WORKING_DIR}")
+    storage_dir.mkdir(parents=True, exist_ok=True)
 
-    # Group by course for progress logging
-    by_course: dict[str, list[dict]] = {}
-    for chunk in chunks:
-        by_course.setdefault(chunk["course_id"], []).append(chunk)
+    rag = await amake_lightrag_improved(
+        working_dir=storage_dir,
+        entity_types=SYLLABUS_ENTITY_TYPES,
+        chunk_token_size=500,
+        chunk_overlap_token_size=100,
+        entity_extract_max_gleaning=gleaning,
+        patch_prompts=True,
+        top_k=15,
+        related_chunk_number=2,
+    )
 
     total_start = time.time()
-    for i, (course_id, course_chunks) in enumerate(sorted(by_course.items()), 1):
-        print(f"[{i}/{len(by_course)}] Ingesting {course_id} ({len(course_chunks)} chunks)...")
-        course_start = time.time()
-        for chunk in course_chunks:
-            text = format_chunk(chunk)
+    for i, course_id in enumerate(all_courses, 1):
+        print(f"[{i}/{len(all_courses)}] Ingesting {course_id}...")
+        try:
+            text, src = load_course(course_id)
+            print(f"  Source: {src}, {len(text)} chars (~{len(text) // 4} tokens)")
+            t0 = time.time()
             await rag.ainsert(text)
-        elapsed = time.time() - course_start
-        print(f"  Done in {elapsed:.1f}s")
+            print(f"  Done in {time.time() - t0:.1f}s")
+        except Exception as e:
+            print(f"  ERROR: {e}")
 
-    total_elapsed = time.time() - total_start
-    print(f"\nIngestion complete: {len(chunks)} chunks in {total_elapsed:.1f}s")
-    print(f"Storage written to: {WORKING_DIR}")
+    elapsed = time.time() - total_start
+    print(f"\nIngestion complete in {elapsed:.1f}s")
+    graph_file = storage_dir / "graph_chunk_entity_relation.graphml"
+    if graph_file.exists():
+        print(f"Graph: {graph_file.stat().st_size / 1024:.1f} KB")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest eval-set CSCE courses into LightRAG")
-    parser.add_argument("--dry-run", action="store_true", help="Fetch chunks but skip LightRAG insertion")
+    parser = argparse.ArgumentParser(description="Ingest 19 eval-set courses into LightRAG")
+    parser.add_argument("--storage-dir", default="storage_19course",
+                        help="Storage dir name under tools/lightrag_spike/ (default: storage_19course)")
+    parser.add_argument("--gleaning", type=int, default=1,
+                        help="Gleaning rounds (default: 1 for minimum cost)")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    asyncio.run(run_ingestion(dry_run=args.dry_run))
+
+    asyncio.run(run_ingestion(
+        storage_dir=SPIKE_DIR / args.storage_dir,
+        gleaning=args.gleaning,
+        dry_run=args.dry_run,
+    ))
 
 
 if __name__ == "__main__":
