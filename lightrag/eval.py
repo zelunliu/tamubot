@@ -30,7 +30,7 @@ from rag.observability import compute_ragas_metrics
 
 # Add spike dir to path for sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wrappers import WORKING_DIR, make_lightrag
+from wrappers import WORKING_DIR, make_lightrag_improved
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REPORTS_DIR = _REPO_ROOT / "tamu_data/evals/reports"
@@ -76,16 +76,18 @@ async def run_single(rag, question: str) -> tuple[str, str]:
     return answer, str(context)
 
 
-async def run_eval(golden_path: Path) -> list[SpikeRow]:
-    if not WORKING_DIR.exists():
-        print(f"ERROR: storage not found at {WORKING_DIR}")
+async def run_eval(golden_path: Path, storage_dir: Path | None = None) -> list[SpikeRow]:
+    wd = storage_dir if storage_dir is not None else WORKING_DIR
+    if not wd.exists():
+        print(f"ERROR: storage not found at {wd}")
         print("Run ingest.py first.")
         sys.exit(1)
 
     golden = load_golden(golden_path)
     print(f"Loaded {len(golden)} questions from {golden_path}")
 
-    rag = make_lightrag()
+    rag = make_lightrag_improved(working_dir=wd)
+    await rag.initialize_storages()
     rows: list[SpikeRow] = []
 
     for i, entry in enumerate(golden, 1):
@@ -276,6 +278,12 @@ def main() -> None:
         default=DEFAULT_GOLDEN,
         help=f"Path to golden set JSONL (default: {DEFAULT_GOLDEN})",
     )
+    parser.add_argument(
+        "--storage-dir",
+        type=Path,
+        default=None,
+        help="LightRAG storage dir (default: tools/lightrag_spike/storage/)",
+    )
     args = parser.parse_args()
 
     if not args.golden.exists():
@@ -287,7 +295,7 @@ def main() -> None:
     md_path = REPORTS_DIR / f"lightrag_spike_{timestamp}.md"
     xlsx_path = REPORTS_DIR / f"lightrag_spike_{timestamp}.xlsx"
 
-    rows = asyncio.run(run_eval(args.golden))
+    rows = asyncio.run(run_eval(args.golden, storage_dir=args.storage_dir))
 
     write_markdown(rows, md_path, args.golden)
     write_excel(rows, xlsx_path, args.golden)

@@ -22,7 +22,8 @@ tamu_data/raw/catalog/
 tamu_data/logs/
 
 # LightRAG spike graph/vector storage (regeneratable by running ingest.py)
-tools/lightrag_spike/storage/
+lightrag/storage/
+lightrag/storage_*/
 
 # Auto-generated timestamped eval reports and result dumps
 tamu_data/evals/reports/eval_report_*.md

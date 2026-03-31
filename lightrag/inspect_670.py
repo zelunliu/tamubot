@@ -41,6 +41,14 @@ TEST_QUESTIONS = [
     "What are the homework and quiz deadlines for CSCE 670?",
 ]
 
+CROSS_COURSE_QUESTIONS = [
+    "What is the grading policy for CSCE 670?",
+    "What is the grading policy for CSCE 638?",
+    "Which courses cover neural retrieval or language models?",
+    "Who teaches CSCE 605?",
+    "What topics does CSCE 638 cover each week?",
+]
+
 # Key facts that should be present in the graph (pattern → description)
 EXPECTED_FACTS = {
     r"Yu Zhang": "instructor name",
@@ -183,14 +191,19 @@ def check_fact_coverage(storage_dir: Path) -> dict:
     }
 
 
-async def test_query_precision(storage_dir: Path, top_k: int = 40, related_chunk_number: int = 5) -> list[dict]:
+async def test_query_precision(storage_dir: Path, top_k: int = 40,
+                               related_chunk_number: int = 5,
+                               cross_course: bool = False) -> list[dict]:
     """Run test queries and measure context token count."""
     from lightrag import QueryParam
 
-    rag = await amake_lightrag_improved(working_dir=storage_dir, top_k=top_k, related_chunk_number=related_chunk_number)
+    questions = CROSS_COURSE_QUESTIONS if cross_course else TEST_QUESTIONS
+    rag = await amake_lightrag_improved(
+        working_dir=storage_dir, top_k=top_k, related_chunk_number=related_chunk_number,
+    )
 
     results = []
-    for q in TEST_QUESTIONS:
+    for q in questions:
         try:
             context = await rag.aquery(q, param=QueryParam(mode="hybrid", only_need_context=True))
             context_str = str(context) if context else ""
@@ -260,11 +273,15 @@ def print_report(label: str, metrics: dict, coverage: dict, queries: list[dict] 
     print()
 
 
-async def main_async(storage_dir: Path, run_queries: bool, top_k: int = 40, related_chunk_number: int = 5) -> None:
+async def main_async(storage_dir: Path, run_queries: bool, top_k: int = 40,
+                     related_chunk_number: int = 5, cross_course: bool = False) -> None:
     nodes, edges = parse_graphml(storage_dir)
     metrics = analyze_graph(nodes, edges)
     coverage = check_fact_coverage(storage_dir)
-    queries = await test_query_precision(storage_dir, top_k=top_k, related_chunk_number=related_chunk_number) if run_queries else None
+    queries = await test_query_precision(
+        storage_dir, top_k=top_k, related_chunk_number=related_chunk_number,
+        cross_course=cross_course,
+    ) if run_queries else None
     label = storage_dir.name
     print_report(label, metrics, coverage, queries)
 
@@ -275,6 +292,8 @@ def main() -> None:
     parser.add_argument("--no-queries", action="store_true", help="Skip query precision test (saves API calls)")
     parser.add_argument("--top-k", type=int, default=40, help="top_k for query retrieval (default: 40)")
     parser.add_argument("--related-chunks", type=int, default=5, help="Raw text chunks to include in context (default: 5)")
+    parser.add_argument("--cross-course", action="store_true",
+                        help="Use cross-course questions instead of CSCE 670 single-course questions")
     args = parser.parse_args()
 
     storage_dir = SPIKE_DIR / args.storage_dir
@@ -282,7 +301,13 @@ def main() -> None:
         print(f"Storage dir not found: {storage_dir}")
         sys.exit(1)
 
-    asyncio.run(main_async(storage_dir, run_queries=not args.no_queries, top_k=args.top_k, related_chunk_number=args.related_chunks))
+    asyncio.run(main_async(
+        storage_dir,
+        run_queries=not args.no_queries,
+        top_k=args.top_k,
+        related_chunk_number=args.related_chunks,
+        cross_course=args.cross_course,
+    ))
 
 
 if __name__ == "__main__":

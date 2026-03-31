@@ -38,7 +38,9 @@ def patch_prompts_for_syllabi() -> None:
 
     Changes from defaults:
     1. Allow novel entity types instead of forcing 'Other'
-    2. Add anchoring rule so entity names include course ID when course-specific
+    2. Extended anchoring rule — CourseTopic entities now included
+    3. Suppress generic 'The Course' entity
+    4. Enforce Title Case for entity names to prevent case-drift duplicates
     """
     from lightrag.prompt import PROMPTS
 
@@ -50,19 +52,110 @@ def patch_prompts_for_syllabi() -> None:
         "If none of the provided entity types apply, introduce a new descriptive entity type that best captures the nature of the entity.",
     )
 
-    # Add anchoring rule after the entity_type instruction line
-    anchoring_rule = (
-        "\n    *   **Course Anchoring:** When an entity is specific to a particular course "
-        "(e.g., a policy, assignment, or schedule item), include the course identifier "
+    # Three rules inserted after the entity_description bullet
+    rules = (
+        "\n    *   **Course Anchoring:** When an entity is specific to a particular course — "
+        "including CourseTopic entities (weekly topics, lecture themes, subject areas covered), "
+        "policies, assignments, exams, and schedule items — include the course identifier "
         "(e.g., 'CSCE 670') in the entity name to prevent cross-course confusion. "
-        "For example, use 'CSCE 670 Late Work Policy' rather than 'Late Work Policy', "
-        "and 'CSCE 670 Homework 1' rather than 'Homework 1'."
+        "Use 'CSCE 670 Boolean Retrieval' not 'Boolean Retrieval', "
+        "'CSCE 670 Late Work Policy' not 'Late Work Policy', "
+        "'CSCE 670 Homework 1' not 'Homework 1'."
+        "\n    *   **No Generic Course Entity:** Never extract 'The Course' or 'This Course' as an "
+        "entity name. If the entity refers to the course itself, use the specific course identifier "
+        "(e.g., 'CSCE 670') instead."
+        "\n    *   **Consistent Title Case:** Always use Title Case for entity names "
+        "(capitalize the first letter of each major word, e.g., 'Information Retrieval', "
+        "not 'information retrieval' or 'INFORMATION RETRIEVAL') to prevent duplicate nodes "
+        "from capitalization variations."
     )
-    # Insert after the entity_description bullet
     marker = "*   `entity_description`: Provide a concise yet comprehensive description"
-    system = system.replace(marker, anchoring_rule + "\n    " + marker)
+    system = system.replace(marker, rules + "\n    " + marker)
 
     PROMPTS["entity_extraction_system_prompt"] = system
+
+
+def normalize_entity_names(storage_dir: Path) -> dict:
+    """Post-process graphml to merge case-insensitive duplicate entity names.
+
+    Finds pairs of nodes whose names differ only by case. Keeps the node with
+    more edges, redirects all edges from discarded nodes to the kept node,
+    removes discarded nodes. Writes cleaned graphml back (backs up original).
+
+    Note: Only modifies graph_chunk_entity_relation.graphml. Vector indices in
+    the .json embedding files are not updated — this fixes graph traversal quality
+    but does not affect embedding-based lookups.
+
+    Returns: {"merged": N, "kept": [...], "removed": [...]}
+    """
+    import shutil
+    import xml.etree.ElementTree as ET
+
+    graph_file = storage_dir / "graph_chunk_entity_relation.graphml"
+    if not graph_file.exists():
+        return {"merged": 0, "kept": [], "removed": []}
+
+    NS = "http://graphml.graphdrawing.org/xmlns"
+    ET.register_namespace("", NS)
+    tree = ET.parse(graph_file)
+    root = tree.getroot()
+    graph = root.find(f"{{{NS}}}graph")
+    if graph is None:
+        return {"merged": 0, "kept": [], "removed": []}
+
+    # Count edges per node
+    edge_count: dict[str, int] = {}
+    for elem in graph:
+        if elem.tag == f"{{{NS}}}edge":
+            for attr in ("source", "target"):
+                nid = elem.attrib.get(attr, "")
+                edge_count[nid] = edge_count.get(nid, 0) + 1
+
+    # Group node IDs by lowercase
+    lower_to_ids: dict[str, list[str]] = {}
+    for elem in graph:
+        if elem.tag == f"{{{NS}}}node":
+            nid = elem.attrib.get("id", "")
+            lower_to_ids.setdefault(nid.lower(), []).append(nid)
+
+    # Build merge map: discard → keep (keep = highest degree)
+    merge_map: dict[str, str] = {}
+    kept: list[str] = []
+    removed: list[str] = []
+    for ids in lower_to_ids.values():
+        if len(ids) > 1:
+            ids.sort(key=lambda i: edge_count.get(i, 0), reverse=True)
+            kept.append(ids[0])
+            for discard in ids[1:]:
+                merge_map[discard] = ids[0]
+                removed.append(discard)
+
+    if not merge_map:
+        return {"merged": 0, "kept": [], "removed": []}
+
+    discard_set = set(merge_map)
+    to_remove: list = []
+    for elem in graph:
+        if elem.tag == f"{{{NS}}}edge":
+            src = elem.attrib.get("source", "")
+            tgt = elem.attrib.get("target", "")
+            new_src = merge_map.get(src, src)
+            new_tgt = merge_map.get(tgt, tgt)
+            if new_src == new_tgt:
+                to_remove.append(elem)  # self-loop after merge
+            else:
+                elem.set("source", new_src)
+                elem.set("target", new_tgt)
+        elif elem.tag == f"{{{NS}}}node":
+            if elem.attrib.get("id", "") in discard_set:
+                to_remove.append(elem)
+
+    for elem in to_remove:
+        graph.remove(elem)
+
+    shutil.copy(graph_file, graph_file.with_suffix(".graphml.bak"))
+    tree.write(str(graph_file), encoding="unicode", xml_declaration=True)
+    return {"merged": len(merge_map), "kept": kept, "removed": removed}
 
 
 def make_tamu_llm_func():
