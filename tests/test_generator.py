@@ -176,3 +176,57 @@ class TestThinkingBudgetConfiguration:
     def test_generation_model_supports_thinking(self):
         """GENERATION_MODEL should be gemini-2.5-flash (supports thinking)."""
         assert config.GENERATION_MODEL == "gemini-2.5-flash"
+
+
+def test_generate_stream_includes_conversation_history_block():
+    """generate_stream with history_context includes <conversation_history> XML block."""
+    from unittest.mock import patch
+    from rag.generator import generate_stream
+
+    captured_messages = []
+
+    def mock_stream_llm(messages, **kwargs):
+        captured_messages.extend(messages)
+        yield "Answer [Source 1]"
+
+    chunks = [{"content": "Grading is 40% exams.", "course_id": "CSCE 638", "category": "GRADING"}]
+    history_ctx = "User: What is CSCE 638?\nAssistant: It is a grad ML course."
+
+    with patch("rag.generator.stream_llm", side_effect=mock_stream_llm):
+        list(generate_stream(
+            results=chunks,
+            question="What is the grading?",
+            function="hybrid_course",
+            history_context=history_ctx,
+        ))
+
+    user_msg = next(m["content"] for m in captured_messages if m["role"] == "user")
+    assert "<conversation_history>" in user_msg
+    assert history_ctx in user_msg
+    assert "Question: What is the grading?" in user_msg
+    # conversation_history block must appear BEFORE the Question line
+    assert user_msg.index("<conversation_history>") < user_msg.index("Question:")
+
+
+def test_generate_stream_no_history_context_no_block():
+    """generate_stream without history_context does not include <conversation_history> block."""
+    from unittest.mock import patch
+    from rag.generator import generate_stream
+
+    captured_messages = []
+
+    def mock_stream_llm(messages, **kwargs):
+        captured_messages.extend(messages)
+        yield "Answer [Source 1]"
+
+    chunks = [{"content": "Grading is 40% exams.", "course_id": "CSCE 638", "category": "GRADING"}]
+
+    with patch("rag.generator.stream_llm", side_effect=mock_stream_llm):
+        list(generate_stream(
+            results=chunks,
+            question="What is the grading?",
+            function="hybrid_course",
+        ))
+
+    user_msg = next(m["content"] for m in captured_messages if m["role"] == "user")
+    assert "<conversation_history>" not in user_msg

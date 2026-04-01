@@ -182,6 +182,7 @@ def generate(
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
     trace=None,
+    history_context: str | None = None,
 ) -> str:
     """Generate a grounded response with citations using Gemini 2.0 Flash.
 
@@ -218,7 +219,14 @@ def generate(
         function, course_ids, intent_type,
         specific_categories=specific_categories, specific_only=specific_only,
     )
-    user_message = f"{context_xml}\n\nQuestion: {question}"
+    if history_context:
+        user_message = (
+            f"{context_xml}\n\n"
+            f"<conversation_history>\n{history_context}\n</conversation_history>\n\n"
+            f"Question: {question}"
+        )
+    else:
+        user_message = f"{context_xml}\n\nQuestion: {question}"
 
     # Generator_Stage generation span
     generation_span = None
@@ -511,6 +519,7 @@ def generate_stream(
     data_integrity: bool = True,
     conflicted_course_ids: list[str] | None = None,
     trace=None,
+    history_context: str | None = None,
 ):
     """Streaming variant of generate(). Yields text chunks as they arrive.
 
@@ -566,7 +575,14 @@ def generate_stream(
         function, course_ids, intent_type,
         specific_categories=specific_categories, specific_only=specific_only,
     )
-    user_message = f"{context_xml}\n\nQuestion: {question}"
+    if history_context:
+        user_message = (
+            f"{context_xml}\n\n"
+            f"<conversation_history>\n{history_context}\n</conversation_history>\n\n"
+            f"Question: {question}"
+        )
+    else:
+        user_message = f"{context_xml}\n\nQuestion: {question}"
 
     thinking_budget = (
         config.THINKING_BUDGET_SEMANTIC

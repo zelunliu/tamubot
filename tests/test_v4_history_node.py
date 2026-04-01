@@ -271,3 +271,46 @@ def test_history_update_stores_specific_categories_in_router_result():
     history = result["history"]
     assistant_msg = next(m for m in history if m["role"] == "assistant")
     assert assistant_msg["router_result"]["specific_categories"] == ["SCHEDULE"]
+
+
+def test_history_inject_writes_history_context_not_rewritten_query():
+    """history_inject_node stores context in history_context; rewritten_query stays clean."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    original_query = "what are the prerequisites?"
+    state = {
+        "query": original_query,
+        "rewritten_query": original_query,
+        "history": [
+            {"role": "user", "content": "Tell me about CSCE 638"},
+            {"role": "assistant", "content": "CSCE 638 is a graduate ML course."},
+        ],
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+
+    # rewritten_query must not be modified
+    assert result.get("rewritten_query", original_query) == original_query
+
+    # history_context must be set and contain prior turn content
+    assert "history_context" in result
+    assert "CSCE 638" in result["history_context"]
+
+
+def test_history_inject_empty_history_no_history_context():
+    """With no history, history_inject_node does not set history_context."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "what is CSCE 221?",
+        "rewritten_query": "what is CSCE 221?",
+        "history": [],
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+    assert result.get("history_context", "") == ""
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
