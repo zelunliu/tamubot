@@ -42,7 +42,8 @@ Examples:
 - "Tell me about CSCE 670" → specific_categories=[], specific_only=false, 1.0
 - "Tell me about CSCE 638, especially the grading" → specific_categories=["GRADING"], specific_only=false, 0.85
 - "Can I use ChatGPT in CSCE 638?" → specific_categories=["AI_POLICY"], specific_only=true, 0.95
-- "What materials and grading does CSCE 638 require?" → specific_categories=["MATERIALS","GRADING"], specific_only=true, 0.9
+- "What materials and grading does CSCE 638 require?"
+  → specific_categories=["MATERIALS","GRADING"], specific_only=true, 0.9
 
 INTENT TYPE
 Set intent_type = non-null ONLY for TAMU academic questions that are evaluative, advisory,

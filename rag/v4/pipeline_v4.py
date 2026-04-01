@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import rag.v4.trace_registry as _trace_registry
 from rag.v4.graph import build_graph, build_graph_with_memory
 from rag.v4.registry_factory import make_default_registry
 from rag.v4.state import PipelineState
-import rag.v4.trace_registry as _trace_registry
 
 # Module-level compiled graph singleton (built lazily on first call)
 _graph = None

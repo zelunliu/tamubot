@@ -5,7 +5,7 @@ Does NOT modify rewritten_query — that stays clean for retrieval embedding.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import config
 from rag.v4.middleware import error_guard_middleware, timing_middleware
