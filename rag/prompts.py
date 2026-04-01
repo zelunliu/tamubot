@@ -23,120 +23,62 @@ Examples:
   → course_ids=["CSCE 670"]
 
 COURSE IDs
-Identify all course IDs mentioned (e.g. "CSCE 638", "CSCE 670").
-Normalize: uppercase department + space + number ("csce638" → "CSCE 638", "CSCE-670" → "CSCE 670").
-
-Important: extract ONLY the course the student is directly asking about.
-Do NOT extract a course ID that appears only as prerequisite context or background.
-Examples of context-only (do NOT extract):
-- "I got a B in MATH 151, can I take this course?" → course_ids=[]  (MATH 151 is background)
-- "Given that CSCE 221 is a prereq, how hard is this class?" → course_ids=[]
-If the question uses "this course" / "this class" with no named course ID to ask about,
-set course_ids=[].
+Identify all course IDs mentioned. Normalize: uppercase department + space + number
+("csce638" → "CSCE 638", "CSCE-670" → "CSCE 670").
+Extract ONLY courses the student is directly asking about — not prereq background.
+Example: "I got a B in MATH 151, can I take this course?" → course_ids=[]
+If the question uses "this course"/"this class" with no named course ID, set course_ids=[].
 
 CATEGORIES
-Identify which syllabus categories the question is asking about.
 Valid categories: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS,
 GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, UNIVERSITY_POLICIES, SUPPORT_SERVICES
 
-- specific_categories: list of relevant categories (or [] if none are clearly targeted)
-- specific_only: true if the question asks ONLY about those categories (not a general overview).
-  False if the question is broad or requests a general overview with a category emphasis.
-- category_confidence: 0.0–1.0 for confidence in the extracted categories.
+- specific_categories: categories the question targets (or [] if none clearly targeted)
+- specific_only: true if ONLY those categories are asked about; false for broad/general questions
+- category_confidence: 0.0–1.0
 
 Examples:
-- "What is the grading breakdown for CSCE 638?"
-  → specific_categories=["GRADING"], specific_only=true, category_confidence=0.95
-- "Tell me about CSCE 670"
-  → specific_categories=[], specific_only=false, category_confidence=1.0
-- "Tell me about CSCE 638, especially the grading"
-  → specific_categories=["GRADING"], specific_only=false, category_confidence=0.85
-- "Tell me about CSCE 638, especially considering the grading structure"
-  → specific_categories=["GRADING"], specific_only=false, category_confidence=0.85
-  (specific_only=false: "especially considering" signals background context, not exclusive focus)
-- "What should I know about CSCE 638, including its AI policy?"
-  → specific_categories=["AI_POLICY"], specific_only=false, category_confidence=0.90
-  (specific_only=false: "including" and "what should I know" signal broad overview with emphasis)
-- "Can I use ChatGPT in CSCE 638?"
-  → specific_categories=["AI_POLICY"], specific_only=true, category_confidence=0.95
-- "What materials and grading does CSCE 638 require?"
-  → specific_categories=["MATERIALS","GRADING"], specific_only=true, category_confidence=0.9
+- "What is the grading breakdown for CSCE 638?" → specific_categories=["GRADING"], specific_only=true, 0.95
+- "Tell me about CSCE 670" → specific_categories=[], specific_only=false, 1.0
+- "Tell me about CSCE 638, especially the grading" → specific_categories=["GRADING"], specific_only=false, 0.85
+- "Can I use ChatGPT in CSCE 638?" → specific_categories=["AI_POLICY"], specific_only=true, 0.95
+- "What materials and grading does CSCE 638 require?" → specific_categories=["MATERIALS","GRADING"], specific_only=true, 0.9
 
 INTENT TYPE
-Determine the advisory or discovery dimension of the question.
-IMPORTANT: intent_type only applies to TAMU academic questions. Non-TAMU questions
-(weather, restaurants, cover letters, coding tasks unrelated to courses) must use
-intent_type = null regardless of phrasing.
+Set intent_type = non-null ONLY for TAMU academic questions that are evaluative, advisory,
+or discovery queries with no specific course ID. Null for purely factual questions and
+non-TAMU topics.
 
-Set intent_type to a non-null value ONLY when the question is about TAMU academics AND:
-- Asks for opinions, evaluations, or difficulty comparisons about specific courses
-- Asks about career relevance or skill building ("good for ML career?", "worth taking?")
-- Uses clearly evaluative language about a course: "hard", "strict", "fair", "useful", "worth it"
-- Is a TAMU academic discovery query with NO specific course ID
-  (e.g. "what courses cover ML?", "what is the TAMU academic integrity policy?",
-   "what campus resources are available?")
-
-Set intent_type = null for:
-- Purely factual questions (what, when, who, list, how many) — even when comparing two courses
-- Factual side-by-side comparisons of course policies, schedules, or grading structures
-- Questions NOT about TAMU academics (weather, restaurants, non-academic tasks)
-- Greetings and off-topic requests
+Valid values: "ACADEMIC" | "CAREER" | "DIFFICULTY" | "PLANNING" | "ADMINISTRATIVE" | "GENERAL" | null
 
 Examples:
-- "Compare the grading of CSCE 638 and CSCE 670" → intent_type=null (factual comparison)
-- "Is CSCE 638 harder than CSCE 670?" → intent_type="DIFFICULTY" (evaluative/opinion)
-- "What is the TAMU academic integrity policy?" → intent_type="ACADEMIC" (TAMU discovery, no course_id)
-- "If I don't access Perusall through Canvas, will my grades show up?"
-  → intent_type="ADMINISTRATIVE" (TAMU tool, no course_id)
-- "What are the best restaurants near TAMU?" → intent_type=null (NOT TAMU academic)
-- "Can you write a cover letter?" → intent_type=null (NOT TAMU academic)
-
-Valid values for intent_type:
-- "ACADEMIC": Learning outcomes, topics covered, academic content, policies, campus resources
-- "CAREER": Job relevance, skill building, industry applications
-- "DIFFICULTY": Workload, how hard is it, grading rigor
-- "PLANNING": Which course to take, course sequence, scheduling
-- "ADMINISTRATIVE": Questions about TAMU tools and systems (Canvas, Perusall, grade tracking,
-  course logistics) with no specific course ID — or questions about how a platform/tool
-  interacts with grades/assignments when no course is named
-- "GENERAL": Any other advisory/subjective component about a TAMU course
-- null: factual questions, off-topic requests, non-TAMU questions
+- "Compare the grading of CSCE 638 and CSCE 670" → null (factual comparison)
+- "Is CSCE 638 harder than CSCE 670?" → "DIFFICULTY" (evaluative)
+- "What is the TAMU academic integrity policy?" → "ACADEMIC" (discovery, no course_id)
+- "If I don't access Perusall through Canvas, will my grades show up?" → "ADMINISTRATIVE"
 
 RECURRENT SEARCH
-Set recurrent_search = true ONLY when the user wants to discover or find unknown courses
-using one or more named courses as an anchor/reference point.
-
-Set recurrent_search = true when:
-- The user asks what courses pair with, complement, follow, or are similar to a named course
-  ("What should I take with CS 638?", "What courses are like CS 638?", "What follows CS 638?")
-- The user asks for course recommendations anchored to a known course
-  ("Given CS 638, what else should I take?", "What goes well with CS 638?")
-
-Set recurrent_search = false when:
-- The question is about named courses only — factual, evaluative, or comparative
-  ("How hard is CS 638?", "Compare CS 638 and CS 670", "What is the grading in CS 638?")
-- No course ID is mentioned (recurrent_search requires at least one anchor course)
-- The user is asking a general TAMU academic question with no course anchor
+Set recurrent_search = true ONLY when the user wants to discover unknown courses using
+a named course as an anchor ("What should I take with CS 638?", "What follows CS 638?").
+False when the question is about named courses only, or no course ID is mentioned.
 
 QUERY REWRITING
-Rewrite the query with expanded synonyms for optimal retrieval:
+Expand with synonyms for retrieval:
 - "late work" → "attendance makeup deadline extensions late submission"
-- "ChatGPT" / "AI tools" → "AI policy artificial intelligence generative AI tools"
+- "ChatGPT"/"AI tools" → "AI policy artificial intelligence generative AI tools"
 - "prereqs" → "prerequisites required courses corequisites"
-- "prof" / "teacher" → "instructor professor"
 - "grade breakdown" → "grading policy grade distribution weight percentage"
-Keep the rewrite concise but include key synonyms.
 
 Output ONLY a JSON object with these fields:
 {{
-  "course_ids": list of normalized course IDs or [],
-  "section": section number string if mentioned, or null,
-  "specific_categories": list of category strings or [],
-  "specific_only": true or false,
-  "category_confidence": float 0.0–1.0,
-  "intent_type": "ACADEMIC"|"CAREER"|"DIFFICULTY"|"PLANNING"|"ADMINISTRATIVE"|"GENERAL"|null,
-  "recurrent_search": true or false,
-  "rewritten_query": "expanded query string for retrieval"
+  "course_ids": [],
+  "section": null,
+  "specific_categories": [],
+  "specific_only": false,
+  "category_confidence": 1.0,
+  "intent_type": null,
+  "recurrent_search": false,
+  "rewritten_query": "..."
 }}
 
 Respond with ONLY valid JSON, no other text.
@@ -154,17 +96,21 @@ You are TamuBot, an academic assistant for Texas A&M University.
 You help students find information about courses, syllabi, policies, and schedules.
 
 RULES:
-1. Answer ONLY based on the provided <context>. Never invent information.
+1. Answer ONLY based on the provided <context>. Never invent information. \
+If the context does not contain the answer, state \
+"I cannot find that information in the provided context" and do NOT use training data.
 2. Cite your sources using [Source N] notation matching the source numbers in the context.
-3. Chain-of-Verification (Quote-then-Paraphrase): Before answering, extract a verbatim quote \
-from the most relevant chunk into a <thinking> block. Then paraphrase that quote into your \
-student-facing answer with [Source N] citation. This ensures all claims are grounded in the provided text.
-4. Verification: Before answering, identify which chunk contains the answer. \
-If no chunk contains it, state "I cannot find that information in the provided context" \
-and do NOT use training data to fill the gap.
-5. Do NOT answer questions outside TAMU academics — politely decline.
-6. Be concise but thorough. Use markdown formatting for readability.
-7. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
+3. Do NOT answer questions outside TAMU academics — politely decline.
+4. Be concise but thorough. Use markdown formatting for readability.
+5. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
+"""
+
+# Minimal system prompt for generate_comparison() — JSON extraction only.
+# No Markdown table overlay (rendered in Python), no advisory overlay.
+COMPARISON_EXTRACTION_SYSTEM = """\
+You are a structured data extractor for Texas A&M University course comparisons.
+Extract the requested fields accurately from the provided <context>. Do not invent information.
+If a field is not found in the context, use an empty string.
 """
 
 # hybrid_course framing variants — selected in build_system_prompt based on

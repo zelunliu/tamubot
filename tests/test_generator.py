@@ -230,3 +230,46 @@ def test_generate_stream_no_history_context_no_block():
 
     user_msg = next(m["content"] for m in captured_messages if m["role"] == "user")
     assert "<conversation_history>" not in user_msg
+
+
+def test_base_system_no_chain_of_thought_instruction():
+    from rag.prompts import _BASE_SYSTEM
+    assert "Before answering, identify which chunk" not in _BASE_SYSTEM
+
+
+def test_comparison_extraction_system_exists_and_is_compact():
+    from rag.prompts import COMPARISON_EXTRACTION_SYSTEM
+    assert len(COMPARISON_EXTRACTION_SYSTEM) < 300
+    assert "extract" in COMPARISON_EXTRACTION_SYSTEM.lower()
+
+
+def test_router_prompt_has_all_required_output_fields():
+    from rag.prompts import ROUTER_PROMPT
+    for field in ["course_ids", "specific_categories", "specific_only",
+                  "category_confidence", "intent_type", "recurrent_search", "rewritten_query"]:
+        assert field in ROUTER_PROMPT, f"ROUTER_PROMPT missing field: {field}"
+
+
+def test_generate_comparison_uses_comparison_extraction_system(monkeypatch):
+    """generate_comparison passes COMPARISON_EXTRACTION_SYSTEM as the system prompt."""
+    from unittest.mock import MagicMock
+    from rag.prompts import COMPARISON_EXTRACTION_SYSTEM
+    import rag.generator as gen_mod
+
+    captured = []
+
+    def mock_call_llm(messages, **kwargs):
+        captured.extend(messages)
+        result = MagicMock()
+        result.text = '{"courses": []}'
+        result.input_tokens = None
+        result.output_tokens = None
+        return result
+
+    monkeypatch.setattr(gen_mod, "call_llm", mock_call_llm)
+    monkeypatch.setattr("rag.search_v3.get_missing_sections", lambda cid: [])
+
+    gen_mod.generate_comparison([], "compare CSCE 638 and CSCE 670", ["CSCE 638", "CSCE 670"])
+
+    system_msg = next((m["content"] for m in captured if m["role"] == "system"), None)
+    assert system_msg == COMPARISON_EXTRACTION_SYSTEM

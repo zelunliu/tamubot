@@ -19,6 +19,7 @@ from rag.prompts import (
     _HYBRID_COURSE_DEFAULT,
     _HYBRID_COURSE_SPECIFIC,
     _SEMANTIC_TYPE_PROMPTS,
+    COMPARISON_EXTRACTION_SYSTEM,
     UNCERTAINTY_INJECTION,
 )
 
@@ -384,13 +385,7 @@ def generate_comparison(
     from rag.comparison_schemas import CourseComparisonTable
 
     context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(
-        function="hybrid_course",
-        course_ids=course_ids,
-        intent_type="GENERAL",
-        specific_categories=[],
-        specific_only=False,
-    )
+    system_prompt = COMPARISON_EXTRACTION_SYSTEM
 
     extraction_span = None
     if trace is not None:
