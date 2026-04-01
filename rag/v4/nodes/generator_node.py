@@ -10,30 +10,23 @@ from rag.v4.state import PipelineState
 @timing_middleware
 @error_guard_middleware
 def generator_node(state: PipelineState, registry: Any) -> dict:
-    """Generate the answer stream. Writes both answer_stream (Iterator) and answer (str)."""
+    """Generate the answer. Stores answer_stream as list[str] (picklable for LangGraph)."""
     node_trace = list(state.get("node_trace", []))
     node_trace.append("generator")
 
     try:
         stream = registry.generator_llm.generate_stream(state)
-        # Collect full answer for state (answer_stream is the live iterator for app.py)
         tokens = list(stream)
-        answer = "".join(tokens)
-
-        # Re-create iterator from collected tokens for app.py consumption
-        def _replay():
-            yield from tokens
-
         return {
-            "answer": answer,
-            "answer_stream": _replay(),
+            "answer": "".join(tokens),
+            "answer_stream": tokens,
             "node_trace": node_trace,
         }
     except Exception as e:
         err_msg = f"Generation failed: {e}"
         return {
             "answer": err_msg,
-            "answer_stream": iter([err_msg]),
+            "answer_stream": [err_msg],
             "error": err_msg,
             "node_trace": node_trace,
         }

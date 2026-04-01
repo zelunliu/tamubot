@@ -75,7 +75,7 @@ def run_pipeline_v4_with_memory(
     query: str,
     trace=None,
     thread_config: Optional[dict] = None,
-) -> tuple[list[dict], Any, list[tuple[str, str]], bool, list[str]]:
+) -> tuple[list[dict], Any, list[tuple[str, str]], bool, list[str], list[str]]:
     """Run v4 pipeline with conversation memory (Phase 5).
 
     Same 5-tuple return as run_pipeline_v4. thread_config enables LangGraph checkpointing.
@@ -131,6 +131,7 @@ def run_pipeline_v4_with_memory(
         result.get("data_gaps", []),
         result.get("data_integrity", True),
         result.get("conflicted_course_ids", []),
+        result.get("answer_stream", []),   # list[str] tokens — picklable
     )
 
 

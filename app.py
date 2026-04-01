@@ -38,7 +38,6 @@ _session_manager = None
 
 if USE_MONGODB:
     from rag import generator  # keep for format_context_xml fallback
-    from rag.v3_legacy.pipeline import generator_order  # still used by streaming helpers
     from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline
     from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
     from rag.v4.session import SessionManager
@@ -216,10 +215,10 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     st.session_state.messages.append({"role": "assistant", "content": _cached_answer})
                     st.stop()
 
-            with st.spinner("Routing query and retrieving information..."):
+            with st.spinner("Routing, retrieving, and generating..."):
                 try:
                     result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
-                    source_docs, router_result, data_gaps, data_integrity, conflicted_ids = result
+                    source_docs, router_result, data_gaps, data_integrity, conflicted_ids, answer_tokens = result
                     logger.info(f"Router: function={router_result.function}, mode={router_result.retrieval_mode}, courses={router_result.course_ids}, docs={len(source_docs)}")
                 except Exception as e:
                     logger.error(f"Retrieval failed: {traceback.format_exc()}")
@@ -227,32 +226,11 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
 
             answer = ""
             answer_placeholder = st.empty()
-            try:
-                logger.info("Starting generation (streaming)...")
-                stream = generator_order(
-                    recurrent=False,
-                    chunks=source_docs,
-                    query=prompt,
-                    router_result=router_result,
-                    data_gaps=data_gaps,
-                    data_integrity=data_integrity,
-                    conflicted_course_ids=conflicted_ids,
-                    trace=lf_trace,
-                ) if router_result is not None else iter([])
-                for token in stream:
-                    answer += token
-                    answer_placeholder.markdown(answer + "▌")
-                answer_placeholder.markdown(answer)
-                logger.info(f"Generation complete, answer length: {len(answer)}")
-            except Exception as e:
-                logger.error(f"Generation failed: {traceback.format_exc()}")
-                st.error(f"Generation failed: {e}")
-                if source_docs:
-                    context_xml = generator.format_context_xml(source_docs)
-                    answer = "**Relevant documents found:**\n\n" + context_xml
-                else:
-                    answer = "No relevant information found in the knowledge base."
-                answer_placeholder.markdown(answer)
+            for token in answer_tokens:
+                answer += token
+                answer_placeholder.markdown(answer + "▌")
+            answer_placeholder.markdown(answer)
+            logger.info(f"Generation complete, answer length: {len(answer)}")
 
             # Render syllabus links for all retrieved courses
             if source_docs:

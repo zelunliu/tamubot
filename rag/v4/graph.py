@@ -127,22 +127,6 @@ def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, trac
     def _bind(fn):
         return functools.partial(fn, registry=registry)
 
-    # Wrapper: consume answer_stream and trace so they're not checkpointed
-    # by LangGraph between nodes. history_update_node also clears them, but
-    # LangGraph checkpoints writes per-node BEFORE the next node runs.
-    def _strip_non_serializable(fn):
-        """Wrap a node to clear answer_stream and trace from its returned dict."""
-        @functools.wraps(fn)
-        def wrapper(state, **kwargs):
-            result = fn(state, **kwargs)
-            if isinstance(result, dict):
-                result = {
-                    k: (None if k in ("answer_stream", "trace") else v)
-                    for k, v in result.items()
-                }
-            return result
-        return wrapper
-
     # All pipeline nodes
     graph.add_node("router", _bind(router_node))
     graph.add_node("history_inject", _bind(history_inject_node))
@@ -151,9 +135,8 @@ def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, trac
     graph.add_node("retrieval", _bind(retrieval_node))
     graph.add_node("schedule_filter", _bind(schedule_filter_node))
     graph.add_node("merge", _bind(merge_node))
-    # generator and out_of_scope produce answer_stream (generator objects) — strip before checkpoint
-    graph.add_node("generator", _strip_non_serializable(_bind(generator_node)))
-    graph.add_node("out_of_scope", _strip_non_serializable(_bind(out_of_scope_node)))
+    graph.add_node("generator", _bind(generator_node))
+    graph.add_node("out_of_scope", _bind(out_of_scope_node))
     graph.add_node("history_update", _bind(history_update_node))
 
     graph.set_entry_point("router")
