@@ -245,3 +245,29 @@ def test_history_inject_summary_appears_before_recent_turns():
     assert summary_pos != -1, "Summary block not found in enriched query"
     assert recent_pos != -1, "Recent turn not found in enriched query"
     assert summary_pos < recent_pos, "Summary must appear before recent turns"
+
+
+def test_history_update_stores_specific_categories_in_router_result():
+    """history_update_node must include specific_categories in rr_summary."""
+    from unittest.mock import MagicMock
+    from rag.router import RouterResult
+    from rag.v4.nodes.history_update_node import history_update_node
+
+    rr = RouterResult(
+        course_ids=["CSCE 638"],
+        specific_categories=["SCHEDULE"],
+        rewritten_query="schedule CSCE 638",
+    )
+    state = {
+        "query": "schedule for CSCE 638?",
+        "answer": "MWF 9-10am.",
+        "history": [],
+        "router_result": rr,
+        "turn_number": 0,
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_update_node(state, registry=MagicMock())
+    history = result["history"]
+    assistant_msg = next(m for m in history if m["role"] == "assistant")
+    assert assistant_msg["router_result"]["specific_categories"] == ["SCHEDULE"]

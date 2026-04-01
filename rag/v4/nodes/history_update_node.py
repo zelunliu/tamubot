@@ -35,6 +35,7 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
                 rr_summary = {
                     "function": router_result.function,
                     "course_ids": router_result.course_ids,
+                    "specific_categories": router_result.specific_categories,
                 }
             except Exception:
                 pass

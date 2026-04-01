@@ -1,12 +1,43 @@
 """Router node — classifies query and populates routing fields in state."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import config
 from rag.v4.cache_utils import normalize_query
 from rag.v4.middleware import error_guard_middleware, timing_middleware
 from rag.v4.state import PipelineState
+
+
+def _build_prior_context(history: list) -> Optional[str]:
+    """Build a context string from the last assistant turn for pronoun/category resolution."""
+    if not history:
+        return None
+
+    prior_query = ""
+    prior_course_ids: list[str] = []
+    prior_categories: list[str] = []
+
+    for msg in reversed(history):
+        role = msg.get("role", "")
+        if not prior_query and role == "user":
+            prior_query = msg.get("content", "")[:150]
+        if role == "assistant" and not prior_course_ids and not prior_categories:
+            rr = msg.get("router_result") or {}
+            prior_course_ids = rr.get("course_ids", [])
+            prior_categories = rr.get("specific_categories", [])
+        if prior_query and (prior_course_ids or prior_categories):
+            break
+
+    if not prior_query:
+        return None
+
+    parts = [f"previous query: \"{prior_query}\""]
+    if prior_course_ids:
+        parts.append(f"courses: {', '.join(prior_course_ids)}")
+    if prior_categories:
+        parts.append(f"categories: {', '.join(prior_categories)}")
+    return ", ".join(parts)
 
 
 @timing_middleware
@@ -39,8 +70,10 @@ def router_node(state: PipelineState, registry: Any) -> dict:
                 "node_trace": node_trace,
             }
 
+    prior_context = _build_prior_context(state.get("history", []))
+
     try:
-        router_result = registry.router_llm.classify(query, trace=trace)
+        router_result = registry.router_llm.classify(query, trace=trace, prior_context=prior_context)
 
         # Cache write — store serialized result for future identical queries
         router_cache_update = {}
