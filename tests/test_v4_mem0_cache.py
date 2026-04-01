@@ -299,7 +299,7 @@ def test_history_update_no_answer_cache_when_query_empty():
 # ---------------------------------------------------------------------------
 
 def test_history_inject_uses_mem0_context_when_available():
-    """When mem0 returns facts, enriched_query uses [Context:] block, not raw history."""
+    """When mem0 returns facts, history_context uses mem0 content; rewritten_query unchanged."""
     from rag.v4.nodes.history_inject_node import history_inject_node
 
     mock_manager = MagicMock()
@@ -321,12 +321,11 @@ def test_history_inject_uses_mem0_context_when_available():
          patch("rag.v4.mem0_registry.get", return_value=mock_manager):
         result = history_inject_node(state, registry=MagicMock())
 
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    assert "[Context:" in new_query
-    assert "Student studies CSCE 221" in new_query
-    assert "Current question:" in new_query
-    # Should NOT fall through to raw history
-    assert "[Previous context:" not in new_query
+    # rewritten_query must be unchanged
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # mem0 context lands in history_context
+    history_ctx = result.get("history_context", "")
+    assert "Student studies CSCE 221" in history_ctx
 
 
 def test_history_inject_falls_back_to_raw_history_when_mem0_empty():
@@ -352,10 +351,11 @@ def test_history_inject_falls_back_to_raw_history_when_mem0_empty():
          patch("rag.v4.mem0_registry.get", return_value=mock_manager):
         result = history_inject_node(state, registry=MagicMock())
 
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Should fall through to raw history path
-    assert "[Previous context:" in new_query
-    assert "CSCE 221" in new_query
+    # rewritten_query must be unchanged
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # Falls through to raw history → content in history_context
+    history_ctx = result.get("history_context", "")
+    assert "CSCE 221" in history_ctx
 
 
 def test_history_inject_skips_mem0_when_disabled():
@@ -379,9 +379,11 @@ def test_history_inject_skips_mem0_when_disabled():
         result = history_inject_node(state, registry=MagicMock())
 
     mock_get.assert_not_called()
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Falls through to raw history
-    assert "[Previous context:" in new_query
+    # rewritten_query must be unchanged
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # Falls through to raw history → content in history_context
+    history_ctx = result.get("history_context", "")
+    assert "CSCE 221" in history_ctx
 
 
 def test_history_inject_skips_mem0_when_no_session_id():

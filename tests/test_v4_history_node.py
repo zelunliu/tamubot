@@ -126,10 +126,12 @@ def test_history_inject_caps_at_6_messages():
         "timing_ms": {},
     }
     result = history_inject_node(state, registry=MagicMock())
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Should contain context but not first turns
-    assert "old question 0" not in new_query
-    assert "Current question" in new_query
+    # rewritten_query must be unchanged (context goes to history_context now)
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # history_context should contain recent turns but not earliest
+    history_ctx = result.get("history_context", "")
+    assert "old question 0" not in history_ctx
+    assert history_ctx != ""  # some context was captured
 
 
 # ---------------------------------------------------------------------------
