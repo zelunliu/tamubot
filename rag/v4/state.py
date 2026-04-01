@@ -27,7 +27,7 @@ class PipelineState(TypedDict, total=False):
     data_integrity: bool
     conflicted_course_ids: list[str]
     answer: str
-    answer_stream: Optional[Any]   # Iterator — NOT checkpointed
+    answer_stream: Optional[list]  # list[str] tokens — picklable, checkpointed by LangGraph
     trace: Optional[Any]           # LFTrace — NOT checkpointed (not picklable)
     timing_ms: dict[str, float]
     error: Optional[str]
@@ -45,6 +45,7 @@ class ConversationState(PipelineState, total=False):
     session_id: str
     history: list[ConversationMessage]          # last N turns (windowed)
     history_summary: str                         # LLM-compressed older turns
+    history_context: str          # formatted history block for generator (set by history_inject_node)
     turn_number: int
     router_cache: dict                           # normalize(query) → router_result_dict
     retrieval_cache: dict                        # cache_key → list[chunk_dict]

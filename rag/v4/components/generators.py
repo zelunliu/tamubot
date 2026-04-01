@@ -40,9 +40,11 @@ class LLMGeneratorComponent:
         return {"answer_stream": stream}
 
     def generate_stream(self, state: Any) -> Iterator[str]:
-        """Satisfy GeneratorLLMComponent protocol."""
+        from rag.v4.trace_registry import get as _get_trace
         stream_fn = self._get_stream_fn()
         router_result = state.get("router_result")
+        # Fetch trace from registry if not in state (v4 memory path excludes trace from state)
+        trace = state.get("trace") or _get_trace(state.get("session_id", ""))
         return stream_fn(
             results=state.get("retrieved_chunks", []),
             question=state.get("rewritten_query") or state.get("query", ""),
@@ -54,7 +56,8 @@ class LLMGeneratorComponent:
             data_gaps=state.get("data_gaps", []),
             data_integrity=state.get("data_integrity", True),
             conflicted_course_ids=state.get("conflicted_course_ids", []),
-            trace=state.get("trace"),
+            trace=trace,
+            history_context=state.get("history_context"),
         )
 
     def generate_eval_query(

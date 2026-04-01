@@ -147,3 +147,56 @@ def test_anchor_node_passes_specific_categories():
 
     _, call_categories = retriever.fetch_anchor_chunks.call_args[0]
     assert call_categories == ["GRADING", "EXAMS"]
+
+
+def test_generator_node_answer_stream_is_list():
+    """generator_node must return answer_stream as list[str], not a generator."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.generator_node import generator_node
+
+    registry = MagicMock()
+    registry.generator_llm.generate_stream.return_value = iter(["Hello ", "world"])
+
+    state = {"query": "test", "node_trace": [], "timing_ms": {}}
+    result = generator_node(state, registry=registry)
+
+    assert isinstance(result["answer_stream"], list)
+    assert result["answer_stream"] == ["Hello ", "world"]
+    assert result["answer"] == "Hello world"
+
+
+def test_out_of_scope_node_answer_stream_is_list():
+    """out_of_scope_node must return answer_stream as list[str]."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.out_of_scope_node import out_of_scope_node
+
+    state = {"query": "test", "node_trace": [], "timing_ms": {}}
+    result = out_of_scope_node(state, registry=MagicMock())
+
+    assert isinstance(result["answer_stream"], list)
+    assert len(result["answer_stream"]) == 1
+    assert "TamuBot" in result["answer_stream"][0]
+
+
+def test_pipeline_with_memory_returns_six_tuple():
+    """run_pipeline_v4_with_memory must return a 6-tuple with answer_tokens as last element."""
+    from unittest.mock import MagicMock, patch
+    from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
+
+    mock_result = {
+        "retrieved_chunks": [],
+        "router_result": MagicMock(function="out_of_scope", course_ids=[], requires_retrieval=False),
+        "data_gaps": [],
+        "data_integrity": True,
+        "conflicted_course_ids": [],
+        "answer_stream": ["Howdy!"],
+        "function": "out_of_scope",
+    }
+
+    with patch("rag.v4.pipeline_v4._memory_graph") as mock_graph:
+        mock_graph.invoke.return_value = mock_result
+        result = run_pipeline_v4_with_memory("hello", thread_config={"configurable": {"thread_id": "t1"}})
+
+    assert len(result) == 6
+    chunks, rr, gaps, integrity, conflicted, tokens = result
+    assert isinstance(tokens, list)

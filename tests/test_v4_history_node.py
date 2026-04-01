@@ -18,8 +18,8 @@ def test_history_inject_empty_history_unchanged():
     assert "CSCE 221" in new_query
 
 
-def test_history_inject_with_2_prior_turns_enriches_query():
-    """With prior history, rewritten_query should include context."""
+def test_history_inject_with_2_prior_turns_enriches_history_context():
+    """With prior history, history_context should include context; rewritten_query unchanged."""
     from rag.v4.nodes.history_inject_node import history_inject_node
     state = {
         "query": "what are the prerequisites?",
@@ -32,9 +32,10 @@ def test_history_inject_with_2_prior_turns_enriches_query():
         "timing_ms": {},
     }
     result = history_inject_node(state, registry=MagicMock())
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Should contain prior context
-    assert "CSCE 221" in new_query or "prerequisite" in new_query.lower()
+    # rewritten_query must be unchanged
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # prior history should land in history_context
+    assert "CSCE 221" in result.get("history_context", "")
 
 
 def test_history_update_appends_turn():
@@ -126,10 +127,12 @@ def test_history_inject_caps_at_6_messages():
         "timing_ms": {},
     }
     result = history_inject_node(state, registry=MagicMock())
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Should contain context but not first turns
-    assert "old question 0" not in new_query
-    assert "Current question" in new_query
+    # rewritten_query must be unchanged (context goes to history_context now)
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # history_context should contain recent turns but not earliest
+    history_ctx = result.get("history_context", "")
+    assert "old question 0" not in history_ctx
+    assert history_ctx != ""  # some context was captured
 
 
 # ---------------------------------------------------------------------------
@@ -245,3 +248,72 @@ def test_history_inject_summary_appears_before_recent_turns():
     assert summary_pos != -1, "Summary block not found in enriched query"
     assert recent_pos != -1, "Recent turn not found in enriched query"
     assert summary_pos < recent_pos, "Summary must appear before recent turns"
+
+
+def test_history_update_stores_specific_categories_in_router_result():
+    """history_update_node must include specific_categories in rr_summary."""
+    from unittest.mock import MagicMock
+    from rag.router import RouterResult
+    from rag.v4.nodes.history_update_node import history_update_node
+
+    rr = RouterResult(
+        course_ids=["CSCE 638"],
+        specific_categories=["SCHEDULE"],
+        rewritten_query="schedule CSCE 638",
+    )
+    state = {
+        "query": "schedule for CSCE 638?",
+        "answer": "MWF 9-10am.",
+        "history": [],
+        "router_result": rr,
+        "turn_number": 0,
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_update_node(state, registry=MagicMock())
+    history = result["history"]
+    assistant_msg = next(m for m in history if m["role"] == "assistant")
+    assert assistant_msg["router_result"]["specific_categories"] == ["SCHEDULE"]
+
+
+def test_history_inject_writes_history_context_not_rewritten_query():
+    """history_inject_node stores context in history_context; rewritten_query stays clean."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    original_query = "what are the prerequisites?"
+    state = {
+        "query": original_query,
+        "rewritten_query": original_query,
+        "history": [
+            {"role": "user", "content": "Tell me about CSCE 638"},
+            {"role": "assistant", "content": "CSCE 638 is a graduate ML course."},
+        ],
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+
+    # rewritten_query must not be modified
+    assert result.get("rewritten_query", original_query) == original_query
+
+    # history_context must be set and contain prior turn content
+    assert "history_context" in result
+    assert "CSCE 638" in result["history_context"]
+
+
+def test_history_inject_empty_history_no_history_context():
+    """With no history, history_inject_node does not set history_context."""
+    from unittest.mock import MagicMock
+    from rag.v4.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "what is CSCE 221?",
+        "rewritten_query": "what is CSCE 221?",
+        "history": [],
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    result = history_inject_node(state, registry=MagicMock())
+    assert result.get("history_context", "") == ""
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]

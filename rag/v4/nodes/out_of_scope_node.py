@@ -16,15 +16,11 @@ _OOS_RESPONSE = (
 @timing_middleware
 @error_guard_middleware
 def out_of_scope_node(state: PipelineState, registry: Any) -> dict:
-    """Write canned response to state. No LLM call."""
+    """Write canned response to state as list[str]. No LLM call."""
     node_trace = list(state.get("node_trace", []))
     node_trace.append("out_of_scope")
-
-    def _stream():
-        yield _OOS_RESPONSE
-
     return {
         "answer": _OOS_RESPONSE,
-        "answer_stream": _stream(),
+        "answer_stream": [_OOS_RESPONSE],
         "node_trace": node_trace,
     }

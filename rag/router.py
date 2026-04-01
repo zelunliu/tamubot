@@ -149,6 +149,7 @@ def classify_query(
     query: str,
     router_span=None,
     prior_course_ids: Optional[list[str]] = None,
+    prior_context: Optional[str] = None,
 ) -> "RouterResult":
     """Extract structured variables from a user query using Gemini Flash.
 
@@ -158,8 +159,13 @@ def classify_query(
         prior_course_ids: Course IDs from the previous turn, prepended as a
                           context hint so the LLM can resolve pronouns like
                           "it" or "that course".
+        prior_context:    Full prior-turn context string (query, courses, categories),
+                          takes precedence over prior_course_ids if provided.
     """
-    if prior_course_ids:
+    if prior_context:
+        hint = f"[Context: {prior_context}]\n"
+        query = hint + query
+    elif prior_course_ids:
         hint = f"[Context: previous turn mentioned courses: {', '.join(prior_course_ids)}]\n"
         query = hint + query
     prompt = ROUTER_PROMPT.format(query=query)

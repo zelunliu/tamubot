@@ -110,3 +110,66 @@ def test_error_guard_passes_through_successful_result():
 
     result = good_node({})
     assert result["answer"] == "ok"
+
+
+def test_trace_registry_register_and_get():
+    from rag.v4.trace_registry import register, get, clear
+    mock_trace = object()
+    register("session-abc", mock_trace)
+    assert get("session-abc") is mock_trace
+    clear("session-abc")
+
+
+def test_trace_registry_clear_removes_entry():
+    from rag.v4.trace_registry import register, get, clear
+    register("session-xyz", object())
+    clear("session-xyz")
+    assert get("session-xyz") is None
+
+
+def test_trace_registry_empty_session_id_is_noop():
+    from rag.v4.trace_registry import register, get
+    register("", object())
+    assert get("") is None
+
+
+def test_trace_registry_unknown_session_returns_none():
+    from rag.v4.trace_registry import get
+    assert get("never-registered-session-99") is None
+
+
+def test_pipeline_registers_trace_before_invoke():
+    """run_pipeline_v4_with_memory registers trace in registry before invoking the graph."""
+    from unittest.mock import MagicMock, patch
+    import rag.v4.trace_registry as reg
+
+    mock_trace = MagicMock()
+    registered = {}
+
+    original_register = reg.register
+    def spy_register(session_id, trace):
+        registered[session_id] = trace
+        original_register(session_id, trace)
+
+    mock_graph_result = {
+        "retrieved_chunks": [],
+        "router_result": MagicMock(function="out_of_scope", course_ids=[], requires_retrieval=False),
+        "data_gaps": [],
+        "data_integrity": True,
+        "conflicted_course_ids": [],
+        "answer_stream": [],
+        "function": "out_of_scope",
+    }
+
+    with patch("rag.v4.pipeline_v4._memory_graph") as mock_graph, \
+         patch.object(reg, "register", side_effect=spy_register):
+        mock_graph.invoke.return_value = mock_graph_result
+        from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
+        run_pipeline_v4_with_memory(
+            "hello",
+            trace=mock_trace,
+            thread_config={"configurable": {"thread_id": "t-trace-test"}},
+        )
+
+    assert "t-trace-test" in registered
+    assert registered["t-trace-test"] is mock_trace
