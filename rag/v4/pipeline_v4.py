@@ -91,7 +91,7 @@ def run_pipeline_v4_with_memory(
         thread_config: LangGraph thread config dict, e.g. {"configurable": {"thread_id": "..."}}
 
     Returns:
-        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
+        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids, answer_tokens)
     """
     global _memory_graph, _memory_registry
     if _memory_graph is None:

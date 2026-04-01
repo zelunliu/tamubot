@@ -215,6 +215,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     st.session_state.messages.append({"role": "assistant", "content": _cached_answer})
                     st.stop()
 
+            answer_tokens: list[str] = []
             with st.spinner("Routing, retrieving, and generating..."):
                 try:
                     result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
