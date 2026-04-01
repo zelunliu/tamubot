@@ -6,6 +6,7 @@ from typing import Any, Optional
 from rag.v4.graph import build_graph, build_graph_with_memory
 from rag.v4.registry_factory import make_default_registry
 from rag.v4.state import PipelineState
+import rag.v4.trace_registry as _trace_registry
 
 # Module-level compiled graph singleton (built lazily on first call)
 _graph = None
@@ -123,7 +124,12 @@ def run_pipeline_v4_with_memory(
     if thread_config:
         invoke_kwargs["config"] = thread_config
 
-    result = _memory_graph.invoke(initial_state, **invoke_kwargs)
+    if session_id and trace is not None:
+        _trace_registry.register(session_id, trace)
+    try:
+        result = _memory_graph.invoke(initial_state, **invoke_kwargs)
+    finally:
+        _trace_registry.clear(session_id)
 
     return (
         result.get("retrieved_chunks", []),
