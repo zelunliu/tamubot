@@ -18,8 +18,8 @@ def test_history_inject_empty_history_unchanged():
     assert "CSCE 221" in new_query
 
 
-def test_history_inject_with_2_prior_turns_enriches_query():
-    """With prior history, rewritten_query should include context."""
+def test_history_inject_with_2_prior_turns_enriches_history_context():
+    """With prior history, history_context should include context; rewritten_query unchanged."""
     from rag.v4.nodes.history_inject_node import history_inject_node
     state = {
         "query": "what are the prerequisites?",
@@ -32,9 +32,10 @@ def test_history_inject_with_2_prior_turns_enriches_query():
         "timing_ms": {},
     }
     result = history_inject_node(state, registry=MagicMock())
-    new_query = result.get("rewritten_query", state["rewritten_query"])
-    # Should contain prior context
-    assert "CSCE 221" in new_query or "prerequisite" in new_query.lower()
+    # rewritten_query must be unchanged
+    assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+    # prior history should land in history_context
+    assert "CSCE 221" in result.get("history_context", "")
 
 
 def test_history_update_appends_turn():
