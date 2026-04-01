@@ -11,24 +11,31 @@ from rag.v4.trace_registry import get as _get_trace
 
 
 def _build_prior_context(history: list) -> Optional[str]:
-    """Build a context string from the last assistant turn for pronoun/category resolution."""
+    """Build a context string from the most recent turn for pronoun/category resolution.
+
+    Scans backwards to find the most recent user query and its adjacent assistant
+    router_result. Stops at the first assistant message seen — never pulls context
+    from an earlier, unrelated turn.
+    """
     if not history:
         return None
 
     prior_query = ""
     prior_course_ids: list[str] = []
     prior_categories: list[str] = []
+    seen_assistant = False
 
     for msg in reversed(history):
         role = msg.get("role", "")
         if not prior_query and role == "user":
             prior_query = msg.get("content", "")[:150]
-        if role == "assistant" and not prior_course_ids and not prior_categories:
+        if role == "assistant" and not seen_assistant:
+            seen_assistant = True
             rr = msg.get("router_result") or {}
             prior_course_ids = rr.get("course_ids", [])
             prior_categories = rr.get("specific_categories", [])
-        if prior_query and (prior_course_ids or prior_categories):
-            break
+        if seen_assistant and prior_query:
+            break  # have both query and the one adjacent assistant turn — stop
 
     if not prior_query:
         return None
