@@ -14,9 +14,13 @@ __pycache__/
 # Raw data (large files, regeneratable by running the scrapers)
 tamu_data/raw/syllabi/
 tamu_data/raw/catalog/
+tamu_data/csce_syllabuses_no_url.zip
 
 # PDFs anywhere in the repo (debug/test files)
 *.pdf
+
+# Large zip archives (source syllabi bundles — regeneratable)
+tamu_data/processed/v3_step2_boilerplate.zip
 
 # Personal processing logs (progress checkpoints, error logs)
 tamu_data/logs/

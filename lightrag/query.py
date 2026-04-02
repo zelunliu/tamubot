@@ -18,7 +18,7 @@ from lightrag import QueryParam
 
 # Add spike dir to path for sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wrappers import WORKING_DIR, make_lightrag
+from wrappers import WORKING_DIR, amake_lightrag
 
 MODES = ["naive", "local", "global", "hybrid"]
 
@@ -29,7 +29,7 @@ async def run_query(query: str, modes: list[str]) -> None:
         print("Run ingest.py first.")
         sys.exit(1)
 
-    rag = make_lightrag()
+    rag = await amake_lightrag()
 
     for mode in modes:
         print(f"\n{'='*60}")

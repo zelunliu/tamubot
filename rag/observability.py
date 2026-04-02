@@ -410,6 +410,14 @@ def compute_ragas_metrics(
             Faithfulness(llm=critic_llm),
             AnswerRelevancy(llm=critic_llm, embeddings=critic_embeddings),
         ]
+        # litellm doesn't know TAMU gateway pricing → assigns huge default cost
+        # → trips its own $5 budget cap. Disable budget enforcement.
+        try:
+            import litellm
+            litellm.max_budget = None
+        except Exception:
+            pass
+
         result = evaluate(dataset=dataset, metrics=metrics)
         scores: dict = result.to_pandas().iloc[0].to_dict()
 

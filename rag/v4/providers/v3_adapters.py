@@ -16,10 +16,11 @@ class V3RouterAdapter:
         query: str,
         trace: Optional[Any] = None,
         prior_course_ids: Optional[list[str]] = None,
+        prior_context: Optional[str] = None,
     ) -> Any:
         from rag.router import classify_query
         # Pass trace as router_span for Langfuse observability
-        return classify_query(query, router_span=trace, prior_course_ids=prior_course_ids)
+        return classify_query(query, router_span=trace, prior_course_ids=prior_course_ids, prior_context=prior_context)
 
 
 class V3RetrieverAdapter:

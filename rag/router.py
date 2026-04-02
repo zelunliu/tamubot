@@ -280,14 +280,29 @@ def route_retrieve_rerank(
     query: str,
     trace=None,
 ) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool, list[str], dict]:
-    """Wrapper — delegates to pipeline.run_pipeline().
+    """Run the full RAG pipeline via v4.
 
     Returns:
         (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids,
          timing_ms)  where timing_ms = {"router_ms": float, "retrieval_ms": float}
     """
-    from rag.pipeline import run_pipeline  # lazy import to avoid circular
-    return run_pipeline(query, trace=trace)
+    from rag.v4.pipeline_v4 import run_pipeline_v4  # lazy import to avoid circular
+    return run_pipeline_v4(query, trace=trace, return_timing=True)
+
+
+def router_order(query: str, trace=None) -> "RouterResult":
+    """Router_Stage: open generation, classify query (generation closed inside classify_query)."""
+    router_obs = None
+    if trace is not None:
+        try:
+            router_obs = trace.generation(
+                name="Router_Stage",
+                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+                input=[{"role": "user", "content": ROUTER_PROMPT.format(query=query)}],
+            )
+        except Exception:
+            router_obs = None
+    return classify_query(query, router_span=router_obs)
 
 
 def deduplicate_chunks(results: list[dict]) -> list[dict]:
