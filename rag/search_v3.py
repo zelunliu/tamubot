@@ -11,7 +11,7 @@ All methods accept optional course_id / term filters.
 Also exposes a v1-compatible API so pipeline.py needs no logic changes:
     hybrid_search(query, filters, k, parent_span)
     search_semantic(query, top_k)
-    fetch_anchor_chunks(course_ids, categories)   — ignores categories; all chunks per course
+    fetch_anchor_chunks(course_ids)   — all chunks per course
     search_by_course(course_id, term)
     get_missing_sections(course_id)
 """
@@ -363,17 +363,13 @@ def search_by_course(
 
 def fetch_anchor_chunks(
     course_ids: list[str],
-    categories: list[str],  # ignored in v3 — no category field
 ) -> tuple[list[dict], list[tuple[str, str]], bool]:
     """Fetch all chunks for each course_id from chunks_v3.
 
-    The `categories` parameter is accepted for API compatibility but ignored —
-    v3 chunks have no category field.  Data gaps are tracked at course granularity
-    (did we find *any* chunks for this course?).
+    Data gaps are tracked at course granularity (did we find *any* chunks?).
 
     Args:
-        course_ids:  Anchor course IDs (e.g. ["CSCE 638"]).
-        categories:  Ignored (kept for v1 API compatibility).
+        course_ids: Anchor course IDs (e.g. ["CSCE 638"]).
 
     Returns:
         chunks         — all retrieved chunks sorted by (course_id, chunk_index)

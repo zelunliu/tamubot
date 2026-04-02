@@ -271,8 +271,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                         sem = f" | Intent: {router_result.intent_type}" if router_result.intent_type else ""
                         st.caption(
                             f"Function: **{router_result.function}** | "
-                            f"Mode: {mode_label} | "
-                            f"CatConf: {router_result.category_confidence:.2f}{sem} | "
+                            f"Mode: {mode_label}{sem} | "
                             f"Courses: {', '.join(router_result.course_ids) or 'none'}"
                         )
                     for i, doc in enumerate(source_docs):

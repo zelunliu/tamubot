@@ -30,7 +30,6 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
 
     dk = compute_dynamic_k(function, len(course_ids))
     retrieve_k = dk["retrieve_k"]
-    specific_categories = state.get("specific_categories", [])
 
     # Cache check — skip retrieval on exact-match hit
     if config.SESSION_CACHE_ENABLED:
@@ -50,7 +49,6 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
                 all_chunks.extend(chunks)
             reranked = registry.reranker.rerank(
                 rewritten_query, all_chunks, top_k=len(all_chunks),
-                specific_categories=specific_categories,
             )
 
             retrieval_cache_update = {}
@@ -65,7 +63,6 @@ def retrieval_node(state: PipelineState, registry: Any) -> dict:
             chunks = registry.retriever.semantic_search(rewritten_query, retrieve_k)
             reranked = registry.reranker.rerank(
                 rewritten_query, chunks, top_k=len(chunks),
-                specific_categories=specific_categories,
             )
 
             retrieval_cache_update = {}

@@ -14,11 +14,11 @@ Extract structured variables from the user's question and emit JSON.
 
 CONVERSATION CONTEXT
 The query may begin with a [Context: ...] line containing prior turn information.
-Use it to resolve pronouns and infer omitted categories from the previous turn.
+Use it to resolve pronouns and course references from the previous turn.
 Examples:
-- Context "previous query: 'what's the schedule for CSCE 638?', courses: CSCE 638, categories: SCHEDULE",
+- Context "previous query: 'what's the schedule for CSCE 638?', courses: CSCE 638",
   query "compare it with CSCE 670"
-  → course_ids=["CSCE 638", "CSCE 670"], specific_categories=["SCHEDULE"], specific_only=true
+  → course_ids=["CSCE 638", "CSCE 670"]
 - Context "courses: CSCE 670", query "which has more assignments"
   → course_ids=["CSCE 670"]
 
@@ -28,22 +28,6 @@ Identify all course IDs mentioned. Normalize: uppercase department + space + num
 Extract ONLY courses the student is directly asking about — not prereq background.
 Example: "I got a B in MATH 151, can I take this course?" → course_ids=[]
 If the question uses "this course"/"this class" with no named course ID, set course_ids=[].
-
-CATEGORIES
-Valid categories: COURSE_OVERVIEW, INSTRUCTOR, PREREQUISITES, LEARNING_OUTCOMES, MATERIALS,
-GRADING, SCHEDULE, ATTENDANCE_AND_MAKEUP, AI_POLICY, UNIVERSITY_POLICIES, SUPPORT_SERVICES
-
-- specific_categories: categories the question targets (or [] if none clearly targeted)
-- specific_only: true if ONLY those categories are asked about; false for broad/general questions
-- category_confidence: 0.0–1.0
-
-Examples:
-- "What is the grading breakdown for CSCE 638?" → specific_categories=["GRADING"], specific_only=true, 0.95
-- "Tell me about CSCE 670" → specific_categories=[], specific_only=false, 1.0
-- "Tell me about CSCE 638, especially the grading" → specific_categories=["GRADING"], specific_only=false, 0.85
-- "Can I use ChatGPT in CSCE 638?" → specific_categories=["AI_POLICY"], specific_only=true, 0.95
-- "What materials and grading does CSCE 638 require?"
-  → specific_categories=["MATERIALS","GRADING"], specific_only=true, 0.9
 
 INTENT TYPE
 Set intent_type = non-null ONLY for TAMU academic questions that are evaluative, advisory,
@@ -74,9 +58,6 @@ Output ONLY a JSON object with these fields:
 {{
   "course_ids": [],
   "section": null,
-  "specific_categories": [],
-  "specific_only": false,
-  "category_confidence": 1.0,
   "intent_type": null,
   "recurrent_search": false,
   "rewritten_query": "..."
@@ -106,39 +87,38 @@ If the context does not contain the answer, state \
 5. When using markdown tables, do NOT pad cells with extra spaces. Keep columns compact.
 """
 
-# Minimal system prompt for generate_comparison() — JSON extraction only.
-# No Markdown table overlay (rendered in Python), no advisory overlay.
-COMPARISON_EXTRACTION_SYSTEM = """\
-You are a structured data extractor for Texas A&M University course comparisons.
-Extract the requested fields accurately from the provided <context>. Do not invent information.
-If a field is not found in the context, use an empty string.
+# System prompt for generate_comparison() — free-form markdown output, streamed.
+COMPARISON_SYSTEM = """\
+You are TamuBot, an academic assistant for Texas A&M University.
+You help students compare courses using information extracted from their syllabi.
+
+RULES:
+1. Answer ONLY based on the provided <context>. Never invent information. \
+If information is not in the context, write "Not found".
+2. Cite sources using [Source N] notation matching the source numbers in the context.
+3. Use compact markdown formatting. Do NOT pad table cells with extra spaces.
+
+OUTPUT FORMAT:
+1. A summary table with columns: Course | Grading | Workload | Prerequisites
+2. A "## Detailed Comparison" section. If the question targets specific aspects, cover only those.
+   Otherwise include subsections: ### Course Overview, ### Grading & Workload, ### Prerequisites,
+   ### Learning Outcomes, ### Topics, ### Materials.
+   Under each subsection address each course in bold (e.g. **CSCE 638**: ...).
+   Omit a subsection entirely if the context has no relevant information for any course.
 """
 
-# hybrid_course framing variants — selected in build_system_prompt based on
-# specific_categories and specific_only extracted by the router.
+# hybrid_course framing — used by build_system_prompt for all course-specific queries.
 _HYBRID_COURSE_DEFAULT = (
-    "The user is asking for a general overview of a course. "
+    "The user is asking about a course. "
     "Answer the question directly using the most relevant information from the context. "
     "For broad overview questions, cover the course purpose, key topics, prerequisites, and grading. "
     "Do not pad the answer with aspects the question did not ask about. "
     "Include the course ID and section."
 )
-_HYBRID_COURSE_SPECIFIC = (
-    "The user is asking about specific course details. "
-    "Focus precisely on the requested topic(s) and be complete and accurate. "
-    "Do NOT include information about aspects of the course not asked about. "
-    "Include the course ID and section. Name the instructor where relevant."
-)
-_HYBRID_COURSE_COMBINED = (
-    "The user is asking about specific course details in the context of a broader overview. "
-    "Cover both the requested topic(s) and the general course overview. "
-    "Include the course ID and section."
-)
 
 # Primary prompt per function — describes the factual framing of the response.
-# For hybrid_course, build_system_prompt selects the right variant from the three above.
 _FUNCTION_PROMPTS: dict[str, str] = {
-    "hybrid_course": _HYBRID_COURSE_DEFAULT,   # fallback; actual variant selected in build_system_prompt
+    "hybrid_course": _HYBRID_COURSE_DEFAULT,
     "recurrent": (
         "The user wants to find courses that pair with, complement, follow from, or are similar to "
         "a specific course. The context includes the anchor course's content and the most relevant "
@@ -182,13 +162,6 @@ _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
         "or system works in the context of the student's question, based on available evidence."
     ),
 }
-
-# Injected when category_confidence < 0.7 (Verbal Uncertainty Calibration).
-UNCERTAINTY_INJECTION = (
-    "NOTE: The extracted category is not high-confidence. "
-    "Based on the available, but potentially incomplete, data in the provided context, "
-    "provide your best answer. If the evidence is ambiguous or insufficient, acknowledge this limitation."
-)
 
 # Per-function generation temperature (function-based stochasticity).
 # hybrid_course: 0.0 (deterministic extraction, maximum fidelity to context).

@@ -129,8 +129,8 @@ def test_result_is_v3_compatible():
     assert "conflicted_course_ids" in result
 
 
-def test_anchor_node_passes_specific_categories():
-    """anchor_node must pass specific_categories from state to fetch_anchor_chunks."""
+def test_anchor_node_calls_fetch_anchor_chunks_with_course_ids():
+    """anchor_node calls fetch_anchor_chunks with only course_ids (no categories)."""
     from rag.v4.nodes.anchor_node import anchor_node
 
     retriever = MagicMock()
@@ -140,13 +140,12 @@ def test_anchor_node_passes_specific_categories():
 
     state = {
         "course_ids": ["202611_CSCE_221_500"],
-        "specific_categories": ["GRADING", "EXAMS"],
         "node_trace": [],
     }
     anchor_node(state, registry=registry)
 
-    _, call_categories = retriever.fetch_anchor_chunks.call_args[0]
-    assert call_categories == ["GRADING", "EXAMS"]
+    (call_course_ids,) = retriever.fetch_anchor_chunks.call_args[0]
+    assert call_course_ids == ["202611_CSCE_221_500"]
 
 
 def test_generator_node_answer_stream_is_list():

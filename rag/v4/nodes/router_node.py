@@ -11,7 +11,7 @@ from rag.v4.trace_registry import current_span as _current_span, get as _get_tra
 
 
 def _build_prior_context(history: list) -> Optional[str]:
-    """Build a context string from the most recent turn for pronoun/category resolution.
+    """Build a context string from the most recent turn for pronoun resolution.
 
     Scans backwards to find the most recent user query and its adjacent assistant
     router_result. Stops at the first assistant message seen — never pulls context
@@ -22,7 +22,6 @@ def _build_prior_context(history: list) -> Optional[str]:
 
     prior_query = ""
     prior_course_ids: list[str] = []
-    prior_categories: list[str] = []
     seen_assistant = False
 
     for msg in reversed(history):
@@ -33,7 +32,6 @@ def _build_prior_context(history: list) -> Optional[str]:
             seen_assistant = True
             rr = msg.get("router_result") or {}
             prior_course_ids = rr.get("course_ids", [])
-            prior_categories = rr.get("specific_categories", [])
         if seen_assistant and prior_query:
             break  # have both query and the one adjacent assistant turn — stop
 
@@ -43,8 +41,6 @@ def _build_prior_context(history: list) -> Optional[str]:
     parts = [f"previous query: \"{prior_query}\""]
     if prior_course_ids:
         parts.append(f"courses: {', '.join(prior_course_ids)}")
-    if prior_categories:
-        parts.append(f"categories: {', '.join(prior_categories)}")
     return ", ".join(parts)
 
 
@@ -73,13 +69,14 @@ def router_node(state: PipelineState, registry: Any) -> dict:
                 "course_ids": cached["course_ids"],
                 "rewritten_query": cached.get("rewritten_query") or query,
                 "intent_type": cached.get("intent_type"),
-                "specific_categories": cached.get("specific_categories", []),
                 "recurrent_search": cached.get("recurrent_search", False),
                 "requires_retrieval": cached.get("requires_retrieval", True),
                 "node_trace": node_trace,
             }
 
-    prior_context = _build_prior_context(state.get("history", []))
+    # history_inject_node runs before router and populates history_context; prefer that
+    # over the compact _build_prior_context so the router sees full conversation context.
+    prior_context = state.get("history_context") or _build_prior_context(state.get("history", []))
 
     try:
         router_result = registry.router_llm.classify(query, trace=trace, prior_context=prior_context)
@@ -96,7 +93,6 @@ def router_node(state: PipelineState, registry: Any) -> dict:
                     "course_ids": router_result.course_ids,
                     "rewritten_query": router_result.rewritten_query or query,
                     "intent_type": router_result.intent_type,
-                    "specific_categories": router_result.specific_categories,
                     "recurrent_search": router_result.recurrent_search,
                     "requires_retrieval": router_result.requires_retrieval,
                 }
@@ -108,7 +104,6 @@ def router_node(state: PipelineState, registry: Any) -> dict:
             "course_ids": router_result.course_ids,
             "rewritten_query": router_result.rewritten_query or query,
             "intent_type": router_result.intent_type,
-            "specific_categories": router_result.specific_categories,
             "recurrent_search": router_result.recurrent_search,
             "requires_retrieval": router_result.requires_retrieval,
             "router_cache": router_cache_update,

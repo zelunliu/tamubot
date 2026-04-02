@@ -1,7 +1,9 @@
 """History inject node — builds history_context for generator from last N turns.
 
-Runs AFTER router. Writes to history_context state key (used by generator).
+Runs BEFORE router. Writes to history_context state key (used by generator).
 Does NOT modify rewritten_query — that stays clean for retrieval embedding.
+Note: when running before router, rewritten_query is not yet set, so Mem0
+search uses the raw query (state["query"]).
 """
 from __future__ import annotations
 

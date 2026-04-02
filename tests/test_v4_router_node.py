@@ -59,8 +59,6 @@ def test_router_node_passes_prior_context_when_history_present():
     registry.router_llm.classify.return_value = RouterResult(
         course_ids=["CSCE 638", "CSCE 670"],
         rewritten_query="compare schedule CSCE 638 CSCE 670",
-        specific_categories=["SCHEDULE"],
-        specific_only=True,
     )
 
     state = {
@@ -73,7 +71,6 @@ def test_router_node_passes_prior_context_when_history_present():
                 "router_result": {
                     "function": "hybrid_course",
                     "course_ids": ["CSCE 638"],
-                    "specific_categories": ["SCHEDULE"],
                 },
             },
         ],
@@ -87,7 +84,6 @@ def test_router_node_passes_prior_context_when_history_present():
     assert "prior_context" in call_kwargs
     ctx = call_kwargs["prior_context"]
     assert ctx is not None
-    assert "SCHEDULE" in ctx
     assert "CSCE 638" in ctx
 
 

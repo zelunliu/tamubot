@@ -17,8 +17,7 @@ def anchor_node(state: PipelineState, registry: Any) -> dict:
     node_trace.append("anchor")
 
     try:
-        specific_categories = state.get("specific_categories", [])
-        chunks, data_gaps, data_integrity = registry.retriever.fetch_anchor_chunks(course_ids, specific_categories)
+        chunks, data_gaps, data_integrity = registry.retriever.fetch_anchor_chunks(course_ids)
         return {
             "anchor_chunks": chunks,
             "data_gaps": data_gaps,
