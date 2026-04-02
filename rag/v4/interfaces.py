@@ -56,14 +56,8 @@ class RerankerComponent(Protocol):
         query: str,
         chunks: list[dict],
         top_k: int,
-        specific_categories: Optional[list[str]] = None,
     ) -> list[dict]:
-        """Rerank chunks by relevance to query, return top_k.
-
-        specific_categories: when provided, forwarded to stratified_select so
-        category-specific queries get proportional representation (mirrors v3
-        pipeline behaviour).
-        """
+        """Rerank chunks by relevance to query, return top_k."""
         ...
 
 

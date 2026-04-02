@@ -21,13 +21,10 @@ def merge_node(state: PipelineState, registry: Any) -> dict:
     node_trace = list(state.get("node_trace", []))
     node_trace.append("merge")
 
-    specific_categories = state.get("specific_categories", [])
-
     try:
         combined = deduplicate_chunks(anchor_chunks + discovery_chunks)
         reranked = registry.reranker.rerank(
             query, combined, top_k=len(combined),
-            specific_categories=specific_categories,
         )
 
         # Cap discovery courses

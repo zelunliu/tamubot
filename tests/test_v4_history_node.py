@@ -250,15 +250,14 @@ def test_history_inject_summary_appears_before_recent_turns():
     assert summary_pos < recent_pos, "Summary must appear before recent turns"
 
 
-def test_history_update_stores_specific_categories_in_router_result():
-    """history_update_node must include specific_categories in rr_summary."""
+def test_history_update_stores_router_result_summary():
+    """history_update_node stores function and course_ids in rr_summary."""
     from unittest.mock import MagicMock
     from rag.router import RouterResult
     from rag.v4.nodes.history_update_node import history_update_node
 
     rr = RouterResult(
         course_ids=["CSCE 638"],
-        specific_categories=["SCHEDULE"],
         rewritten_query="schedule CSCE 638",
     )
     state = {
@@ -273,7 +272,9 @@ def test_history_update_stores_specific_categories_in_router_result():
     result = history_update_node(state, registry=MagicMock())
     history = result["history"]
     assistant_msg = next(m for m in history if m["role"] == "assistant")
-    assert assistant_msg["router_result"]["specific_categories"] == ["SCHEDULE"]
+    assert assistant_msg["router_result"]["course_ids"] == ["CSCE 638"]
+    assert "function" in assistant_msg["router_result"]
+    assert "specific_categories" not in assistant_msg["router_result"]
 
 
 def test_history_inject_writes_history_context_not_rewritten_query():

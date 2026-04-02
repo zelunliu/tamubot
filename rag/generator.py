@@ -12,12 +12,8 @@ from rag.prompts import (
     _BASE_SYSTEM,
     _FUNCTION_PROMPTS,
     _FUNCTION_TEMPERATURES,
-    _HYBRID_COURSE_COMBINED,
-    _HYBRID_COURSE_DEFAULT,
-    _HYBRID_COURSE_SPECIFIC,
     _SEMANTIC_TYPE_PROMPTS,
     COMPARISON_SYSTEM,
-    UNCERTAINTY_INJECTION,
 )
 
 # ---------------------------------------------------------------------------
@@ -112,9 +108,6 @@ def build_system_prompt(
     function: str,
     course_ids: list[str] | None = None,
     intent_type: str | None = None,
-    category_confidence: float | None = None,
-    specific_categories: list[str] | None = None,
-    specific_only: bool = False,
 ) -> str:
     """Build a function-adaptive system prompt.
 
@@ -122,28 +115,9 @@ def build_system_prompt(
         function: Router function type (e.g., "hybrid_course", "recurrent").
         course_ids: List of course IDs referenced in the query.
         intent_type: Advisory intent type from the router (e.g., "CAREER").
-        category_confidence: Router's confidence in category extraction (0.0-1.0).
-                            If < 0.7, injects Verbal Uncertainty Calibration (VUC).
-        specific_categories: Categories the user asked about (from router).
-        specific_only: True if the user asked ONLY about those categories.
     """
     parts = [_BASE_SYSTEM]
-
-    if function == "hybrid_course":
-        cats = specific_categories or []
-        if not cats:
-            function_instruction = _HYBRID_COURSE_DEFAULT
-        elif specific_only:
-            function_instruction = _HYBRID_COURSE_SPECIFIC
-        else:
-            function_instruction = _HYBRID_COURSE_COMBINED
-    else:
-        function_instruction = _FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"])
-    parts.append(function_instruction)
-
-    # Verbal Uncertainty Calibration: inject uncertainty language if confidence is low
-    if category_confidence is not None and category_confidence < 0.7:
-        parts.append(UNCERTAINTY_INJECTION)
+    parts.append(_FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"]))
 
     # Multi-course comparison overlay
     if course_ids and len(course_ids) > 1:
@@ -175,8 +149,6 @@ def generate(
     function: str = "semantic_general",
     course_ids: list[str] | None = None,
     intent_type: str | None = None,
-    specific_categories: list[str] | None = None,
-    specific_only: bool = False,
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
     trace=None,
@@ -185,16 +157,14 @@ def generate(
     """Generate a grounded response with citations using Gemini 2.0 Flash.
 
     Args:
-        results:             Reranked retrieval results (list of chunk dicts).
-        question:            The user's original question.
-        function:            Retrieval function from the router (e.g. "hybrid_course").
-        course_ids:          Extracted course IDs for context.
-        intent_type:         Advisory intent type from the router (e.g. "CAREER").
-        specific_categories: Categories the user asked about (router extraction).
-        specific_only:       True if the user asked ONLY about those categories.
-        data_gaps:           [(course_id, category)] pairs missing from DB (recurrent only).
-        data_integrity:      False if any data gaps were found; triggers disclaimer.
-        trace:               Optional Langfuse trace; creates a Generator_Stage span.
+        results:        Reranked retrieval results (list of chunk dicts).
+        question:       The user's original question.
+        function:       Retrieval function from the router (e.g. "hybrid_course").
+        course_ids:     Extracted course IDs for context.
+        intent_type:    Advisory intent type from the router (e.g. "CAREER").
+        data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
+        data_integrity: False if any data gaps were found; triggers disclaimer.
+        trace:          Optional Langfuse trace; creates a Generator_Stage span.
 
     Returns:
         Generated answer string with [Source N] citations.
@@ -210,13 +180,10 @@ def generate(
     # Route multi-course known-course queries to streaming comparison.
     # Recurrent queries may have multiple anchor course IDs but need pairing framing, not comparison.
     if course_ids and len(course_ids) > 1 and function != "recurrent":
-        return "".join(generate_comparison(results, question, course_ids, trace, specific_categories))
+        return "".join(generate_comparison(results, question, course_ids, trace))
 
     context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(
-        function, course_ids, intent_type,
-        specific_categories=specific_categories, specific_only=specific_only,
-    )
+    system_prompt = build_system_prompt(function, course_ids, intent_type)
     if history_context:
         user_message = (
             f"{context_xml}\n\n"
@@ -316,32 +283,26 @@ def generate_comparison(
     question: str,
     course_ids: list[str],
     trace=None,
-    specific_categories: list[str] | None = None,
 ):
     """Stream a multi-course comparison as free-form markdown.
 
     Uses stream_llm (no constrained decoding) so tokens arrive immediately.
 
     Args:
-        results:             Reranked retrieval results (list of chunk dicts).
-        question:            The user's original question.
-        course_ids:          List of course IDs being compared (len > 1).
-        trace:               Optional Langfuse trace; creates a Comparison_Generation span.
-        specific_categories: If set, constrain comparison to these syllabus categories.
+        results:    Reranked retrieval results (list of chunk dicts).
+        question:   The user's original question.
+        course_ids: List of course IDs being compared (len > 1).
+        trace:      Optional Langfuse trace; creates a Comparison_Generation span.
 
     Yields:
         str: Text tokens as they arrive.
     """
     context_xml = format_context_xml(results)
     courses_list = ", ".join(course_ids)
-    focus = (
-        f" Focus only on: {', '.join(specific_categories)}."
-        if specific_categories else ""
-    )
     user_message = (
         f"{context_xml}\n\n"
         f"Question: {question}\n\n"
-        f"Compare the following courses: {courses_list}.{focus}"
+        f"Compare the following courses: {courses_list}."
     )
 
     generation_span = None
@@ -411,8 +372,6 @@ def generate_stream(
     function: str = "semantic_general",
     course_ids: list[str] | None = None,
     intent_type: str | None = None,
-    specific_categories: list[str] | None = None,
-    specific_only: bool = False,
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
     conflicted_course_ids: list[str] | None = None,
@@ -446,7 +405,7 @@ def generate_stream(
     # Multi-course known-course comparison: stream free-form markdown directly.
     # Recurrent queries with multiple anchors stream normally using their own prompts.
     if course_ids and len(course_ids) > 1 and function != "recurrent":
-        yield from generate_comparison(results, question, course_ids, trace, specific_categories)
+        yield from generate_comparison(results, question, course_ids, trace)
         return
 
     # Schedule conflict notice (recurrent path only)
@@ -467,10 +426,7 @@ def generate_stream(
         yield disclaimer
 
     context_xml = format_context_xml(results)
-    system_prompt = build_system_prompt(
-        function, course_ids, intent_type,
-        specific_categories=specific_categories, specific_only=specific_only,
-    )
+    system_prompt = build_system_prompt(function, course_ids, intent_type)
     if history_context:
         user_message = (
             f"{context_xml}\n\n"
@@ -581,8 +537,6 @@ def generator_order(
         function=router_result.function,
         course_ids=router_result.course_ids,
         intent_type=router_result.intent_type,
-        specific_categories=router_result.specific_categories,
-        specific_only=router_result.specific_only,
         data_gaps=data_gaps or [],
         data_integrity=data_integrity,
         conflicted_course_ids=conflicted_course_ids or [],

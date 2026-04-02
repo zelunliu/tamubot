@@ -56,7 +56,6 @@ def _node_span_input(state: Any, label: str) -> dict:
     if label == "anchor":
         return {
             "course_ids": state.get("course_ids", []),
-            "specific_categories": state.get("specific_categories", []),
         }
     if label == "eval_search":
         return {
@@ -108,7 +107,6 @@ def _node_span_output(result: dict, label: str) -> dict:
             "course_ids": result.get("course_ids", []),
             "intent_type": result.get("intent_type"),
             "rewritten_query": (result.get("rewritten_query") or "")[:200],
-            "specific_categories": result.get("specific_categories", []),
             "cache_hit": "router_cache_hit" in node_trace,
         }
     if label == "history_inject":

@@ -62,8 +62,6 @@ def _derive_function(
     course_ids: list[str],
     recurrent_search: bool,
     intent_type: Optional[str],
-    specific_categories: list[str],
-    specific_only: bool,
 ) -> str:
     """Derive the retrieval function name from extracted variables.
 
@@ -73,9 +71,6 @@ def _derive_function(
     empty       any               None         → out_of_scope
     present     True              any          → recurrent
     present     False             any          → hybrid_course
-
-    Note: specific_categories and specific_only are still extracted by the router
-    and passed to the generator for prompt framing — they no longer drive function selection.
     """
     if not course_ids:
         return "semantic_general" if intent_type is not None else "out_of_scope"
@@ -92,10 +87,7 @@ class RouterResult:
 
     # Extracted by router LLM
     course_ids: list[str] = field(default_factory=list)
-    specific_categories: list[str] = field(default_factory=list)
-    specific_only: bool = False
     intent_type: Optional[str] = None  # None = out_of_scope only
-    category_confidence: float = 0.0
     recurrent_search: bool = False
     rewritten_query: str = ""
     section: Optional[str] = None
@@ -110,8 +102,6 @@ class RouterResult:
                 self.course_ids,
                 self.recurrent_search,
                 self.intent_type,
-                self.specific_categories,
-                self.specific_only,
             )
         if not self.retrieval_mode:
             self.retrieval_mode = _derive_retrieval_mode(
@@ -191,7 +181,7 @@ def classify_query(
     try:
         data = json.loads(raw_text)
     except (json.JSONDecodeError, ValueError, AttributeError):
-        result = RouterResult(rewritten_query=query, category_confidence=0.0)
+        result = RouterResult(rewritten_query=query)
         if router_span is not None:
             try:
                 router_span.end(
@@ -216,17 +206,6 @@ def classify_query(
         raw_ids = [raw_ids]
     course_ids = [_normalize_course_id(c) for c in raw_ids if c]
 
-    # Validate specific_categories against known values
-    valid_categories = {
-        "COURSE_OVERVIEW", "INSTRUCTOR", "PREREQUISITES", "LEARNING_OUTCOMES",
-        "MATERIALS", "GRADING", "SCHEDULE", "ATTENDANCE_AND_MAKEUP",
-        "AI_POLICY", "UNIVERSITY_POLICIES", "SUPPORT_SERVICES",
-    }
-    specific_categories = [
-        c for c in (data.get("specific_categories") or [])
-        if c in valid_categories
-    ]
-
     valid_intent_types = {"ACADEMIC", "CAREER", "DIFFICULTY", "PLANNING", "ADMINISTRATIVE", "GENERAL"}
     intent_type = data.get("intent_type")
     if intent_type not in valid_intent_types:
@@ -234,10 +213,7 @@ def classify_query(
 
     result = RouterResult(
         course_ids=course_ids,
-        specific_categories=specific_categories,
-        specific_only=bool(data.get("specific_only", False)),
         intent_type=intent_type,
-        category_confidence=float(data.get("category_confidence", 0.0)),
         recurrent_search=bool(data.get("recurrent_search", False)),
         rewritten_query=data.get("rewritten_query", query),
         section=data.get("section"),
@@ -258,9 +234,7 @@ def classify_query(
                     "function": result.function,
                     "retrieval_mode": result.retrieval_mode,
                     "course_ids": result.course_ids,
-                    "specific_categories": result.specific_categories,
                     "intent_type": result.intent_type,
-                    "category_confidence": result.category_confidence,
                     "recurrent_search": result.recurrent_search,
                     "rewritten_query": result.rewritten_query,
                     "thinking_tokens": llm_result.thinking_tokens if llm_result else None,

@@ -237,39 +237,33 @@ def test_base_system_no_chain_of_thought_instruction():
     assert "Before answering, identify which chunk" not in _BASE_SYSTEM
 
 
-def test_comparison_extraction_system_exists_and_is_compact():
-    from rag.prompts import COMPARISON_EXTRACTION_SYSTEM
-    assert len(COMPARISON_EXTRACTION_SYSTEM) < 300
-    assert "extract" in COMPARISON_EXTRACTION_SYSTEM.lower()
+def test_comparison_system_exists_and_is_compact():
+    from rag.prompts import COMPARISON_SYSTEM
+    assert len(COMPARISON_SYSTEM) < 1200
+    assert "compare" in COMPARISON_SYSTEM.lower()
 
 
 def test_router_prompt_has_all_required_output_fields():
     from rag.prompts import ROUTER_PROMPT
-    for field in ["course_ids", "specific_categories", "specific_only",
-                  "category_confidence", "intent_type", "recurrent_search", "rewritten_query"]:
+    for field in ["course_ids", "intent_type", "recurrent_search", "rewritten_query"]:
         assert field in ROUTER_PROMPT, f"ROUTER_PROMPT missing field: {field}"
 
 
-def test_generate_comparison_uses_comparison_extraction_system(monkeypatch):
-    """generate_comparison passes COMPARISON_EXTRACTION_SYSTEM as the system prompt."""
-    from unittest.mock import MagicMock
-    from rag.prompts import COMPARISON_EXTRACTION_SYSTEM
+def test_generate_comparison_uses_comparison_system(monkeypatch):
+    """generate_comparison streams using COMPARISON_SYSTEM as the system prompt."""
+    from rag.prompts import COMPARISON_SYSTEM
     import rag.generator as gen_mod
 
-    captured = []
+    captured_messages = []
 
-    def mock_call_llm(messages, **kwargs):
-        captured.extend(messages)
-        result = MagicMock()
-        result.text = '{"courses": []}'
-        result.input_tokens = None
-        result.output_tokens = None
-        return result
+    def mock_stream_llm(messages, **kwargs):
+        captured_messages.extend(messages)
+        return iter(["token1", "token2"])
 
-    monkeypatch.setattr(gen_mod, "call_llm", mock_call_llm)
-    monkeypatch.setattr("rag.search_v3.get_missing_sections", lambda cid: [])
+    monkeypatch.setattr(gen_mod, "stream_llm", mock_stream_llm)
 
-    gen_mod.generate_comparison([], "compare CSCE 638 and CSCE 670", ["CSCE 638", "CSCE 670"])
+    tokens = list(gen_mod.generate_comparison([], "compare CSCE 638 and CSCE 670", ["CSCE 638", "CSCE 670"]))
 
-    system_msg = next((m["content"] for m in captured if m["role"] == "system"), None)
-    assert system_msg == COMPARISON_EXTRACTION_SYSTEM
+    assert tokens == ["token1", "token2"]
+    system_msg = next((m["content"] for m in captured_messages if m["role"] == "system"), None)
+    assert system_msg == COMPARISON_SYSTEM

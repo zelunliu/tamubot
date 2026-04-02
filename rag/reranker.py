@@ -105,64 +105,29 @@ def rerank(
 
 def stratified_select(
     ranked_chunks: list[dict],
-    specific_categories: list[str],
-    n_per_slot: int | None = None,
     fallback_per_course: int | None = None,
 ) -> list[dict]:
-    """Pick top n_per_slot chunks per (course_id, category) slot from a pre-ranked list.
+    """Pick top fallback_per_course chunks per course_id from a pre-ranked list.
 
     Args:
         ranked_chunks:       Reranker-sorted chunks (best first).
-        specific_categories: Categories requested by router. If non-empty, only
-                             populate slots for these categories (ignore others).
-                             If empty, fall back to top fallback_per_course per course_id.
-        n_per_slot:          Max chunks per (course_id, category) pair.
-                             Defaults to config.CHUNKS_PER_SLOT.
-        fallback_per_course: Used when no specific categories — top N per unique course_id.
+        fallback_per_course: Top N per unique course_id.
                              Defaults to config.STRATIFIED_FALLBACK_PER_COURSE.
 
     Returns:
-        Selected chunks, preserving reranker order within slots.
+        Selected chunks, preserving reranker order.
     """
-    n_per_slot = n_per_slot if n_per_slot is not None else config.CHUNKS_PER_SLOT
     fallback_per_course = (
         fallback_per_course if fallback_per_course is not None
         else config.STRATIFIED_FALLBACK_PER_COURSE
     )
-
-    if not specific_categories:
-        # No category constraint: top fallback_per_course per course_id
-        counts: dict[str, int] = {}
-        selected = []
-        for chunk in ranked_chunks:
-            cid = chunk.get("course_id", "")
-            if counts.get(cid, 0) < fallback_per_course:
-                counts[cid] = counts.get(cid, 0) + 1
-                selected.append(chunk)
-        return selected
-
-    # Category-stratified: top n_per_slot per (course_id, category)
-    slot_counts: dict[tuple[str, str], int] = {}
+    counts: dict[str, int] = {}
     selected = []
     for chunk in ranked_chunks:
-        cat = chunk.get("category", "")
         cid = chunk.get("course_id", "")
-        if cat not in specific_categories:
-            continue
-        key = (cid, cat)
-        if slot_counts.get(key, 0) < n_per_slot:
-            slot_counts[key] = slot_counts.get(key, 0) + 1
+        if counts.get(cid, 0) < fallback_per_course:
+            counts[cid] = counts.get(cid, 0) + 1
             selected.append(chunk)
-
-    # If no chunks matched any category (e.g. untagged v3 chunks), fall back to per-course top-N
-    if not selected:
-        counts: dict[str, int] = {}
-        for chunk in ranked_chunks:
-            cid = chunk.get("course_id", "")
-            if counts.get(cid, 0) < fallback_per_course:
-                counts[cid] = counts.get(cid, 0) + 1
-                selected.append(chunk)
-
     return selected
 
 

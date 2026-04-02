@@ -43,7 +43,6 @@ class LLMGeneratorComponent:
         from rag.v4.trace_registry import current_span as _current_span
         from rag.v4.trace_registry import get as _get_trace
         stream_fn = self._get_stream_fn()
-        router_result = state.get("router_result")
         # Prefer current node span (for nesting), fall back to root trace or state trace
         trace = _current_span() or _get_trace(state.get("session_id", "")) or state.get("trace")
         return stream_fn(
@@ -52,8 +51,6 @@ class LLMGeneratorComponent:
             function=state.get("function", "semantic_general"),
             course_ids=state.get("course_ids", []),
             intent_type=state.get("intent_type"),
-            specific_categories=state.get("specific_categories", []),
-            specific_only=router_result.specific_only if router_result else False,
             data_gaps=state.get("data_gaps", []),
             data_integrity=state.get("data_integrity", True),
             conflicted_course_ids=state.get("conflicted_course_ids", []),

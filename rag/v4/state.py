@@ -16,7 +16,6 @@ class PipelineState(TypedDict, total=False):
     function: str               # "hybrid_course"|"recurrent"|"semantic_general"|"out_of_scope"
     course_ids: list[str]
     intent_type: Optional[str]
-    specific_categories: list[str]
     recurrent_search: bool
     requires_retrieval: bool
     anchor_chunks: list[dict]

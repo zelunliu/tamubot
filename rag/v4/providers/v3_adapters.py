@@ -39,10 +39,10 @@ class V3RetrieverAdapter:
         return search_semantic(query, top_k=retrieve_k)
 
     def fetch_anchor_chunks(
-        self, course_ids: list[str], categories: list[str]
+        self, course_ids: list[str]
     ) -> tuple[list[dict], list[tuple[str, str]], bool]:
         from rag.search_v3 import fetch_anchor_chunks
-        return fetch_anchor_chunks(course_ids, categories)
+        return fetch_anchor_chunks(course_ids)
 
     def get_meeting_times(self, course_ids: list[str]) -> dict[str, Any]:
         from rag.search_v3 import get_meeting_times
@@ -61,11 +61,10 @@ class V3RerankerAdapter:
         query: str,
         chunks: list[dict],
         top_k: int,
-        specific_categories: Optional[list[str]] = None,
     ) -> list[dict]:
         from rag import reranker
         reranked = reranker.rerank(query, chunks, top_k=top_k)
-        return reranker.stratified_select(reranked, specific_categories or [])
+        return reranker.stratified_select(reranked)
 
 
 class V3GeneratorAdapter:
@@ -73,15 +72,12 @@ class V3GeneratorAdapter:
 
     def generate_stream(self, state: Any) -> Iterator[str]:
         from rag.generator import generate_stream
-        router_result = state.get("router_result")
         return generate_stream(
             results=state.get("retrieved_chunks", []),
             question=state.get("rewritten_query") or state.get("query", ""),
             function=state.get("function", "semantic_general"),
             course_ids=state.get("course_ids", []),
             intent_type=state.get("intent_type"),
-            specific_categories=state.get("specific_categories", []),
-            specific_only=router_result.specific_only if router_result else False,
             data_gaps=state.get("data_gaps", []),
             data_integrity=state.get("data_integrity", True),
             conflicted_course_ids=state.get("conflicted_course_ids", []),
