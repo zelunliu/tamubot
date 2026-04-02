@@ -1,9 +1,11 @@
 """Haystack-compatible MongoDB document store implementing RetrieverComponent."""
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 import config
+from rag.v4.trace_registry import current_span as _current_span
 
 CHUNKS_COLLECTION = "chunks_v3"
 COURSES_COLLECTION = "courses_v3"
@@ -35,7 +37,41 @@ class MongoDocumentStore:
     def _embed(self, text: str) -> list[float]:
         if self._embedder is None:
             raise RuntimeError("No embedder set on MongoDocumentStore")
-        result = self._embedder.run(text=text)
+
+        parent = _current_span()
+        embed_span = None
+        t0 = time.perf_counter()
+        if parent is not None:
+            try:
+                embed_span = parent.span(
+                    name="embed.voyage",
+                    input={"text_preview": text[:100]},
+                )
+            except Exception:
+                embed_span = None
+
+        try:
+            result = self._embedder.run(text=text)
+        except Exception:
+            if embed_span is not None:
+                try:
+                    embed_span.end(metadata={
+                        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+                        "error": True,
+                    })
+                except Exception:
+                    pass
+            raise
+
+        if embed_span is not None:
+            try:
+                embed_span.end(
+                    output={"embedding_dim": len(result["embedding"])},
+                    metadata={"elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
+                )
+            except Exception:
+                pass
+
         return result["embedding"]
 
     def _projection(self):
@@ -76,6 +112,18 @@ class MongoDocumentStore:
             self._projection(),
         ]
 
+        parent = _current_span()
+        search_span = None
+        t0 = time.perf_counter()
+        if parent is not None:
+            try:
+                search_span = parent.span(
+                    name="search.mongo_hybrid",
+                    input={"course_id": course_id, "retrieve_k": retrieve_k},
+                )
+            except Exception:
+                search_span = None
+
         try:
             vector_results = list(db[CHUNKS_COLLECTION].aggregate(vector_pipeline))
             _vector_err = None
@@ -91,6 +139,14 @@ class MongoDocumentStore:
             _text_err = str(e)
 
         if not vector_results and not text_results:
+            if search_span is not None:
+                try:
+                    search_span.end(metadata={
+                        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+                        "error": True,
+                    })
+                except Exception:
+                    pass
             errors = [e for e in [_vector_err, _text_err] if e]
             raise RuntimeError(f"hybrid_search returned no results: {'; '.join(errors)}")
 
@@ -99,6 +155,20 @@ class MongoDocumentStore:
         # Strip ObjectId — not msgpack-serializable by LangGraph checkpointer
         for r in results:
             r.pop("_id", None)
+
+        if search_span is not None:
+            try:
+                search_span.end(
+                    output={
+                        "n_vector": len(vector_results),
+                        "n_text": len(text_results),
+                        "n_fused": len(results),
+                    },
+                    metadata={"elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
+                )
+            except Exception:
+                pass
+
         return results
 
     def semantic_search(
@@ -114,9 +184,32 @@ class MongoDocumentStore:
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
             self._projection(),
         ]
+
+        parent = _current_span()
+        search_span = None
+        t0 = time.perf_counter()
+        if parent is not None:
+            try:
+                search_span = parent.span(
+                    name="search.mongo_semantic",
+                    input={"retrieve_k": retrieve_k},
+                )
+            except Exception:
+                search_span = None
+
         results = list(db[CHUNKS_COLLECTION].aggregate(pipeline))
         for r in results:
             r.pop("_id", None)
+
+        if search_span is not None:
+            try:
+                search_span.end(
+                    output={"n_results": len(results)},
+                    metadata={"elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
+                )
+            except Exception:
+                pass
+
         return results
 
     def fetch_anchor_chunks(
