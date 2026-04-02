@@ -1,5 +1,5 @@
 # Public API — evals and app.py import from here, not from submodules
-from rag.generator import generate, generate_comparison, generate_stream
+from rag.generator import generate, generate_comparison, generate_stream, generator_order
 from rag.models import VALID_CATEGORIES, ChunkDoc, CourseDoc, PolicyDoc
 from rag.observability import compute_ragas_metrics, get_langfuse, run_ragas_background
 from rag.reranker import rerank, rerank_multi_course, stratified_select
@@ -10,6 +10,7 @@ from rag.router import (
     compute_dynamic_k,
     deduplicate_chunks,
     route_retrieve_rerank,
+    router_order,
 )
 from rag.search import (
     fetch_anchor_chunks,
@@ -18,11 +19,6 @@ from rag.search import (
     search_by_course_categories,
     search_semantic,
 )
-
-# v3 orchestration helpers kept for rollback compat (still used by app.py Vertex path)
-from rag.v3_legacy.pipeline import db_order, generator_order, router_order  # noqa: F401
-
-# v4 is now the default pipeline — import run_pipeline from v4
 from rag.v4.pipeline_v4 import run_pipeline_v4 as run_pipeline  # noqa: F401
 
 __all__ = [
@@ -33,5 +29,5 @@ __all__ = [
     "hybrid_search", "search_semantic", "search_by_course_categories", "get_missing_sections", "fetch_anchor_chunks",
     "rerank", "rerank_multi_course", "stratified_select",
     "get_langfuse", "run_ragas_background", "compute_ragas_metrics",
-    "run_pipeline", "router_order", "db_order", "generator_order",
+    "run_pipeline", "router_order", "generator_order",
 ]

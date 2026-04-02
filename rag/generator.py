@@ -647,3 +647,43 @@ def generate_stream(
             )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# generator_order — thin orchestration wrapper (moved from pipeline.py)
+# ---------------------------------------------------------------------------
+
+def generator_order(
+    recurrent: bool,
+    chunks: list[dict],
+    query: str,
+    router_result,
+    data_gaps=None,
+    data_integrity: bool = True,
+    conflicted_course_ids=None,
+    trace=None,
+):
+    """Generator_Stage: eval search string (recurrent) or answer stream (final).
+
+    Returns:
+        str (recurrent=True) or Iterator[str] (recurrent=False)
+    """
+    if recurrent:
+        return generate_eval_search_string(
+            chunks,
+            router_result.rewritten_query or query,
+            router_result.intent_type or "GENERAL",
+        )
+    return generate_stream(
+        results=chunks,
+        question=query,
+        function=router_result.function,
+        course_ids=router_result.course_ids,
+        intent_type=router_result.intent_type,
+        specific_categories=router_result.specific_categories,
+        specific_only=router_result.specific_only,
+        data_gaps=data_gaps or [],
+        data_integrity=data_integrity,
+        conflicted_course_ids=conflicted_course_ids or [],
+        trace=trace,
+    )

@@ -131,13 +131,14 @@ def run_pipeline_v4_with_memory(
     finally:
         _trace_registry.clear(session_id)
 
+    answer_str = result.get("answer") or ""
     return (
         result.get("retrieved_chunks", []),
         result.get("router_result"),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
         result.get("conflicted_course_ids", []),
-        result.get("answer_stream", []),   # list[str] tokens — picklable
+        [answer_str] if answer_str else [],
     )
 
 
