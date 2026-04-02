@@ -106,8 +106,8 @@ def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, trac
     """Build the v4 pipeline graph with conversation memory support (Phase 5).
 
     Node order:
-    - router runs first (classifies function from the clean current query)
-    - history_inject runs after router (enriches rewritten_query with context)
+    - history_inject runs first (builds conversation context from history/mem0)
+    - router runs after history_inject (classifies query with context available)
     - then the retrieval path runs with the enriched query
     - history_update runs at the END after generator/out_of_scope
 
@@ -139,14 +139,14 @@ def build_graph_with_memory(registry: ComponentRegistry, checkpointer=None, trac
     graph.add_node("out_of_scope", _bind(out_of_scope_node))
     graph.add_node("history_update", _bind(history_update_node))
 
-    graph.set_entry_point("router")
+    graph.set_entry_point("history_inject")
 
-    # Router → history_inject (always — then dispatch based on function)
-    graph.add_edge("router", "history_inject")
+    # history_inject → router (always — build context before routing)
+    graph.add_edge("history_inject", "router")
 
-    # history_inject → dispatch (same routing logic as build_graph, but from history_inject)
+    # router → dispatch based on function
     graph.add_conditional_edges(
-        "history_inject",
+        "router",
         _route_after_router,
         {
             "out_of_scope": "out_of_scope",

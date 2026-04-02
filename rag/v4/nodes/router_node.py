@@ -79,7 +79,9 @@ def router_node(state: PipelineState, registry: Any) -> dict:
                 "node_trace": node_trace,
             }
 
-    prior_context = _build_prior_context(state.get("history", []))
+    # history_inject_node runs before router and populates history_context; prefer that
+    # over the compact _build_prior_context so the router sees full conversation context.
+    prior_context = state.get("history_context") or _build_prior_context(state.get("history", []))
 
     try:
         router_result = registry.router_llm.classify(query, trace=trace, prior_context=prior_context)
