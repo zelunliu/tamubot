@@ -43,7 +43,6 @@ for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_bud
 ## Gotchas
 
 - **TAMU gateway `max_tokens`**: min 4096 on ALL `call_llm()` calls — smaller values return empty response
-- **`<thinking>` blocks**: system prompt instructs model to write a Chain-of-Verification quote into `<thinking>`. `strip_thinking_blocks()` in `context_builder.py` removes these before returning/streaming to user
 - **`generate_eval_search_string`**: uses `max_tokens=4096` (not 256) for TAMU compat
 - **Gemini JSON mode**: free-form Markdown fields silently return empty → always render Markdown in Python (`_render_comparison_markdown()`)
 - **Primacy-recency** (`format_context_xml`): rank 1 → context start, rank 2 → context end, ranks 3–N → middle

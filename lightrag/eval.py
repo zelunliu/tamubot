@@ -76,7 +76,7 @@ async def run_single(rag, question: str) -> tuple[str, str]:
     return answer, str(context)
 
 
-async def run_eval(golden_path: Path, storage_dir: Path | None = None) -> list[SpikeRow]:
+async def run_eval(golden_path: Path, storage_dir: Path | None = None, skip_ragas: bool = False) -> list[SpikeRow]:
     wd = storage_dir if storage_dir is not None else WORKING_DIR
     if not wd.exists():
         print(f"ERROR: storage not found at {wd}")
@@ -113,18 +113,18 @@ async def run_eval(golden_path: Path, storage_dir: Path | None = None) -> list[S
             row.answer_preview = answer[:200].replace("\n", " ")
             row.elapsed_ms = int((time.time() - t0) * 1000)
 
-            # RAGAS scoring (uses TAMU gateway as critic LLM)
-            print(f"  Scoring with RAGAS...")
-            scores = compute_ragas_metrics(
-                question=question,
-                contexts=[context] if context else ["(no context)"],
-                answer=answer,
-            )
-            row.ragas_faithfulness = scores.get("faithfulness")
-            row.ragas_answer_relevancy = scores.get("answer_relevancy")
-            faith_str = f"{row.ragas_faithfulness:.3f}" if row.ragas_faithfulness is not None else "N/A"
-            rel_str = f"{row.ragas_answer_relevancy:.3f}" if row.ragas_answer_relevancy is not None else "N/A"
-            print(f"  faithfulness={faith_str}  relevancy={rel_str}")
+            if not skip_ragas:
+                print(f"  Scoring with RAGAS...")
+                scores = compute_ragas_metrics(
+                    question=question,
+                    contexts=[context] if context else ["(no context)"],
+                    answer=answer,
+                )
+                row.ragas_faithfulness = scores.get("faithfulness")
+                row.ragas_answer_relevancy = scores.get("answer_relevancy")
+                faith_str = f"{row.ragas_faithfulness:.3f}" if row.ragas_faithfulness is not None else "N/A"
+                rel_str = f"{row.ragas_answer_relevancy:.3f}" if row.ragas_answer_relevancy is not None else "N/A"
+                print(f"  faithfulness={faith_str}  relevancy={rel_str}")
 
         except Exception as e:
             row.error = str(e)
@@ -284,6 +284,11 @@ def main() -> None:
         default=None,
         help="LightRAG storage dir (default: tools/lightrag_spike/storage/)",
     )
+    parser.add_argument(
+        "--no-ragas",
+        action="store_true",
+        help="Skip RAGAS scoring (faster, avoids asyncio conflicts)",
+    )
     args = parser.parse_args()
 
     if not args.golden.exists():
@@ -295,7 +300,7 @@ def main() -> None:
     md_path = REPORTS_DIR / f"lightrag_spike_{timestamp}.md"
     xlsx_path = REPORTS_DIR / f"lightrag_spike_{timestamp}.xlsx"
 
-    rows = asyncio.run(run_eval(args.golden, storage_dir=args.storage_dir))
+    rows = asyncio.run(run_eval(args.golden, storage_dir=args.storage_dir, skip_ragas=args.no_ragas))
 
     write_markdown(rows, md_path, args.golden)
     write_excel(rows, xlsx_path, args.golden)

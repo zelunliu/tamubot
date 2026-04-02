@@ -178,7 +178,12 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             conflicted_ids: list = []
 
             # Resolve thread_config early (needed by cache check and pipeline)
-            thread_config = _session_manager.get_thread_config(str(id(st.session_state)))
+            # Use session_state to store thread_id so it's stable across Streamlit reruns
+            # (id(st.session_state) changes each rerun, breaking the checkpointer)
+            if "thread_id" not in st.session_state:
+                import uuid as _uuid
+                st.session_state.thread_id = str(_uuid.uuid4())
+            thread_config = {"configurable": {"thread_id": st.session_state.thread_id}}
 
             # Initialize Mem0Manager once per session
             if config.MEM0_ENABLED and "mem0_manager" not in st.session_state:

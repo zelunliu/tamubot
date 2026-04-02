@@ -16,6 +16,7 @@ class RouterLLMComponent(Protocol):
         query: str,
         trace: Optional[Any] = None,
         prior_course_ids: Optional[list[str]] = None,
+        prior_context: Optional[str] = None,
     ) -> Any:
         """Classify a query and return a RouterResult."""
         ...

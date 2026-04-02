@@ -8,7 +8,7 @@ import json
 import re
 
 import config
-from rag.context_builder import collapse_whitespace, format_context_xml, strip_thinking_blocks
+from rag.context_builder import collapse_whitespace, format_context_xml
 from rag.gates import validate_citations_with_trace
 from rag.llm_client import call_llm, stream_llm
 from rag.prompts import (
@@ -280,7 +280,7 @@ def generate(
             except Exception:
                 pass
         raise
-    text = strip_thinking_blocks(collapse_whitespace(text))
+    text = collapse_whitespace(text)
 
     # Prepend data integrity disclaimer when DB chunks are missing
     if not data_integrity and data_gaps:
@@ -612,11 +612,6 @@ def generate_stream(
             generation_span = None
 
     full_text_parts: list[str] = []
-    # Buffer to detect and suppress <thinking>...</thinking> blocks anywhere in the stream
-    think_buf = ""
-    in_thinking = False
-    _T_START = "<thinking>"
-    _T_END = "</thinking>"
     usage_out: list = []
 
     for token in stream_llm(
@@ -630,43 +625,10 @@ def generate_stream(
         usage_out=usage_out,
     ):
         full_text_parts.append(token)
-        think_buf += token
-
-        # Process buffer in a loop — one pass may reveal another tag
-        while True:
-            if in_thinking:
-                end_idx = think_buf.find(_T_END)
-                if end_idx != -1:
-                    think_buf = think_buf[end_idx + len(_T_END):].lstrip("\n")
-                    in_thinking = False
-                else:
-                    # Still inside thinking — discard but keep a tail in case
-                    # </thinking> is split across tokens
-                    keep = len(_T_END) - 1
-                    think_buf = think_buf[-keep:] if len(think_buf) > keep else think_buf
-                    break
-            else:
-                start_idx = think_buf.find(_T_START)
-                if start_idx != -1:
-                    if start_idx > 0:
-                        yield think_buf[:start_idx]
-                    think_buf = think_buf[start_idx + len(_T_START):]
-                    in_thinking = True
-                else:
-                    # No open tag — yield everything except a tail that could be
-                    # a partial <thinking> tag spanning the next token boundary
-                    safe_len = max(0, len(think_buf) - (len(_T_START) - 1))
-                    if safe_len > 0:
-                        yield think_buf[:safe_len]
-                        think_buf = think_buf[safe_len:]
-                    break
-
-    # Flush remaining buffer
-    if think_buf and not in_thinking:
-        yield think_buf
+        yield token
 
     # Post-stream: run Gate 1 citation check + async Gate 2 groundedness scoring
-    complete_text = strip_thinking_blocks("".join(full_text_parts))
+    complete_text = "".join(full_text_parts)
     validate_citations_with_trace(complete_text, function, trace)
 
     # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
