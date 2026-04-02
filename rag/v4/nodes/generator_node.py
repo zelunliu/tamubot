@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import PipelineState
-from rag.v4.trace_registry import get as _get_trace  # noqa: F401 — available for future use
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def generator_node(state: PipelineState, registry: Any) -> dict:

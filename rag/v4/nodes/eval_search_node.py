@@ -3,17 +3,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import PipelineState
+from rag.v4.trace_registry import current_span as _current_span, get as _get_trace
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def eval_search_node(state: PipelineState, registry: Any) -> dict:
     """Generate eval query from anchor chunks. Only runs for recurrent path."""
     query = state.get("rewritten_query") or state.get("query", "")
     anchor_chunks = state.get("anchor_chunks", [])
-    trace = state.get("trace")
+    trace = _current_span() or _get_trace(state.get("session_id", "")) or state.get("trace")
     node_trace = list(state.get("node_trace", []))
     node_trace.append("eval_search")
 

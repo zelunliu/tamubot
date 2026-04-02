@@ -5,9 +5,9 @@ from typing import Any, Optional
 
 import config
 from rag.v4.cache_utils import normalize_query
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import PipelineState
-from rag.v4.trace_registry import get as _get_trace
+from rag.v4.trace_registry import current_span as _current_span, get as _get_trace
 
 
 def _build_prior_context(history: list) -> Optional[str]:
@@ -48,6 +48,7 @@ def _build_prior_context(history: list) -> Optional[str]:
     return ", ".join(parts)
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def router_node(state: PipelineState, registry: Any) -> dict:
@@ -56,7 +57,7 @@ def router_node(state: PipelineState, registry: Any) -> dict:
     Falls back to out_of_scope on any error.
     """
     query = state.get("query", "")
-    trace = _get_trace(state.get("session_id", ""))
+    trace = _current_span() or _get_trace(state.get("session_id", ""))
     node_trace = list(state.get("node_trace", []))
     node_trace.append("router")
 

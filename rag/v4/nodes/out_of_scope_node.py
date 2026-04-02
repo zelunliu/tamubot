@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import PipelineState
 
 _OOS_RESPONSE = (
@@ -13,6 +13,7 @@ _OOS_RESPONSE = (
 )
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def out_of_scope_node(state: PipelineState, registry: Any) -> dict:

@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 import config
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import ConversationMessage, ConversationState
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def history_update_node(state: ConversationState, registry: Any) -> dict:
@@ -46,7 +47,9 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
     # Compress if over limit
     max_turns = config.V4_MAX_HISTORY_TURNS
     history_summary = state.get("history_summary", "") or ""
+    history_compressed = False
     if len(history) > max_turns * 2:  # *2 because each turn = 2 messages
+        history_compressed = True
         if config.ENABLE_HISTORY_SUMMARY:
             history, history_summary = _compress_history_with_llm(
                 history, max_turns, history_summary, registry
@@ -76,6 +79,7 @@ def history_update_node(state: ConversationState, registry: Any) -> dict:
         "turn_number": turn_number,
         "node_trace": node_trace,
         "answer_cache": answer_cache_update,
+        "history_compressed": history_compressed,
         # Clear non-checkpointable fields before graph exits
         "answer_stream": None,
         "trace": None,

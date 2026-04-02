@@ -5,7 +5,7 @@ from typing import Any
 
 import config
 from rag.router import compute_dynamic_k
-from rag.v4.middleware import error_guard_middleware, timing_middleware
+from rag.v4.middleware import error_guard_middleware, timing_middleware, tracing_middleware
 from rag.v4.state import PipelineState
 
 
@@ -16,6 +16,7 @@ def _make_retrieval_cache_key(function: str, course_ids: list, rewritten_query: 
     return f"{sorted(course_ids)}|{normalize_query(rewritten_query)}"
 
 
+@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def retrieval_node(state: PipelineState, registry: Any) -> dict:

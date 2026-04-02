@@ -40,11 +40,11 @@ class LLMGeneratorComponent:
         return {"answer_stream": stream}
 
     def generate_stream(self, state: Any) -> Iterator[str]:
-        from rag.v4.trace_registry import get as _get_trace
+        from rag.v4.trace_registry import current_span as _current_span, get as _get_trace
         stream_fn = self._get_stream_fn()
         router_result = state.get("router_result")
-        # Fetch trace from registry if not in state (v4 memory path excludes trace from state)
-        trace = state.get("trace") or _get_trace(state.get("session_id", ""))
+        # Prefer current node span (for nesting), fall back to root trace or state trace
+        trace = _current_span() or _get_trace(state.get("session_id", "")) or state.get("trace")
         return stream_fn(
             results=state.get("retrieved_chunks", []),
             question=state.get("rewritten_query") or state.get("query", ""),
