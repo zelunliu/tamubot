@@ -167,16 +167,16 @@ def tracing_middleware(node_fn: Callable) -> Callable:
     @functools.wraps(node_fn)
     def wrapper(state: Any, **kwargs) -> dict:
         session_id = state.get("session_id", "")
-        trace = (
+        parent = (
             _trace_reg.current_span()
             or _trace_reg.get(session_id)
             or state.get("trace")
         )
 
         span = None
-        if trace is not None:
+        if parent is not None:
             try:
-                span = trace.span(
+                span = parent.span(
                     name=f"node.{label}",
                     input=_node_span_input(state, label),
                 )

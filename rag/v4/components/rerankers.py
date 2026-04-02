@@ -1,13 +1,12 @@
 """Haystack-compatible reranking components."""
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from haystack import component
 
 import config
-from rag.v4.trace_registry import current_span as _current_span
+from rag.v4.trace_registry import child_span as _child_span
 
 
 @component
@@ -35,20 +34,11 @@ class VoyageReranker:
         if not chunks:
             return {"chunks": []}
 
-        parent = _current_span()
-        rerank_span = None
-        t0 = time.perf_counter()
-        if parent is not None:
-            try:
-                rerank_span = parent.span(
-                    name="rerank.voyage",
-                    input={"n_in": len(chunks), "query": query[:100]},
-                    metadata={"model": self.model},
-                )
-            except Exception:
-                rerank_span = None
-
-        try:
+        with _child_span(
+            "rerank.voyage",
+            {"n_in": len(chunks), "query": query[:100]},
+            metadata={"model": self.model},
+        ) as ctx:
             client = self._get_client()
             texts = [c.get("text", c.get("content", "")) for c in chunks]
             result = client.rerank(query, texts, model=self.model, top_k=min(top_k, len(chunks)))
@@ -57,25 +47,7 @@ class VoyageReranker:
             if specific_categories:
                 from rag.reranker import stratified_select
                 reranked = stratified_select(reranked, specific_categories)
-        except Exception:
-            if rerank_span is not None:
-                try:
-                    rerank_span.end(metadata={
-                        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
-                        "error": True,
-                    })
-                except Exception:
-                    pass
-            raise
-
-        if rerank_span is not None:
-            try:
-                rerank_span.end(
-                    output={"n_out": len(reranked)},
-                    metadata={"elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
-                )
-            except Exception:
-                pass
+            ctx["output"] = {"n_out": len(reranked)}
 
         return {"chunks": reranked}
 

@@ -10,6 +10,8 @@ document store) can create nested child spans without signature changes.
 from __future__ import annotations
 
 import threading
+import time
+from contextlib import contextmanager
 from typing import Any, Optional
 
 _active: dict[str, Any] = {}
@@ -68,3 +70,44 @@ def current_span() -> Optional[Any]:
     if hasattr(_tl, "spans") and _tl.spans:
         return _tl.spans[-1]
     return None
+
+
+@contextmanager
+def child_span(name: str, input: dict, *, metadata: Optional[dict] = None):  # noqa: A002
+    """Create a child span under the current thread span, with automatic timing and error handling.
+
+    Yields a mutable dict ``ctx``; set ``ctx["output"]`` inside the block to attach
+    output metadata to the span. On exception, the span is closed with ``error=True``.
+    """
+    parent = current_span()
+    span = None
+    t0 = time.perf_counter()
+    ctx: dict = {"output": None}
+    if parent is not None:
+        try:
+            kw: dict = {"name": name, "input": input}
+            if metadata:
+                kw["metadata"] = metadata
+            span = parent.span(**kw)
+        except Exception:
+            span = None
+    try:
+        yield ctx
+    except Exception:
+        if span is not None:
+            try:
+                span.end(metadata={
+                    "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+                    "error": True,
+                })
+            except Exception:
+                pass
+        raise
+    if span is not None:
+        try:
+            span.end(
+                output=ctx.get("output"),
+                metadata={"elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
+            )
+        except Exception:
+            pass
