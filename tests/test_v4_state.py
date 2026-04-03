@@ -1,7 +1,7 @@
 """Tests for v4 PipelineState contract."""
 import pickle
 
-from rag.v4.state import PipelineState, ConversationMessage
+from rag.state.pipeline_state import PipelineState, ConversationMessage
 
 
 def test_pipeline_state_importable():

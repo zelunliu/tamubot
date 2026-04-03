@@ -2,9 +2,9 @@
 import time
 from unittest.mock import MagicMock
 
-from rag.v4.observability import V4Tracer
-from rag.v4.middleware import timing_middleware, error_guard_middleware
-from rag.v4.exceptions import V4PipelineError
+from rag.tools.langfuse import V4Tracer
+from rag.graph.middleware import timing_middleware, error_guard_middleware
+from rag.graph.exceptions import V4PipelineError
 
 
 # ── V4Tracer tests ──────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ def test_error_guard_passes_through_successful_result():
 
 
 def test_trace_registry_register_and_get():
-    from rag.v4.trace_registry import register, get, clear
+    from rag.graph.trace_registry import register, get, clear
     mock_trace = object()
     register("session-abc", mock_trace)
     assert get("session-abc") is mock_trace
@@ -121,27 +121,27 @@ def test_trace_registry_register_and_get():
 
 
 def test_trace_registry_clear_removes_entry():
-    from rag.v4.trace_registry import register, get, clear
+    from rag.graph.trace_registry import register, get, clear
     register("session-xyz", object())
     clear("session-xyz")
     assert get("session-xyz") is None
 
 
 def test_trace_registry_empty_session_id_is_noop():
-    from rag.v4.trace_registry import register, get
+    from rag.graph.trace_registry import register, get
     register("", object())
     assert get("") is None
 
 
 def test_trace_registry_unknown_session_returns_none():
-    from rag.v4.trace_registry import get
+    from rag.graph.trace_registry import get
     assert get("never-registered-session-99") is None
 
 
 def test_pipeline_registers_trace_before_invoke():
     """run_pipeline_v4_with_memory registers trace in registry before invoking the graph."""
     from unittest.mock import MagicMock, patch
-    import rag.v4.trace_registry as reg
+    import rag.graph.trace_registry as reg
 
     mock_trace = MagicMock()
     registered = {}
@@ -161,15 +161,24 @@ def test_pipeline_registers_trace_before_invoke():
         "function": "out_of_scope",
     }
 
-    with patch("rag.v4.pipeline_v4._memory_graph") as mock_graph, \
-         patch.object(reg, "register", side_effect=spy_register):
-        mock_graph.invoke.return_value = mock_graph_result
-        from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
-        run_pipeline_v4_with_memory(
-            "hello",
-            trace=mock_trace,
-            thread_config={"configurable": {"thread_id": "t-trace-test"}},
-        )
+    import rag.graph.pipeline as pipeline_mod
+    from rag.graph.pipeline import run_pipeline_with_memory
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
+        **mock_graph_result,
+        "answer": "",
+    }
+    original = pipeline_mod._memory_graph
+    pipeline_mod._memory_graph = mock_graph
+    try:
+        with patch.object(reg, "register", side_effect=spy_register):
+            run_pipeline_with_memory(
+                "hello",
+                trace=mock_trace,
+                thread_config={"configurable": {"thread_id": "t-trace-test"}},
+            )
+    finally:
+        pipeline_mod._memory_graph = original
 
     assert "t-trace-test" in registered
     assert registered["t-trace-test"] is mock_trace
