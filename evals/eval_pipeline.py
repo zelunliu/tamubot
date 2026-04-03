@@ -647,7 +647,7 @@ def _do_retrieval(rr: RouterResult, query: str) -> list[dict]:
     # recurrent_* path: 5-step deterministic cardinality pipeline
     if fn.startswith("recurrent_"):
         from rag.generator import generate_eval_search_string
-        from rag.search import fetch_anchor_chunks
+        from rag.tools.mongo import fetch_anchor_chunks
         anchor_chunks, _, _ = fetch_anchor_chunks(course_ids, categories)
         eval_query = generate_eval_search_string(
             anchor_chunks, search_query, rr.intent_type or "GENERAL"

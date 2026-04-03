@@ -48,7 +48,7 @@ try:
             **kwargs,
         ) -> str:
             """Generate a response using the TAMU AI gateway."""
-            from rag.llm_client import call_llm
+            from rag.tools.llm import call_llm
             result = call_llm(messages, temperature=0.1, max_tokens=4096)
             return result.text
 

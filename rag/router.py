@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import config
-from rag.llm_client import call_llm
+from rag.tools.llm import call_llm
 from rag.prompts import ROUTER_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -260,8 +260,8 @@ def route_retrieve_rerank(
         (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids,
          timing_ms)  where timing_ms = {"router_ms": float, "retrieval_ms": float}
     """
-    from rag.v4.pipeline_v4 import run_pipeline_v4  # lazy import to avoid circular
-    return run_pipeline_v4(query, trace=trace, return_timing=True)
+    from rag.graph.pipeline import run_pipeline  # lazy import to avoid circular
+    return run_pipeline(query, trace=trace, return_timing=True)
 
 
 def router_order(query: str, trace=None) -> "RouterResult":

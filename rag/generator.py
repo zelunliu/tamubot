@@ -5,9 +5,9 @@ using Gemini Flash with function-adaptive system prompts.
 """
 
 import config
-from rag.context_builder import collapse_whitespace, format_context_xml
+from rag.tools.context import collapse_whitespace, format_context_xml
 from rag.gates import validate_citations_with_trace
-from rag.llm_client import call_llm, stream_llm
+from rag.tools.llm import call_llm, stream_llm
 from rag.prompts import (
     _BASE_SYSTEM,
     _FUNCTION_PROMPTS,

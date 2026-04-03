@@ -32,7 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import config
 from rag import RouterResult, generator_order
-from rag.v4.pipeline_v4 import run_pipeline_v4
+from rag.graph.pipeline import run_pipeline as run_pipeline_v4
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
 
