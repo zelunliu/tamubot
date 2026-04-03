@@ -5,7 +5,7 @@ import traceback
 import streamlit as st
 
 import config
-from rag.observability import get_langfuse
+from rag.tools.langfuse import get_langfuse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tamubot")
@@ -37,9 +37,9 @@ USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 _session_manager = None
 
 if USE_MONGODB:
-    from rag.search_v3 import get_syllabus_urls
-    from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
-    from rag.v4.session import SessionManager
+    from rag.tools.mongo import get_syllabus_urls
+    from rag.graph.pipeline import run_pipeline_with_memory
+    from rag.graph.session import SessionManager
     _session_manager = SessionManager()
 else:
     from typing import Any, List
@@ -188,19 +188,19 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             # Initialize Mem0Manager once per session
             if config.MEM0_ENABLED and "mem0_manager" not in st.session_state:
                 try:
-                    from rag.v4 import mem0_registry
-                    from rag.v4.mem0_manager import Mem0Manager
+                    from rag.tools import mem0 as mem0_registry
+                    from rag.tools.mem0 import Mem0Manager
                     _thread_id = thread_config.get("configurable", {}).get("thread_id", "")
                     st.session_state.mem0_manager = Mem0Manager(_thread_id)
-                    mem0_registry.register(_thread_id, st.session_state.mem0_manager)
+                    mem0_registry.register_mem0_manager(_thread_id, st.session_state.mem0_manager)
                 except Exception as _mem0_err:
                     import logging as _log
                     _log.getLogger("tamubot").warning(f"mem0 initialization failed (non-fatal): {_mem0_err}")
 
             # --- answer cache check (skip full pipeline on exact-match hit) ---
             if config.SESSION_CACHE_ENABLED:
-                from rag.v4.cache_utils import normalize_query as _norm
-                from rag.v4.pipeline_v4 import get_current_state
+                from rag.graph.cache_utils import normalize_query as _norm
+                from rag.graph.pipeline import get_current_state
                 _current = get_current_state(thread_config)
                 _cached_answer = _current.get("answer_cache", {}).get(_norm(prompt))
                 if _cached_answer:
@@ -221,7 +221,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             answer_tokens: list[str] = []
             with st.spinner("Routing, retrieving, and generating..."):
                 try:
-                    result = run_pipeline_v4_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
+                    result = run_pipeline_with_memory(prompt, trace=lf_trace, thread_config=thread_config)
                     source_docs, router_result, data_gaps, data_integrity, conflicted_ids, answer_tokens = result
                     logger.info(
                         f"Router: function={router_result.function}, mode={router_result.retrieval_mode},"
