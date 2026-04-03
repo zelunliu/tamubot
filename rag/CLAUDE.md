@@ -3,33 +3,30 @@
 ## Public API
 
 ```python
-# Import everything from the package root — never from submodules
+from rag import run_pipeline, run_pipeline_with_memory, get_current_state
 from rag import ChunkDoc, CourseDoc, PolicyDoc, VALID_CATEGORIES
-from rag import route_retrieve_rerank, classify_query, RouterResult
-from rag import generate, generate_stream, generate_comparison
-from rag import hybrid_search, search_semantic, search_by_course_categories, get_missing_sections
-from rag import fetch_anchor_chunks
-from rag import rerank, rerank_multi_course, stratified_select
-from rag import run_pipeline
+from rag import RouterResult, PipelineState, ConversationState
 from rag import get_langfuse, run_ragas_background, compute_ragas_metrics
-from rag import compute_dynamic_k, deduplicate_chunks, FUNCTION_CATEGORY_STRATEGIES
-
-reranked, router_result, data_gaps, data_integrity = route_retrieve_rerank(query, trace=None)
-# router_result: .function, .course_ids, .specific_categories,
-#   .intent_type, .category_confidence, .recurrent_search, .rewritten_query
-# data_gaps: [(course_id, category), ...] — pairs with 0 DB results (recurrent only)
-# data_integrity: bool — False if any gaps found
-
-# Observability
-lf = get_langfuse()                           # MinimalLangfuseClient or None
-trace = lf.trace(name, input, metadata)
-lf.flush()                                    # call after each query in scripts
-# Trace URL: f"{config.LANGFUSE_BASE_URL}/trace/{trace.id}"
 ```
+
+## Module Locations
+
+- LLM client: `rag/tools/llm.py` — `call_llm()`, `stream_llm()`
+- Observability: `rag/tools/langfuse.py` — `get_langfuse()`, RAGAS
+- MongoDB search: `rag/tools/mongo.py` — `hybrid_search()`, `semantic_search()`, etc.
+- Voyage AI: `rag/tools/voyage.py` — `embed_query()`, `rerank()`
+- Schedule logic: `rag/tools/schedule.py` — `parse_meeting_times()`, `filter_conflicting_courses()`
+- mem0: `rag/tools/mem0.py` — `Mem0Manager`, `get_mem0_manager()`
+- State contracts: `rag/state/pipeline_state.py` — `PipelineState`, `RouterResult`, `ConversationState`
+- Graph entry: `rag/graph/pipeline.py` — `run_pipeline()`, `run_pipeline_with_memory()`
+- Graph builder: `rag/graph/builder.py` — `build_graph()`, `build_graph_with_memory()`
+- Middleware: `rag/graph/middleware.py` — `@tracing_middleware`, `@timing_middleware`, `@error_guard_middleware`
+- Nodes: `rag/nodes/*.py` — one file per node, no DI
+- Edges: `rag/edges/routing.py` — `route_after_router()`, `route_after_retrieval()`
 
 ## LLM Client
 
-All LLM calls go through `rag/llm_client.py` — do NOT call `config.get_tamu_client()` / `config.get_genai_client()` directly in router/generator:
+All LLM calls go through `rag/tools/llm.py` — do NOT call `config.get_tamu_client()` / `config.get_genai_client()` directly in nodes:
 
 ```python
 result = call_llm(messages, temperature=0, max_tokens=4096, json_mode=True, thinking_budget=512)

@@ -51,11 +51,6 @@ def test_two_turns_same_session_share_history():
     """With MemorySaver, two invocations with the same thread_id accumulate history."""
     from rag.graph.checkpointer import make_checkpointer
     from rag.graph.builder import build_graph_with_memory
-    from rag.router import RouterResult
-    from unittest.mock import MagicMock, patch
-
-    # Build a graph with memory
-    router_rr = RouterResult(course_ids=[], rewritten_query="test", function="out_of_scope", intent_type=None)
 
     checkpointer = make_checkpointer("memory")
     graph = build_graph_with_memory(checkpointer=checkpointer)
@@ -91,8 +86,6 @@ def test_two_different_sessions_are_independent():
     """Two different thread_ids don't share state."""
     from rag.graph.checkpointer import make_checkpointer
     from rag.graph.builder import build_graph_with_memory
-    from rag.router import RouterResult
-    from unittest.mock import MagicMock
 
     checkpointer = make_checkpointer("memory")
     graph = build_graph_with_memory(checkpointer=checkpointer)
