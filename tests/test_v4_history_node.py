@@ -321,12 +321,12 @@ def test_history_inject_node_hybrid_context():
     state = {
         "query": "Which ML course should I take?",
         "rewritten_query": None,
+        # history contains only completed turns (history_inject runs before history_update)
         "history": [
             {"role": "user", "content": "What are the CS electives?"},
             {"role": "assistant", "content": "There are many options including CSCE 478."},
             {"role": "user", "content": "What about data science?"},
             {"role": "assistant", "content": "CSCE 689 covers data science topics."},
-            {"role": "user", "content": "Which ML course should I take?"},
         ],
         "history_summary": "User is a CS senior exploring electives. Previously asked about CS electives and data science.",
         "session_id": "test-session",
@@ -346,10 +346,9 @@ def test_history_inject_node_hybrid_context():
     assert "CS senior" in ctx
     # Gist layer
     assert "CS senior exploring" in ctx
-    # Flow layer — last 2 turns (4 messages)
+    # Flow layer — last 2 turns (4 messages) — both turns present
+    assert "CSCE 478" in ctx
     assert "CSCE 689" in ctx
-    # Older turn excluded from flow
-    assert "CSCE 478" not in ctx
 
 
 def test_history_inject_node_no_mem0_falls_back_to_gist_and_flow():

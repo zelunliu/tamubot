@@ -49,10 +49,8 @@ def _build_hybrid_context(state: PipelineState, current_query: str) -> str:
         sections.append(f"[Session summary]\n{history_summary}")
 
     # Layer 3: Flow (last 2 raw turns = 4 messages)
-    # Strip the trailing user message if it mirrors the current query (already in state["query"])
     history = state.get("history", [])
-    prior = history[:-1] if history and history[-1].get("role") == "user" else history
-    recent = prior[-2:]
+    recent = history[-4:]
     if recent:
         flow_lines = []
         for msg in recent:
