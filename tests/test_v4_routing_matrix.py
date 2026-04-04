@@ -1,5 +1,5 @@
 """Tests for the routing matrix data contract."""
-from rag.v4.routing_matrix import ROUTING_MATRIX
+from rag.graph.routing_matrix import ROUTING_MATRIX
 
 
 def test_all_four_functions_present():

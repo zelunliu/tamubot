@@ -34,14 +34,12 @@ def validate_citations_gate1(response_text: str) -> bool:
 def validate_citations_with_trace(
     response_text: str,
     function: str,
-    trace=None,
 ) -> bool:
-    """Validate citations and log result to Langfuse trace.
+    """Validate citations and log result to current Langfuse observation.
 
     Args:
         response_text: Generated response text.
         function:      Retrieval function type.
-        trace:         Optional Langfuse trace object.
 
     Returns:
         True if citations are present or validation is skipped.
@@ -51,14 +49,14 @@ def validate_citations_with_trace(
 
     citation_valid = validate_citations_gate1(response_text)
 
-    if trace is not None:
-        try:
-            trace.score(
-                name="citation_gate1_pass",
-                value=1 if citation_valid else 0,
-                comment="Gate 1 validation: regex citation check",
-            )
-        except Exception:
-            pass
+    try:
+        from langfuse import get_client as _lf_get_client
+        _lf_get_client().score_current_trace(
+            name="citation_gate1_pass",
+            value=1 if citation_valid else 0,
+            comment="Gate 1 validation: regex citation check",
+        )
+    except Exception:
+        pass
 
     return citation_valid

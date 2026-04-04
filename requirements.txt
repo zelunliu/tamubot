@@ -6,8 +6,7 @@ openai>=1.0
 langchain
 
 # Observability & evaluation
-# Note: langfuse SDK omitted — uses a minimal httpx REST client (db/observability.py)
-# due to langfuse SDK's pydantic.v1 dependency being incompatible with Python 3.14+.
+langfuse>=4.0.0
 opentelemetry-api
 langchain-google-genai
 langchain-openai

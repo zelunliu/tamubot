@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import config
-from rag.llm_client import call_llm
+from langfuse import get_client as _lf_get_client, observe
+from rag.tools.llm import call_llm
 from rag.prompts import ROUTER_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -135,9 +136,9 @@ FUNCTION_CATEGORY_STRATEGIES: dict = {}
 # Classification
 # ---------------------------------------------------------------------------
 
+@observe(as_type="generation", name="Router_Stage")
 def classify_query(
     query: str,
-    router_span=None,
     prior_course_ids: Optional[list[str]] = None,
     prior_context: Optional[str] = None,
 ) -> "RouterResult":
@@ -145,7 +146,6 @@ def classify_query(
 
     Args:
         query:            The raw user question.
-        router_span:      Optional Langfuse span to record router metadata into.
         prior_course_ids: Course IDs from the previous turn, prepended as a
                           context hint so the LLM can resolve pronouns like
                           "it" or "that course".
@@ -160,6 +160,11 @@ def classify_query(
         query = hint + query
     prompt = ROUTER_PROMPT.format(query=query)
 
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=[{"role": "user", "content": prompt}],
+    )
+
     llm_result = None
     try:
         llm_result = call_llm(
@@ -170,34 +175,20 @@ def classify_query(
             thinking_budget=512,
         )
         raw_text = llm_result.text
-    except Exception as e:
-        if router_span is not None:
-            try:
-                router_span.end(level="ERROR", status_message=str(e))
-            except Exception:
-                pass
+    except Exception:
         raise
 
     try:
         data = json.loads(raw_text)
     except (json.JSONDecodeError, ValueError, AttributeError):
         result = RouterResult(rewritten_query=query)
-        if router_span is not None:
-            try:
-                router_span.end(
-                    usage=(
-                        {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
-                        if llm_result and llm_result.input_tokens is not None
-                        else None
-                    ),
-                    metadata={
-                        "function": result.function,
-                        "course_ids": [],
-                        "parse_error": True,
-                    },
-                )
-            except Exception:
-                pass
+        _lf_get_client().update_current_generation(
+            output={"parse_error": True, "function": result.function},
+            usage_details={
+                "input": llm_result.input_tokens or 0,
+                "output": llm_result.output_tokens or 0,
+            } if llm_result and llm_result.input_tokens is not None else None,
+        )
         return result
 
     # Normalize course IDs
@@ -220,28 +211,18 @@ def classify_query(
         # function and retrieval_mode auto-derived in __post_init__
     )
 
-    # End the router observation with usage counts and parsed output
-    if router_span is not None:
-        try:
-            router_span.end(
-                output=data,
-                usage=(
-                    {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
-                    if llm_result and llm_result.input_tokens is not None
-                    else None
-                ),
-                metadata={
-                    "function": result.function,
-                    "retrieval_mode": result.retrieval_mode,
-                    "course_ids": result.course_ids,
-                    "intent_type": result.intent_type,
-                    "recurrent_search": result.recurrent_search,
-                    "rewritten_query": result.rewritten_query,
-                    "thinking_tokens": llm_result.thinking_tokens if llm_result else None,
-                },
-            )
-        except Exception:
-            pass
+    _lf_get_client().update_current_generation(
+        output=data,
+        usage_details={
+            "input": llm_result.input_tokens or 0,
+            "output": llm_result.output_tokens or 0,
+        } if llm_result and llm_result.input_tokens is not None else None,
+        metadata={
+            "function": result.function,
+            "retrieval_mode": result.retrieval_mode,
+            "rewritten_query": result.rewritten_query,
+        },
+    )
 
     return result
 
@@ -260,23 +241,13 @@ def route_retrieve_rerank(
         (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids,
          timing_ms)  where timing_ms = {"router_ms": float, "retrieval_ms": float}
     """
-    from rag.v4.pipeline_v4 import run_pipeline_v4  # lazy import to avoid circular
-    return run_pipeline_v4(query, trace=trace, return_timing=True)
+    from rag.graph.pipeline import run_pipeline  # lazy import to avoid circular
+    return run_pipeline(query, trace=trace, return_timing=True)  # trace used for CallbackHandler
 
 
-def router_order(query: str, trace=None) -> "RouterResult":
-    """Router_Stage: open generation, classify query (generation closed inside classify_query)."""
-    router_obs = None
-    if trace is not None:
-        try:
-            router_obs = trace.generation(
-                name="Router_Stage",
-                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=[{"role": "user", "content": ROUTER_PROMPT.format(query=query)}],
-            )
-        except Exception:
-            router_obs = None
-    return classify_query(query, router_span=router_obs)
+def router_order(query: str) -> "RouterResult":
+    """Router_Stage: classify query using @observe-decorated classify_query."""
+    return classify_query(query)
 
 
 def deduplicate_chunks(results: list[dict]) -> list[dict]:

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import config
 from lightrag import QueryParam
-from rag.observability import compute_ragas_metrics
+from rag.tools.langfuse import compute_ragas_metrics
 
 # Add spike dir to path for sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))

@@ -1,5 +1,5 @@
 """Tests for SessionManager and multi-turn session state."""
-from rag.v4.session import SessionManager
+from rag.graph.session import SessionManager
 
 
 def test_same_session_id_gets_same_thread_id():
@@ -49,26 +49,11 @@ def test_inject_trace_adds_trace_to_state():
 
 def test_two_turns_same_session_share_history():
     """With MemorySaver, two invocations with the same thread_id accumulate history."""
-    from rag.v4.checkpointer import make_checkpointer
-    from rag.v4.graph import build_graph_with_memory
-    from rag.v4.interfaces import ComponentRegistry
-    from rag.router import RouterResult
-    from unittest.mock import MagicMock
-
-    # Build a graph with memory
-    router = MagicMock()
-    rr = RouterResult(course_ids=[], rewritten_query="test", function="out_of_scope", intent_type=None)
-    router.classify.return_value = rr
-
-    registry = ComponentRegistry(
-        router_llm=router,
-        retriever=MagicMock(),
-        reranker=MagicMock(),
-        generator_llm=MagicMock(),
-    )
+    from rag.graph.checkpointer import make_checkpointer
+    from rag.graph.builder import build_graph_with_memory
 
     checkpointer = make_checkpointer("memory")
-    graph = build_graph_with_memory(registry, checkpointer=checkpointer)
+    graph = build_graph_with_memory(checkpointer=checkpointer)
 
     thread_config = {"configurable": {"thread_id": "test-thread-1"}}
 
@@ -99,24 +84,11 @@ def test_two_turns_same_session_share_history():
 
 def test_two_different_sessions_are_independent():
     """Two different thread_ids don't share state."""
-    from rag.v4.checkpointer import make_checkpointer
-    from rag.v4.graph import build_graph_with_memory
-    from rag.v4.interfaces import ComponentRegistry
-    from rag.router import RouterResult
-    from unittest.mock import MagicMock
-
-    router = MagicMock()
-    rr = RouterResult(course_ids=[], rewritten_query="test", function="out_of_scope", intent_type=None)
-    router.classify.return_value = rr
-    registry = ComponentRegistry(
-        router_llm=router,
-        retriever=MagicMock(),
-        reranker=MagicMock(),
-        generator_llm=MagicMock(),
-    )
+    from rag.graph.checkpointer import make_checkpointer
+    from rag.graph.builder import build_graph_with_memory
 
     checkpointer = make_checkpointer("memory")
-    graph = build_graph_with_memory(registry, checkpointer=checkpointer)
+    graph = build_graph_with_memory(checkpointer=checkpointer)
 
     state = {
         "query": "hello",
@@ -142,7 +114,7 @@ def test_sqlite_checkpointer_path_is_absolute():
     """The computed SQLite DB path must be absolute, not CWD-relative."""
     import os
     from pathlib import Path
-    import rag.v4.checkpointer as cp_mod
+    import rag.graph.checkpointer as cp_mod
 
     db_path = str(Path(cp_mod.__file__).parent / "sessions.db")
     assert os.path.isabs(db_path), f"Expected absolute path, got: {db_path}"
