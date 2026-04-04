@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from pymongo import MongoClient
+from langfuse import observe
 
 import config
 
@@ -89,6 +90,7 @@ def _rrf_fuse(result_lists: list[list[dict]], k: int = 60) -> list[dict]:
     return [docs[did] for did in sorted(scores, key=scores.__getitem__, reverse=True)]
 
 
+@observe(name="search.mongo_hybrid")
 def hybrid_search(query: str, course_id: str, k: int) -> list[dict]:
     """RRF hybrid search (vector + BM25) filtered to one course."""
     from rag.tools.voyage import embed_query
@@ -115,6 +117,7 @@ def hybrid_search(query: str, course_id: str, k: int) -> list[dict]:
     return results
 
 
+@observe(name="search.mongo_semantic")
 def semantic_search(query: str, k: int) -> list[dict]:
     """Corpus-wide semantic vector search."""
     from rag.tools.voyage import embed_query

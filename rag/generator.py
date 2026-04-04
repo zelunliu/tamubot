@@ -5,6 +5,7 @@ using Gemini Flash with function-adaptive system prompts.
 """
 
 import config
+from langfuse import get_client as _lf_get_client, observe
 from rag.tools.context import collapse_whitespace, format_context_xml
 from rag.gates import validate_citations_with_trace
 from rag.tools.llm import call_llm, stream_llm
@@ -20,11 +21,11 @@ from rag.prompts import (
 # Eval Pass — context-aware search string for recurrent discovery
 # ---------------------------------------------------------------------------
 
+@observe(as_type="generation", name="EvalSearch_Stage")
 def generate_eval_search_string(
     anchor_chunks: list[dict],
     original_query: str,
     intent_type: str,
-    parent_span=None,
 ) -> str:
     """Recurrent Eval Pass: generate a context-aware vector search string.
 
@@ -36,7 +37,6 @@ def generate_eval_search_string(
         anchor_chunks:  Chunks from the anchor course(s) metadata fetch.
         original_query: The user's original question (or rewritten_query).
         intent_type:    Advisory dimension (e.g. "PLANNING", "ACADEMIC").
-        parent_span:    Optional Langfuse trace/span; creates EvalSearch_Stage generation.
 
     Returns:
         A concise search string for the hybrid discovery step.
@@ -56,17 +56,11 @@ def generate_eval_search_string(
         f"to search for. Output ONLY the search string, no other text."
     )
 
-    eval_gen = None
-    if parent_span is not None:
-        try:
-            eval_gen = parent_span.generation(
-                name="EvalSearch_Stage",
-                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=[{"role": "user", "content": eval_prompt}],
-                metadata={"intent_type": intent_type, "n_anchor_chunks": len(anchor_chunks)},
-            )
-        except Exception:
-            eval_gen = None
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=[{"role": "user", "content": eval_prompt}],
+        metadata={"intent_type": intent_type},
+    )
 
     llm_result = None
     try:
@@ -76,26 +70,16 @@ def generate_eval_search_string(
             max_tokens=4096,  # TAMU gateway requires min 4096 or response is empty
         )
         text = llm_result.text.strip() or original_query
-    except Exception as e:
-        if eval_gen is not None:
-            try:
-                eval_gen.end(level="ERROR", status_message=str(e))
-            except Exception:
-                pass
+    except Exception:
         return original_query
 
-    if eval_gen is not None:
-        try:
-            eval_gen.end(
-                output=text,
-                usage=(
-                    {"input": llm_result.input_tokens, "output": llm_result.output_tokens}
-                    if llm_result and llm_result.input_tokens is not None
-                    else None
-                ),
-            )
-        except Exception:
-            pass
+    _lf_get_client().update_current_generation(
+        output=text,
+        usage_details={
+            "input": llm_result.input_tokens or 0,
+            "output": llm_result.output_tokens or 0,
+        } if llm_result and llm_result.input_tokens is not None else None,
+    )
 
     return text
 
@@ -151,7 +135,6 @@ def generate(
     intent_type: str | None = None,
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
-    trace=None,
     history_context: str | None = None,
 ) -> str:
     """Generate a grounded response with citations using Gemini 2.0 Flash.
@@ -164,7 +147,6 @@ def generate(
         intent_type:    Advisory intent type from the router (e.g. "CAREER").
         data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
         data_integrity: False if any data gaps were found; triggers disclaimer.
-        trace:          Optional Langfuse trace; creates a Generator_Stage span.
 
     Returns:
         Generated answer string with [Source N] citations.
@@ -180,7 +162,7 @@ def generate(
     # Route multi-course known-course queries to streaming comparison.
     # Recurrent queries may have multiple anchor course IDs but need pairing framing, not comparison.
     if course_ids and len(course_ids) > 1 and function != "recurrent":
-        return "".join(generate_comparison(results, question, course_ids, trace))
+        return "".join(generate_comparison(results, question, course_ids))
 
     context_xml = format_context_xml(results)
     system_prompt = build_system_prompt(function, course_ids, intent_type)
@@ -192,30 +174,6 @@ def generate(
         )
     else:
         user_message = f"{context_xml}\n\nQuestion: {question}"
-
-    # Generator_Stage generation span
-    generation_span = None
-    if trace is not None:
-        try:
-            generation_span = trace.generation(
-                name="Generator_Stage",
-                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                metadata={
-                    "function": function,
-                    "intent_type": intent_type,
-                    "course_ids": course_ids or [],
-                    "n_sources": len(results),
-                    "system_prompt_length": len(system_prompt),
-                    "data_integrity": data_integrity,
-                    "n_data_gaps": len(data_gaps) if data_gaps else 0,
-                },
-            )
-        except Exception:
-            generation_span = None
 
     # Determine thinking budget based on function type and intent.
     # Advisory queries (intent_type set) on hybrid_course also benefit from thinking.
@@ -237,12 +195,7 @@ def generate(
             thinking_budget=thinking_budget,
         )
         text = llm_result.text
-    except Exception as e:
-        if generation_span is not None:
-            try:
-                generation_span.end(level="ERROR", status_message=str(e))
-            except Exception:
-                pass
+    except Exception:
         raise
     text = collapse_whitespace(text)
 
@@ -255,25 +208,9 @@ def generate(
         text = disclaimer + text
 
     # Gate 1: Validate citations in response
-    validate_citations_with_trace(text, function, trace)
+    validate_citations_with_trace(text, function)
 
     # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
-
-    if generation_span is not None:
-        try:
-            if llm_result is not None and llm_result.input_tokens is not None:
-                generation_span.end(
-                    output=text,
-                    usage={
-                        "input": llm_result.input_tokens,
-                        "output": llm_result.output_tokens,
-                    },
-                    metadata={"thinking_tokens": llm_result.thinking_tokens},
-                )
-            else:
-                generation_span.end(output=text)
-        except Exception:
-            pass
 
     return text
 
@@ -282,7 +219,6 @@ def generate_comparison(
     results: list[dict],
     question: str,
     course_ids: list[str],
-    trace=None,
 ):
     """Stream a multi-course comparison as free-form markdown.
 
@@ -292,7 +228,6 @@ def generate_comparison(
         results:    Reranked retrieval results (list of chunk dicts).
         question:   The user's original question.
         course_ids: List of course IDs being compared (len > 1).
-        trace:      Optional Langfuse trace; creates a Comparison_Generation span.
 
     Yields:
         str: Text tokens as they arrive.
@@ -305,29 +240,6 @@ def generate_comparison(
         f"Compare the following courses: {courses_list}."
     )
 
-    generation_span = None
-    if trace is not None:
-        try:
-            generation_span = trace.generation(
-                name="Comparison_Generation",
-                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=[
-                    {"role": "system", "content": COMPARISON_SYSTEM},
-                    {"role": "user", "content": user_message},
-                ],
-                metadata={
-                    "function": "hybrid_course",
-                    "course_ids": course_ids,
-                    "n_sources": len(results),
-                    "streaming": True,
-                },
-            )
-        except Exception:
-            generation_span = None
-
-    full_text_parts: list[str] = []
-    usage_out: list = []
-
     for token in stream_llm(
         messages=[
             {"role": "system", "content": COMPARISON_SYSTEM},
@@ -335,24 +247,8 @@ def generate_comparison(
         ],
         temperature=0.2,
         max_tokens=4096,
-        usage_out=usage_out,
     ):
-        full_text_parts.append(token)
         yield token
-
-    if generation_span is not None:
-        try:
-            full_text = "".join(full_text_parts)
-            if usage_out:
-                generation_span.end(
-                    output=full_text,
-                    usage={"input": usage_out[0], "output": usage_out[1]},
-                    metadata={"thinking_tokens": usage_out[2] if len(usage_out) > 2 else 0},
-                )
-            else:
-                generation_span.end(output=full_text)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +271,6 @@ def generate_stream(
     data_gaps: list[tuple[str, str]] | None = None,
     data_integrity: bool = True,
     conflicted_course_ids: list[str] | None = None,
-    trace=None,
     history_context: str | None = None,
 ):
     """Streaming variant of generate(). Yields text chunks as they arrive.
@@ -392,7 +287,6 @@ def generate_stream(
         intent_type:    Advisory intent type from the router (e.g. "CAREER").
         data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
         data_integrity: False if any data gaps were found; triggers disclaimer.
-        trace:          Optional Langfuse trace.
 
     Yields:
         str: Text chunks as they arrive from the model.
@@ -405,7 +299,7 @@ def generate_stream(
     # Multi-course known-course comparison: stream free-form markdown directly.
     # Recurrent queries with multiple anchors stream normally using their own prompts.
     if course_ids and len(course_ids) > 1 and function != "recurrent":
-        yield from generate_comparison(results, question, course_ids, trace)
+        yield from generate_comparison(results, question, course_ids)
         return
 
     # Schedule conflict notice (recurrent path only)
@@ -442,34 +336,7 @@ def generate_stream(
         else config.THINKING_BUDGET_METADATA
     )
 
-    # Generator_Stage generation span
-    generation_span = None
-    if trace is not None:
-        try:
-            generation_span = trace.generation(
-                name="Generator_Stage",
-                model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                metadata={
-                    "function": function,
-                    "intent_type": intent_type,
-                    "course_ids": course_ids or [],
-                    "n_sources": len(results),
-                    "system_prompt_length": len(system_prompt),
-                    "data_integrity": data_integrity,
-                    "n_data_gaps": len(data_gaps) if data_gaps else 0,
-                    "streaming": True,
-                    "thinking_budget": thinking_budget,
-                },
-            )
-        except Exception:
-            generation_span = None
-
     full_text_parts: list[str] = []
-    usage_out: list = []
 
     for token in stream_llm(
         messages=[
@@ -479,31 +346,15 @@ def generate_stream(
         temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
         max_tokens=4096,
         thinking_budget=thinking_budget,
-        usage_out=usage_out,
     ):
         full_text_parts.append(token)
         yield token
 
-    # Post-stream: run Gate 1 citation check + async Gate 2 groundedness scoring
+    # Post-stream: run Gate 1 citation check
     complete_text = "".join(full_text_parts)
-    validate_citations_with_trace(complete_text, function, trace)
+    validate_citations_with_trace(complete_text, function)
 
     # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
-
-    if generation_span is not None:
-        try:
-            usage = (
-                {"input": usage_out[0], "output": usage_out[1]}
-                if len(usage_out) >= 2 and usage_out[0] is not None
-                else None
-            )
-            generation_span.end(
-                output=complete_text,
-                usage=usage,
-                metadata={"thinking_tokens": usage_out[2] if len(usage_out) >= 3 else None},
-            )
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +369,6 @@ def generator_order(
     data_gaps=None,
     data_integrity: bool = True,
     conflicted_course_ids=None,
-    trace=None,
 ):
     """Generator_Stage: eval search string (recurrent) or answer stream (final).
 
@@ -540,5 +390,4 @@ def generator_order(
         data_gaps=data_gaps or [],
         data_integrity=data_integrity,
         conflicted_course_ids=conflicted_course_ids or [],
-        trace=trace,
     )

@@ -1,54 +1,8 @@
-"""Tests for V4Tracer and middleware."""
-import time
-from unittest.mock import MagicMock
+"""Tests for graph middleware and pipeline observability wiring."""
+from unittest.mock import MagicMock, patch
 
-from rag.tools.langfuse import V4Tracer
 from rag.graph.middleware import timing_middleware, error_guard_middleware
 from rag.graph.exceptions import V4PipelineError
-
-
-# ── V4Tracer tests ──────────────────────────────────────────────────────────
-
-def test_v4_tracer_none_is_noop():
-    """V4Tracer(None) must not crash — all methods are no-ops."""
-    tracer = V4Tracer(None)
-    state = {"query": "test", "function": "hybrid_course", "course_ids": [], "node_trace": []}
-    with tracer.node_span("router", state) as span:
-        assert span is None  # no-op returns None
-
-    # trace_node_transition is also a no-op
-    tracer.trace_node_transition("router", "retrieval", state)
-
-
-def test_v4_tracer_with_mock_client_calls_span():
-    """With a mock lf_client, V4Tracer.node_span opens and closes a span."""
-    mock_lf = MagicMock()
-    mock_span = MagicMock()
-    mock_lf.span.return_value = mock_span
-
-    tracer = V4Tracer(mock_lf)
-    state = {"query": "test", "function": "hybrid_course", "course_ids": ["A"], "node_trace": []}
-
-    with tracer.node_span("router", state) as span:
-        assert span is mock_span
-
-    mock_lf.span.assert_called_once()
-    call_kwargs = mock_lf.span.call_args
-    assert call_kwargs.kwargs["name"] == "v4_router"
-    mock_span.end.assert_called_once()
-
-
-def test_v4_tracer_span_names_match_node_names():
-    """Span name should be 'v4_{node_name}'."""
-    mock_lf = MagicMock()
-    mock_lf.span.return_value = MagicMock()
-    tracer = V4Tracer(mock_lf)
-    state = {"query": "x", "function": "recurrent", "course_ids": [], "node_trace": []}
-
-    with tracer.node_span("anchor", state):
-        pass
-
-    assert mock_lf.span.call_args.kwargs["name"] == "v4_anchor"
 
 
 # ── timing_middleware tests ──────────────────────────────────────────────────
@@ -112,44 +66,12 @@ def test_error_guard_passes_through_successful_result():
     assert result["answer"] == "ok"
 
 
-def test_trace_registry_register_and_get():
-    from rag.graph.trace_registry import register, get, clear
-    mock_trace = object()
-    register("session-abc", mock_trace)
-    assert get("session-abc") is mock_trace
-    clear("session-abc")
+# ── Pipeline CallbackHandler wiring ─────────────────────────────────────────
 
-
-def test_trace_registry_clear_removes_entry():
-    from rag.graph.trace_registry import register, get, clear
-    register("session-xyz", object())
-    clear("session-xyz")
-    assert get("session-xyz") is None
-
-
-def test_trace_registry_empty_session_id_is_noop():
-    from rag.graph.trace_registry import register, get
-    register("", object())
-    assert get("") is None
-
-
-def test_trace_registry_unknown_session_returns_none():
-    from rag.graph.trace_registry import get
-    assert get("never-registered-session-99") is None
-
-
-def test_pipeline_registers_trace_before_invoke():
-    """run_pipeline_v4_with_memory registers trace in registry before invoking the graph."""
-    from unittest.mock import MagicMock, patch
-    import rag.graph.trace_registry as reg
-
+def test_pipeline_passes_callback_handler_when_trace_provided():
+    """run_pipeline_with_memory passes a CallbackHandler to graph.invoke when trace is given."""
     mock_trace = MagicMock()
-    registered = {}
-
-    original_register = reg.register
-    def spy_register(session_id, trace):
-        registered[session_id] = trace
-        original_register(session_id, trace)
+    mock_trace.trace_id = "trace-id-123"
 
     mock_graph_result = {
         "retrieved_chunks": [],
@@ -158,27 +80,75 @@ def test_pipeline_registers_trace_before_invoke():
         "data_integrity": True,
         "conflicted_course_ids": [],
         "answer_stream": [],
-        "function": "out_of_scope",
+        "answer": "",
     }
 
     import rag.graph.pipeline as pipeline_mod
     from rag.graph.pipeline import run_pipeline_with_memory
+
     mock_graph = MagicMock()
-    mock_graph.invoke.return_value = {
-        **mock_graph_result,
-        "answer": "",
-    }
+    mock_graph.invoke.return_value = mock_graph_result
     original = pipeline_mod._memory_graph
     pipeline_mod._memory_graph = mock_graph
+
+    mock_handler = MagicMock()
+
     try:
-        with patch.object(reg, "register", side_effect=spy_register):
+        with patch("rag.graph.pipeline.CallbackHandler") as mock_cb_cls:
+            mock_cb_cls.return_value = mock_handler
             run_pipeline_with_memory(
                 "hello",
                 trace=mock_trace,
-                thread_config={"configurable": {"thread_id": "t-trace-test"}},
+                thread_config={"configurable": {"thread_id": "t-test"}},
             )
+            call_args = mock_cb_cls.call_args
+            assert call_args is not None
+            trace_ctx = call_args[1].get("trace_context") or (call_args[0][0] if call_args[0] else None)
+            assert trace_ctx is not None
+            assert trace_ctx["trace_id"] == "trace-id-123"
     finally:
         pipeline_mod._memory_graph = original
 
-    assert "t-trace-test" in registered
-    assert registered["t-trace-test"] is mock_trace
+    # graph.invoke was called with config containing the callback
+    call_kwargs = mock_graph.invoke.call_args
+    config_arg = call_kwargs[1].get("config")
+    assert config_arg is not None
+    callbacks = config_arg.get("callbacks", [])
+    assert mock_handler in callbacks
+
+
+def test_pipeline_no_callback_when_trace_is_none():
+    """run_pipeline_with_memory passes no callbacks when trace=None."""
+    mock_graph_result = {
+        "retrieved_chunks": [],
+        "router_result": MagicMock(function="out_of_scope", course_ids=[], requires_retrieval=False),
+        "data_gaps": [],
+        "data_integrity": True,
+        "conflicted_course_ids": [],
+        "answer_stream": [],
+        "answer": "",
+    }
+
+    import rag.graph.pipeline as pipeline_mod
+    from rag.graph.pipeline import run_pipeline_with_memory
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = mock_graph_result
+    original = pipeline_mod._memory_graph
+    pipeline_mod._memory_graph = mock_graph
+
+    try:
+        run_pipeline_with_memory(
+            "hello",
+            trace=None,
+            thread_config={"configurable": {"thread_id": "t-no-trace"}},
+        )
+    finally:
+        pipeline_mod._memory_graph = original
+
+    # graph.invoke called — check no "callbacks" key or empty callbacks
+    call_kwargs = mock_graph.invoke.call_args
+    # Either no config, empty config, or callbacks list is empty
+    config_arg = call_kwargs[1].get("config", {}) if call_kwargs[1] else {}
+    callbacks = config_arg.get("callbacks", [])
+    assert callbacks == []

@@ -1,11 +1,10 @@
 """Schedule filter node — removes discovery courses with conflicting meeting times."""
 from __future__ import annotations
 
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def schedule_filter_node(state: PipelineState) -> dict:

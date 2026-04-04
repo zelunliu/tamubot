@@ -3,9 +3,15 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-import rag.graph.trace_registry as _trace_registry
 from rag.graph.builder import build_graph, build_graph_with_memory
 from rag.state.pipeline_state import PipelineState
+
+try:
+    from langfuse.langchain import CallbackHandler
+    from langfuse.types import TraceContext as _LFTraceContext
+except ImportError:
+    CallbackHandler = None  # type: ignore[assignment,misc]
+    _LFTraceContext = None  # type: ignore[assignment,misc]
 
 _graph = None
 _memory_graph = None
@@ -29,6 +35,25 @@ def _get_graph():
     return _graph
 
 
+def _make_invoke_kwargs(trace, thread_config: Optional[dict] = None) -> dict:
+    """Build kwargs for graph.invoke(): callbacks from trace, config from thread_config."""
+    callbacks = []
+    if trace is not None and CallbackHandler is not None:
+        try:
+            callbacks = [CallbackHandler(trace_context=_LFTraceContext(trace_id=trace.trace_id))]
+        except Exception:
+            pass
+
+    config: dict = {}
+    if thread_config:
+        config.update(thread_config)
+    if callbacks:
+        existing = config.get("callbacks", [])
+        config["callbacks"] = existing + callbacks
+
+    return {"config": config} if config else {}
+
+
 def run_pipeline(
     query: str,
     trace=None,
@@ -40,8 +65,9 @@ def run_pipeline(
         (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
         or if return_timing=True: adds timing_ms dict as 6th element.
     """
-    initial_state: PipelineState = {**_INITIAL_STATE, "query": query, "trace": trace}
-    result = _get_graph().invoke(initial_state)
+    initial_state: PipelineState = {**_INITIAL_STATE, "query": query}
+    invoke_kwargs = _make_invoke_kwargs(trace)
+    result = _get_graph().invoke(initial_state, **invoke_kwargs)
 
     five_tuple = (
         result.get("retrieved_chunks", []),
@@ -70,25 +96,18 @@ def run_pipeline_with_memory(
         checkpointer = make_checkpointer()
         _memory_graph = build_graph_with_memory(checkpointer=checkpointer)
 
-    session_id = ""
-    if thread_config:
-        session_id = thread_config.get("configurable", {}).get("thread_id", "")
-
     initial_state: dict = {
         **_INITIAL_STATE,
         "query": query,
-        "session_id": session_id,
     }
 
-    if session_id and trace is not None:
-        _trace_registry.register(session_id, trace)
-    try:
-        invoke_kwargs = {}
-        if thread_config:
-            invoke_kwargs["config"] = thread_config
-        result = _memory_graph.invoke(initial_state, **invoke_kwargs)
-    finally:
-        _trace_registry.clear(session_id)
+    if thread_config:
+        session_id = thread_config.get("configurable", {}).get("thread_id", "")
+        if session_id:
+            initial_state["session_id"] = session_id
+
+    invoke_kwargs = _make_invoke_kwargs(trace, thread_config)
+    result = _memory_graph.invoke(initial_state, **invoke_kwargs)
 
     answer_str = result.get("answer") or ""
     return (

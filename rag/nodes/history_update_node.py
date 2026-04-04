@@ -5,11 +5,10 @@ Runs AFTER generator.
 from __future__ import annotations
 
 import config
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import ConversationMessage, ConversationState
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def history_update_node(state: ConversationState) -> dict:
@@ -72,7 +71,6 @@ def history_update_node(state: ConversationState) -> dict:
         "history_compressed": history_compressed,
         # Clear non-checkpointable fields before graph exits
         "answer_stream": None,
-        "trace": None,
     }
 
 

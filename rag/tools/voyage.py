@@ -14,6 +14,7 @@ from collections import defaultdict
 from typing import Optional
 
 import voyageai
+from langfuse import observe
 
 import config
 
@@ -30,6 +31,7 @@ def _get_client() -> voyageai.Client:
     return _voyage
 
 
+@observe(name="embed.voyage")
 def embed_query(text: str) -> list[float]:
     """Embed a query string using Voyage AI voyage-3."""
     client = _get_client()
@@ -37,6 +39,7 @@ def embed_query(text: str) -> list[float]:
     return result.embeddings[0]
 
 
+@observe(name="rerank.voyage")
 def rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
     """Cross-encoder rerank chunks by relevance to query, return top_k.
 

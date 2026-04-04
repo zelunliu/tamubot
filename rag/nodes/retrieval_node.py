@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import config
 from rag.graph.cache_utils import normalize_query
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
@@ -25,7 +25,6 @@ def _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query)
     return f"{sorted(course_ids)}|{normalize_query(rewritten_query)}"
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def retrieval_node(state: PipelineState) -> dict:

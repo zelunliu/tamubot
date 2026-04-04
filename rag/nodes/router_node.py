@@ -5,8 +5,7 @@ from typing import Optional
 
 import config
 from rag.graph.cache_utils import normalize_query
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
-from rag.graph.trace_registry import current_span as _current_span, get as _get_trace
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
@@ -44,7 +43,6 @@ def _build_prior_context(history: list) -> Optional[str]:
     return ", ".join(parts)
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def router_node(state: PipelineState) -> dict:
@@ -54,7 +52,6 @@ def router_node(state: PipelineState) -> dict:
     """
     from rag.router import classify_query
     query = state.get("query", "")
-    trace = _current_span() or _get_trace(state.get("session_id", ""))
     node_trace = list(state.get("node_trace", []))
     node_trace.append("router")
 
@@ -80,7 +77,7 @@ def router_node(state: PipelineState) -> dict:
     prior_context = state.get("history_context") or _build_prior_context(state.get("history", []))
 
     try:
-        router_result = classify_query(query, router_span=trace, prior_context=prior_context)
+        router_result = classify_query(query, prior_context=prior_context)
 
         # Cache write — store serialized result for future identical queries
         router_cache_update = {}

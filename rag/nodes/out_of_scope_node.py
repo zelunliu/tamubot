@@ -1,7 +1,7 @@
 """Out-of-scope node — returns canned response without LLM call."""
 from __future__ import annotations
 
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 _OOS_RESPONSE = (
@@ -11,7 +11,6 @@ _OOS_RESPONSE = (
 )
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def out_of_scope_node(state: PipelineState) -> dict:

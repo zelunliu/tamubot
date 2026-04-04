@@ -163,7 +163,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             lf_trace = None
             if lf is not None:
                 try:
-                    lf_trace = lf.trace(
+                    lf_trace = lf.start_observation(
                         name="TamuBot_Complete_Pipeline",
                         input=prompt,
                         metadata={"session_id": str(id(st.session_state))},
@@ -192,7 +192,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     from rag.tools.mem0 import Mem0Manager
                     _thread_id = thread_config.get("configurable", {}).get("thread_id", "")
                     st.session_state.mem0_manager = Mem0Manager(_thread_id)
-                    mem0_registry.register_mem0_manager(_thread_id, st.session_state.mem0_manager)
+                    mem0_registry.register(_thread_id, st.session_state.mem0_manager)
                 except Exception as _mem0_err:
                     import logging as _log
                     _log.getLogger("tamubot").warning(f"mem0 initialization failed (non-fatal): {_mem0_err}")

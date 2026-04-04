@@ -8,11 +8,10 @@ search uses the raw query (state["query"]).
 from __future__ import annotations
 
 import config
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def history_inject_node(state: PipelineState) -> dict:

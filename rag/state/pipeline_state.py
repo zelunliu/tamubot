@@ -88,7 +88,6 @@ class PipelineState(TypedDict, total=False):
     conflicted_course_ids: list[str]
     answer: str
     answer_stream: Optional[list]  # list[str] tokens — picklable, checkpointed by LangGraph
-    trace: Optional[Any]           # LFTrace — NOT checkpointed (not picklable)
     timing_ms: dict[str, float]
     error: Optional[str]
     node_trace: list[str]

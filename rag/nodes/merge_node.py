@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import config
-from rag.graph.middleware import error_guard_middleware, timing_middleware, tracing_middleware
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
@@ -18,7 +18,6 @@ def _deduplicate_chunks(chunks: list[dict]) -> list[dict]:
     return result
 
 
-@tracing_middleware
 @timing_middleware
 @error_guard_middleware
 def merge_node(state: PipelineState) -> dict:

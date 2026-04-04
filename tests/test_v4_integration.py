@@ -59,17 +59,7 @@ def test_semantic_general_integration():
     assert result["answer"]
 
 
-def test_langfuse_span_names_match_node_names():
-    """Langfuse span names should be 'v4_{node_name}' — tested via V4Tracer in v4.observability."""
-    from rag.tools.langfuse import V4Tracer
-
-    mock_lf = MagicMock()
-    mock_lf.span.return_value = MagicMock()
-    tracer = V4Tracer(mock_lf)
-
-    state = {"query": "test", "function": "hybrid_course", "course_ids": [], "node_trace": []}
-    with tracer.node_span("retrieval", state):
-        pass
-
-    mock_lf.span.assert_called()
-    assert mock_lf.span.call_args.kwargs["name"] == "v4_retrieval"
+def test_callbackhandler_importable():
+    """CallbackHandler should be importable from langfuse.langchain."""
+    from langfuse.langchain import CallbackHandler
+    assert CallbackHandler is not None
