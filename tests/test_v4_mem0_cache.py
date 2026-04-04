@@ -315,7 +315,8 @@ def test_history_inject_uses_mem0_context_when_available():
     }
 
     with patch("config.MEM0_ENABLED", True), \
-         patch("rag.tools.mem0.get_mem0_manager", return_value=mock_manager):
+         patch("rag.nodes.history_inject_node.Mem0Manager", return_value=mock_manager), \
+         patch("config.MEM0_API_KEY", "test-key"):
         result = history_inject_node(state)
 
     # rewritten_query must be unchanged
@@ -345,12 +346,13 @@ def test_history_inject_falls_back_to_raw_history_when_mem0_empty():
     }
 
     with patch("config.MEM0_ENABLED", True), \
-         patch("rag.tools.mem0.get_mem0_manager", return_value=mock_manager):
+         patch("rag.nodes.history_inject_node.Mem0Manager", return_value=mock_manager), \
+         patch("config.MEM0_API_KEY", "test-key"):
         result = history_inject_node(state)
 
     # rewritten_query must be unchanged
     assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
-    # Falls through to raw history → content in history_context
+    # Falls through to gist+flow → content in history_context
     history_ctx = result.get("history_context", "")
     assert "CSCE 221" in history_ctx
 

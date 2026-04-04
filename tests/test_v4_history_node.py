@@ -311,3 +311,67 @@ def test_history_update_node_skips_summary_on_first_turn():
 
     mock_llm.assert_not_called()
     assert result["history_summary"] == ""
+
+
+def test_history_inject_node_hybrid_context():
+    """history_inject_node should combine facts + gist + last 2 turns."""
+    from unittest.mock import MagicMock, patch
+    from rag.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "Which ML course should I take?",
+        "rewritten_query": None,
+        "history": [
+            {"role": "user", "content": "What are the CS electives?"},
+            {"role": "assistant", "content": "There are many options including CSCE 478."},
+            {"role": "user", "content": "What about data science?"},
+            {"role": "assistant", "content": "CSCE 689 covers data science topics."},
+            {"role": "user", "content": "Which ML course should I take?"},
+        ],
+        "history_summary": "User is a CS senior exploring electives. Previously asked about CS electives and data science.",
+        "session_id": "test-session",
+        "node_trace": [],
+    }
+
+    mock_manager = MagicMock()
+    mock_manager.search_context.return_value = "- user is a CS senior\n- prefers afternoon classes"
+
+    with patch("rag.nodes.history_inject_node.Mem0Manager", return_value=mock_manager), \
+         patch("config.MEM0_ENABLED", True), \
+         patch("config.MEM0_API_KEY", "test-key"):
+        result = history_inject_node(state)
+
+    ctx = result["history_context"]
+    # Facts layer
+    assert "CS senior" in ctx
+    # Gist layer
+    assert "CS senior exploring" in ctx
+    # Flow layer — last 2 turns (4 messages)
+    assert "CSCE 689" in ctx
+    # Older turn excluded from flow
+    assert "CSCE 478" not in ctx
+
+
+def test_history_inject_node_no_mem0_falls_back_to_gist_and_flow():
+    """Without mem0 enabled, should still return gist + flow."""
+    from unittest.mock import patch
+    from rag.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "Tell me more",
+        "rewritten_query": None,
+        "history": [
+            {"role": "user", "content": "What is CSCE 411?"},
+            {"role": "assistant", "content": "CSCE 411 covers algorithms."},
+        ],
+        "history_summary": "User asked about CSCE 411.",
+        "session_id": "",
+        "node_trace": [],
+    }
+
+    with patch("config.MEM0_ENABLED", False):
+        result = history_inject_node(state)
+
+    ctx = result["history_context"]
+    assert "User asked about CSCE 411" in ctx
+    assert "algorithms" in ctx
