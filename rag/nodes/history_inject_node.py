@@ -25,10 +25,8 @@ def history_inject_node(state: PipelineState) -> dict:
     current_query = state.get("rewritten_query") or state.get("query", "")
     history_context = _build_hybrid_context(state, current_query)
 
-    result: dict = {"node_trace": node_trace}
-    if history_context:
-        result["history_context"] = history_context
-    return result
+    # Always write history_context to clear any stale checkpoint value
+    return {"node_trace": node_trace, "history_context": history_context}
 
 
 def _build_hybrid_context(state: PipelineState, current_query: str) -> str:
@@ -39,7 +37,12 @@ def _build_hybrid_context(state: PipelineState, current_query: str) -> str:
     if config.MEM0_ENABLED:
         session_id = state.get("session_id", "")
         if session_id:
-            facts = Mem0Manager(session_id).search_context(current_query, top_k=3)
+            try:
+                facts = Mem0Manager(session_id).search_context(current_query, top_k=3)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("mem0 search failed (non-fatal)")
+                facts = ""
             if facts:
                 sections.append(f"[Relevant facts about this user]\n{facts}")
 

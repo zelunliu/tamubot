@@ -62,7 +62,11 @@ def history_update_node(state: ConversationState) -> dict:
     if config.MEM0_ENABLED and query and answer:
         session_id = state.get("session_id", "")
         if session_id:
-            Mem0Manager(session_id).add_turn_async(query, answer)
+            try:
+                Mem0Manager(session_id).add_turn_async(query, answer)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("mem0 add_turn_async failed (non-fatal)")
 
     return {
         "history": history,

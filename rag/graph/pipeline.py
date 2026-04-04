@@ -25,6 +25,11 @@ _INITIAL_STATE: dict = {
     "anchor_chunks": [],
     "discovery_chunks": [],
     "retrieved_chunks": [],
+    # Reset per-turn transient fields so stale checkpoint values don't leak
+    "answer": "",
+    "history_context": "",
+    "rewritten_query": "",
+    "answer_stream": None,
 }
 
 
