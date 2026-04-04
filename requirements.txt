@@ -15,6 +15,7 @@ ragas
 # MongoDB Atlas
 pymongo[srv]
 voyageai
+mem0ai
 
 # Legacy (Vertex AI fallback)
 google-cloud-aiplatform
