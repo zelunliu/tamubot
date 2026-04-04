@@ -246,3 +246,131 @@ def test_history_inject_empty_history_no_history_context():
     result = history_inject_node(state)
     assert result.get("history_context", "") == ""
     assert result.get("rewritten_query", state["rewritten_query"]) == state["rewritten_query"]
+
+
+def test_history_update_node_updates_summary_on_second_turn():
+    """history_update_node should call LLM to update history_summary when turn_number > 1."""
+    from unittest.mock import MagicMock, patch
+    from rag.nodes.history_update_node import history_update_node
+
+    state = {
+        "query": "What courses are available?",
+        "answer": "There are many CS courses.",
+        "history": [],
+        "history_summary": "",
+        "turn_number": 1,  # after increment becomes 2, so summary should be updated
+        "session_id": "test-session",
+        "node_trace": [],
+        "answer_cache": {},
+        "router_result": None,
+        "history_compressed": False,
+        "answer_stream": None,
+    }
+
+    mock_llm_result = MagicMock()
+    mock_llm_result.text = "User asked about available courses. Bot listed CS options."
+
+    with patch("rag.nodes.history_update_node.call_llm", return_value=mock_llm_result) as mock_llm, \
+         patch("config.MEM0_ENABLED", True), \
+         patch("config.SESSION_CACHE_ENABLED", False), \
+         patch("config.MEM0_API_KEY", "test-key"), \
+         patch("rag.nodes.history_update_node.Mem0Manager") as mock_mem0:
+        mock_mem0.return_value.add_turn_async = MagicMock()
+        result = history_update_node(state)
+
+    mock_llm.assert_called_once()
+    assert result["history_summary"] == "User asked about available courses. Bot listed CS options."
+
+
+def test_history_update_node_skips_summary_on_first_turn():
+    """history_update_node should NOT call LLM on turn_number 0 (first turn)."""
+    from unittest.mock import MagicMock, patch
+    from rag.nodes.history_update_node import history_update_node
+
+    state = {
+        "query": "Hello",
+        "answer": "Hi there.",
+        "history": [],
+        "history_summary": "",
+        "turn_number": 0,  # first turn — after increment becomes 1, no summary update
+        "session_id": "test-session",
+        "node_trace": [],
+        "answer_cache": {},
+        "router_result": None,
+        "history_compressed": False,
+        "answer_stream": None,
+    }
+
+    with patch("rag.nodes.history_update_node.call_llm") as mock_llm, \
+         patch("config.MEM0_ENABLED", True), \
+         patch("config.SESSION_CACHE_ENABLED", False), \
+         patch("config.MEM0_API_KEY", "test-key"), \
+         patch("rag.nodes.history_update_node.Mem0Manager") as mock_mem0:
+        mock_mem0.return_value.add_turn_async = MagicMock()
+        result = history_update_node(state)
+
+    mock_llm.assert_not_called()
+    assert result["history_summary"] == ""
+
+
+def test_history_inject_node_hybrid_context():
+    """history_inject_node should combine facts + gist + last 2 turns."""
+    from unittest.mock import MagicMock, patch
+    from rag.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "Which ML course should I take?",
+        "rewritten_query": None,
+        # history contains only completed turns (history_inject runs before history_update)
+        "history": [
+            {"role": "user", "content": "What are the CS electives?"},
+            {"role": "assistant", "content": "There are many options including CSCE 478."},
+            {"role": "user", "content": "What about data science?"},
+            {"role": "assistant", "content": "CSCE 689 covers data science topics."},
+        ],
+        "history_summary": "User is a CS senior exploring electives. Previously asked about CS electives and data science.",
+        "session_id": "test-session",
+        "node_trace": [],
+    }
+
+    mock_manager = MagicMock()
+    mock_manager.search_context.return_value = "- user is a CS senior\n- prefers afternoon classes"
+
+    with patch("rag.nodes.history_inject_node.Mem0Manager", return_value=mock_manager), \
+         patch("config.MEM0_ENABLED", True), \
+         patch("config.MEM0_API_KEY", "test-key"):
+        result = history_inject_node(state)
+
+    ctx = result["history_context"]
+    # Facts layer
+    assert "CS senior" in ctx
+    # Gist layer
+    assert "CS senior exploring" in ctx
+    # Flow layer — last 2 turns (4 messages) — both turns present
+    assert "CSCE 478" in ctx
+    assert "CSCE 689" in ctx
+
+
+def test_history_inject_node_no_mem0_falls_back_to_gist_and_flow():
+    """Without mem0 enabled, should still return gist + flow."""
+    from unittest.mock import patch
+    from rag.nodes.history_inject_node import history_inject_node
+
+    state = {
+        "query": "Tell me more",
+        "rewritten_query": None,
+        "history": [
+            {"role": "user", "content": "What is CSCE 411?"},
+            {"role": "assistant", "content": "CSCE 411 covers algorithms."},
+        ],
+        "history_summary": "User asked about CSCE 411.",
+        "session_id": "",
+        "node_trace": [],
+    }
+
+    with patch("config.MEM0_ENABLED", False):
+        result = history_inject_node(state)
+
+    ctx = result["history_context"]
+    assert "User asked about CSCE 411" in ctx
+    assert "algorithms" in ctx

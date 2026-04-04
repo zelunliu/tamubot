@@ -165,4 +165,5 @@ V4_MAX_HISTORY_TURNS: int = int(os.getenv("V4_MAX_HISTORY_TURNS", "6"))
 
 # --- mem0 integration ---
 MEM0_ENABLED: bool = os.getenv("MEM0_ENABLED", "true").lower() == "true"
+MEM0_API_KEY: str = os.getenv("MEM0_API_KEY", "")
 SESSION_CACHE_ENABLED: bool = os.getenv("SESSION_CACHE_ENABLED", "true").lower() == "true"
