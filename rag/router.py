@@ -163,6 +163,7 @@ def classify_query(
     _lf_get_client().update_current_generation(
         model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
         input=[{"role": "user", "content": prompt}],
+        metadata={"prior_context": prior_context or ""},
     )
 
     llm_result = None

@@ -14,7 +14,6 @@ make sandbox-shell   # open bash inside claude container
 make sandbox-down    # tear down all containers
 ```
 
-Inside the container: `claude --dangerously-skip-permissions`
 Streamlit: http://localhost:8501
 Docs: `docs/DOCKER_SETUP.md` (Windows 11 WSL2 + Mac) | `docs/API_SAFETY.md` (proxy + rate limits)
 
@@ -30,9 +29,6 @@ make test | lint | typecheck | format | eval-router | probe | probe-full
 
 - **Config**: always `import config` in `rag/` — never `os.getenv()` directly
 - **TAMU AI gateway** (`TAMU_API_KEY` set → `USE_TAMU_API=True`): always returns SSE regardless of `stream` param → ALL calls must use `stream=True` + `"".join(chunk.choices[0].delta.content or "" for chunk in stream)`. Base URL: `https://chat-api.tamu.ai/openai` (no `/v1`). Min `max_tokens=4096` or response is empty.
-- **Gemini JSON mode**: with `response_mime_type="application/json"` + schema, free-form Markdown fields silently return empty — always render Markdown in Python from structured data
-- **Langfuse SDK / Python 3.14**: `pydantic.v1` incompatible → custom `MinimalLangfuseClient` in `rag/observability.py`; revert when SDK ships fix
-- **ingestion_pipeline v3**: uses TAMU gateway for LLM calls (`config.get_tamu_client()`); PyMuPDF extracts PDFs directly — no `Part.from_bytes`. Legacy `process_syllabi.py` uses direct `GOOGLE_API_KEY` (Gemini)
 
 ## Skills — Auto-Engage
 

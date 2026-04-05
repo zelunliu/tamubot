@@ -9,21 +9,6 @@ from rag import RouterResult, PipelineState, ConversationState
 from rag import get_langfuse, run_ragas_background, compute_ragas_metrics
 ```
 
-## Module Locations
-
-- LLM client: `rag/tools/llm.py` — `call_llm()`, `stream_llm()`
-- Observability: `rag/tools/langfuse.py` — `get_langfuse()`, RAGAS
-- MongoDB search: `rag/tools/mongo.py` — `hybrid_search()`, `semantic_search()`, etc.
-- Voyage AI: `rag/tools/voyage.py` — `embed_query()`, `rerank()`
-- Schedule logic: `rag/tools/schedule.py` — `parse_meeting_times()`, `filter_conflicting_courses()`
-- mem0: `rag/tools/mem0.py` — `Mem0Manager`, `get_mem0_manager()`
-- State contracts: `rag/state/pipeline_state.py` — `PipelineState`, `RouterResult`, `ConversationState`
-- Graph entry: `rag/graph/pipeline.py` — `run_pipeline()`, `run_pipeline_with_memory()`
-- Graph builder: `rag/graph/builder.py` — `build_graph()`, `build_graph_with_memory()`
-- Middleware: `rag/graph/middleware.py` — `@tracing_middleware`, `@timing_middleware`, `@error_guard_middleware`
-- Nodes: `rag/nodes/*.py` — one file per node, no DI
-- Edges: `rag/edges/routing.py` — `route_after_router()`, `route_after_retrieval()`
-
 ## LLM Client
 
 All LLM calls go through `rag/tools/llm.py` — do NOT call `config.get_tamu_client()` / `config.get_genai_client()` directly in nodes:

@@ -51,13 +51,14 @@ def router_node(state: PipelineState) -> dict:
     Falls back to out_of_scope on any error.
     """
     from rag.router import classify_query
-    query = state.get("query", "")
+    raw_query = state.get("query", "")
+    query = state.get("rewritten_query") or raw_query
     node_trace = list(state.get("node_trace", []))
     node_trace.append("router")
 
-    # Cache check — skip LLM call on exact-match hit
+    # Cache check — skip LLM call on exact-match hit (key on raw query)
     if config.SESSION_CACHE_ENABLED:
-        cache_key = normalize_query(query)
+        cache_key = normalize_query(raw_query)
         cached = state.get("router_cache", {}).get(cache_key)
         if cached:
             node_trace.append("router_cache_hit")
@@ -65,16 +66,19 @@ def router_node(state: PipelineState) -> dict:
                 "router_result": None,  # RouterResult object not available from cache dict
                 "function": cached["function"],
                 "course_ids": cached["course_ids"],
-                "rewritten_query": cached.get("rewritten_query") or query,
+                "rewritten_query": cached.get("rewritten_query") or raw_query,
                 "intent_type": cached.get("intent_type"),
                 "recurrent_search": cached.get("recurrent_search", False),
                 "requires_retrieval": cached.get("requires_retrieval", True),
                 "node_trace": node_trace,
             }
 
-    # history_inject_node runs before router and populates history_context; prefer that
-    # over the compact _build_prior_context so the router sees full conversation context.
-    prior_context = state.get("history_context") or _build_prior_context(state.get("history", []))
+    # history_inject_node bakes history_context into rewritten_query; skip prior_context
+    # when the query is already augmented, otherwise fall back to compact context.
+    prior_context = (
+        None if state.get("rewritten_query")
+        else _build_prior_context(state.get("history", []))
+    )
 
     try:
         router_result = classify_query(query, prior_context=prior_context)
@@ -82,7 +86,7 @@ def router_node(state: PipelineState) -> dict:
         # Cache write — store serialized result for future identical queries
         router_cache_update = {}
         if config.SESSION_CACHE_ENABLED:
-            cache_key = normalize_query(query)
+            cache_key = normalize_query(raw_query)
             existing_cache = state.get("router_cache", {})
             router_cache_update = {
                 **existing_cache,

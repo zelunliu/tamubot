@@ -1,10 +1,13 @@
 """RAG pipeline entry point."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from rag.graph.builder import build_graph, build_graph_with_memory
 from rag.state.pipeline_state import PipelineState
+
+_logger = logging.getLogger("tamubot")
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -101,9 +104,22 @@ def run_pipeline_with_memory(
         checkpointer = make_checkpointer()
         _memory_graph = build_graph_with_memory(checkpointer=checkpointer)
 
+    # Explicitly load conversation state from checkpoint so history_inject_node
+    # always sees prior turns regardless of LangGraph's checkpoint merge behavior.
+    prior: dict = get_current_state(thread_config) if thread_config else {}
+    _logger.info(
+        "pipeline: pre-invoke history_len=%d summary_len=%d turn=%d",
+        len(prior.get("history", [])),
+        len(prior.get("history_summary", "") or ""),
+        prior.get("turn_number", 0),
+    )
+
     initial_state: dict = {
         **_INITIAL_STATE,
         "query": query,
+        "history": prior.get("history", []),
+        "history_summary": prior.get("history_summary", "") or "",
+        "turn_number": prior.get("turn_number", 0),
     }
 
     if thread_config:
