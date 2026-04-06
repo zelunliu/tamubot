@@ -68,7 +68,7 @@ def router_node(state: PipelineState) -> dict:
                 "course_ids": cached["course_ids"],
                 "rewritten_query": cached.get("rewritten_query") or raw_query,
                 "intent_type": cached.get("intent_type"),
-                "recurrent_search": cached.get("recurrent_search", False),
+                "recursive_search": cached.get("recursive_search", False),
                 "requires_retrieval": cached.get("requires_retrieval", True),
                 "node_trace": node_trace,
             }
@@ -95,7 +95,7 @@ def router_node(state: PipelineState) -> dict:
                     "course_ids": router_result.course_ids,
                     "rewritten_query": router_result.rewritten_query or query,
                     "intent_type": router_result.intent_type,
-                    "recurrent_search": router_result.recurrent_search,
+                    "recursive_search": router_result.recursive_search,
                     "requires_retrieval": router_result.requires_retrieval,
                 }
             }
@@ -106,7 +106,7 @@ def router_node(state: PipelineState) -> dict:
             "course_ids": router_result.course_ids,
             "rewritten_query": router_result.rewritten_query or query,
             "intent_type": router_result.intent_type,
-            "recurrent_search": router_result.recurrent_search,
+            "recursive_search": router_result.recursive_search,
             "requires_retrieval": router_result.requires_retrieval,
             "router_cache": router_cache_update,
             "node_trace": node_trace,

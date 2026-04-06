@@ -44,38 +44,38 @@ def compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
 
 def _derive_retrieval_mode(
     course_ids: list[str],
-    recurrent_search: bool,
+    recursive_search: bool,
 ) -> str:
-    """Derive retrieval_mode from course presence and recurrent_search flag.
+    """Derive retrieval_mode from course presence and recursive_search flag.
 
     - No course IDs → "semantic" (full-corpus vector search, no course filter)
-    - recurrent_search=True → "hybrid" (two-stage: anchor fetch + corpus-wide discovery)
-    - course IDs, no recurrent_search → "hybrid_course" (query-driven hybrid per course)
+    - recursive_search=True → "hybrid" (two-stage: anchor fetch + corpus-wide discovery)
+    - course IDs, no recursive_search → "hybrid_course" (query-driven hybrid per course)
     """
     if not course_ids:
         return "semantic"
-    if recurrent_search:
+    if recursive_search:
         return "hybrid"
     return "hybrid_course"
 
 
 def _derive_function(
     course_ids: list[str],
-    recurrent_search: bool,
+    recursive_search: bool,
     intent_type: Optional[str],
 ) -> str:
     """Derive the retrieval function name from extracted variables.
 
     Function matrix (v3 — 4 functions):
-    course_ids  recurrent_search  intent_type  → function
+    course_ids  recursive_search  intent_type  → function
     empty       any               not None     → semantic_general
     empty       any               None         → out_of_scope
-    present     True              any          → recurrent
+    present     True              any          → recursive
     present     False             any          → hybrid_course
     """
     if not course_ids:
         return "semantic_general" if intent_type is not None else "out_of_scope"
-    return "recurrent" if recurrent_search else "hybrid_course"
+    return "recursive" if recursive_search else "hybrid_course"
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class RouterResult:
     # Extracted by router LLM
     course_ids: list[str] = field(default_factory=list)
     intent_type: Optional[str] = None  # None = out_of_scope only
-    recurrent_search: bool = False
+    recursive_search: bool = False
     rewritten_query: str = ""
     section: Optional[str] = None
 
@@ -101,12 +101,12 @@ class RouterResult:
         if not self.function:
             self.function = _derive_function(
                 self.course_ids,
-                self.recurrent_search,
+                self.recursive_search,
                 self.intent_type,
             )
         if not self.retrieval_mode:
             self.retrieval_mode = _derive_retrieval_mode(
-                self.course_ids, self.recurrent_search
+                self.course_ids, self.recursive_search
             )
 
     @property
@@ -206,7 +206,7 @@ def classify_query(
     result = RouterResult(
         course_ids=course_ids,
         intent_type=intent_type,
-        recurrent_search=bool(data.get("recurrent_search", False)),
+        recursive_search=bool(data.get("recursive_search", False)),
         rewritten_query=data.get("rewritten_query", query),
         section=data.get("section"),
         # function and retrieval_mode auto-derived in __post_init__

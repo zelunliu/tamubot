@@ -43,7 +43,7 @@ USE_TAMU_API: bool = bool(TAMU_API_KEY)
 # --- Thinking token budgets for Gemini 2.5 Flash ---
 # hybrid_course (factual): deterministic extraction, no thinking needed
 THINKING_BUDGET_METADATA = 0
-# recurrent, semantic_general, and hybrid_course with advisory intent use thinking
+# recursive, semantic_general, and hybrid_course with advisory intent use thinking
 THINKING_BUDGET_SEMANTIC = 1024
 
 # --- Temperature constants for function-based stochasticity ---
@@ -68,7 +68,7 @@ FUNCTION_RETRIEVAL_CONFIG: dict[str, dict[str, int]] = {
     # Corpus-wide vector search — not scaled by course count
     "semantic_general": {"retrieve_k": 30, "rerank_k": 10},
     # Two-stage: anchor fetch → corpus-wide discovery
-    "recurrent":        {"retrieve_k": 15, "rerank_k": 5},
+    "recursive":        {"retrieve_k": 15, "rerank_k": 5},
     # No retrieval
     "out_of_scope":     {"retrieve_k": 0, "rerank_k": 0},
 }
@@ -80,7 +80,7 @@ PER_COURSE_K = FUNCTION_RETRIEVAL_CONFIG
 MAX_RETRIEVE_K: int = 60
 MAX_RERANK_K: int = 20
 
-# Maximum unique discovery courses to recommend in recurrent path (after schedule filter).
+# Maximum unique discovery courses to recommend in recursive path (after schedule filter).
 RECURRENT_MAX_RECOMMENDED_COURSES: int = 3
 
 # Stratified selection: chunks per (course_id, category) slot after reranking.
