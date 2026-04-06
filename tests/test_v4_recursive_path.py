@@ -63,3 +63,83 @@ def test_recursive_retrieval_fallback_on_error():
 
     assert result["recursive_chunks"] == []
     assert "error" in result
+
+
+from rag.nodes.recursive_generator_node import recursive_generator_node
+
+
+def test_recursive_generator_overwrites_function_and_query():
+    state = {
+        "query": "what courses should I take with CSCE 605?",
+        "recursive_chunks": [{"course_id": "CSCE 605", "text": "graph algorithms and systems"}],
+        "course_ids": ["CSCE 605"],
+        "intent_type": "ACADEMIC",
+        "history_context": "",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    llm_response = '{"function": "semantic_general", "course_ids": [], "rewritten_query": "graduate systems courses complementing graph theory"}'
+    with patch("rag.tools.llm.call_llm") as mock_llm:
+        mock_llm.return_value.text = llm_response
+        result = recursive_generator_node(state)
+
+    assert result["function"] == "semantic_general"
+    assert result["course_ids"] == []
+    assert result["rewritten_query"] == "graduate systems courses complementing graph theory"
+    assert "recursive_generator" in result["node_trace"]
+
+
+def test_recursive_generator_hybrid_course_output():
+    state = {
+        "query": "explain the prerequisites for CSCE 605",
+        "recursive_chunks": [{"course_id": "CSCE 605", "text": "requires CSCE 520 and CSCE 601"}],
+        "course_ids": ["CSCE 605"],
+        "intent_type": None,
+        "history_context": "",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    llm_response = '{"function": "hybrid_course", "course_ids": ["CSCE 520", "CSCE 601"], "rewritten_query": "prerequisite foundational content"}'
+    with patch("rag.tools.llm.call_llm") as mock_llm:
+        mock_llm.return_value.text = llm_response
+        result = recursive_generator_node(state)
+
+    assert result["function"] == "hybrid_course"
+    assert "CSCE 520" in result["course_ids"]
+    assert result["rewritten_query"] == "prerequisite foundational content"
+
+
+def test_recursive_generator_fallback_on_llm_failure():
+    state = {
+        "query": "what should I take with CSCE 605?",
+        "recursive_chunks": [],
+        "course_ids": ["CSCE 605"],
+        "intent_type": None,
+        "history_context": "",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    with patch("rag.tools.llm.call_llm", side_effect=Exception("LLM timeout")):
+        result = recursive_generator_node(state)
+
+    assert result["function"] == "semantic_general"
+    assert result["course_ids"] == []
+    assert result["rewritten_query"] == "what should I take with CSCE 605?"
+
+
+def test_recursive_generator_rejects_invalid_function():
+    state = {
+        "query": "what should I take with CSCE 605?",
+        "recursive_chunks": [],
+        "course_ids": ["CSCE 605"],
+        "intent_type": None,
+        "history_context": "",
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    llm_response = '{"function": "recursive", "course_ids": [], "rewritten_query": "some query"}'
+    with patch("rag.tools.llm.call_llm") as mock_llm:
+        mock_llm.return_value.text = llm_response
+        result = recursive_generator_node(state)
+
+    assert result["function"] == "semantic_general"
