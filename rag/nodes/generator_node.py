@@ -13,16 +13,20 @@ def generator_node(state: PipelineState) -> dict:
     node_trace = list(state.get("node_trace", []))
     node_trace.append("generator")
 
+    function = state.get("function", "semantic_general")
+    if state.get("recursive_search"):
+        function = "recursive"
+
     try:
         tokens = list(generate_stream(
             results=state.get("retrieved_chunks", []),
             question=state.get("rewritten_query") or state.get("query", ""),
-            function=state.get("function", "semantic_general"),
+            function=function,
             course_ids=state.get("course_ids", []),
             intent_type=state.get("intent_type"),
             data_gaps=state.get("data_gaps", []),
             data_integrity=state.get("data_integrity", True),
-            conflicted_course_ids=state.get("conflicted_course_ids", []),
+            conflicted_course_ids=[],
             history_context=state.get("history_context"),
         ))
         return {

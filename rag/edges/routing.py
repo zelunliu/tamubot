@@ -1,9 +1,4 @@
-"""Conditional edge functions for the RAG graph.
-
-Each function reads one state field and returns a node name string.
-
-Canonical location: rag/edges/routing.py
-"""
+"""Conditional edge functions for the RAG graph."""
 from __future__ import annotations
 
 from rag.state.pipeline_state import PipelineState
@@ -14,15 +9,7 @@ def route_after_router(state: PipelineState) -> str:
     function = state.get("function", "out_of_scope")
     if function == "out_of_scope":
         return "out_of_scope"
-    elif function == "recurrent":
-        return "anchor"
+    elif function == "recursive":
+        return "recursive_retrieval"
     else:
         return "retrieval"
-
-
-def route_after_retrieval(state: PipelineState) -> str:
-    """After retrieval: recurrent → schedule_filter, others → generator."""
-    function = state.get("function", "out_of_scope")
-    if function == "recurrent":
-        return "schedule_filter"
-    return "generator"

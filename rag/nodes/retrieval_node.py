@@ -1,4 +1,4 @@
-"""Retrieval node — handles hybrid_course, semantic_general, and recurrent discover passes."""
+"""Retrieval node — handles hybrid_course and semantic_general retrieval passes."""
 from __future__ import annotations
 
 import config
@@ -19,9 +19,7 @@ def _compute_dynamic_k(function: str, n_courses: int) -> dict[str, int]:
     }
 
 
-def _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query):
-    if function == "recurrent":
-        return f"recurrent|{normalize_query(eval_query)}"
+def _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query=None):
     return f"{sorted(course_ids)}|{normalize_query(rewritten_query)}"
 
 
@@ -35,7 +33,6 @@ def retrieval_node(state: PipelineState) -> dict:
     function = state.get("function", "out_of_scope")
     course_ids = state.get("course_ids", [])
     rewritten_query = state.get("rewritten_query") or state.get("query", "")
-    eval_query = state.get("eval_query") or rewritten_query
     node_trace = list(state.get("node_trace", []))
     node_trace.append("retrieval")
 
@@ -44,12 +41,10 @@ def retrieval_node(state: PipelineState) -> dict:
 
     # Cache check — skip retrieval on exact-match hit
     if config.SESSION_CACHE_ENABLED:
-        cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query)
+        cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query)
         cached_chunks = state.get("retrieval_cache", {}).get(cache_key)
         if cached_chunks is not None:
             node_trace.append("retrieval_cache_hit")
-            if function == "recurrent":
-                return {"discovery_chunks": cached_chunks, "node_trace": node_trace}
             return {"retrieved_chunks": cached_chunks, "node_trace": node_trace}
 
     try:
@@ -64,7 +59,7 @@ def retrieval_node(state: PipelineState) -> dict:
 
             retrieval_cache_update = {}
             if config.SESSION_CACHE_ENABLED:
-                cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query)
+                cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query)
                 existing_cache = state.get("retrieval_cache", {})
                 retrieval_cache_update = {**existing_cache, cache_key: reranked}
 
@@ -78,29 +73,11 @@ def retrieval_node(state: PipelineState) -> dict:
 
             retrieval_cache_update = {}
             if config.SESSION_CACHE_ENABLED:
-                cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query)
+                cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query)
                 existing_cache = state.get("retrieval_cache", {})
                 retrieval_cache_update = {**existing_cache, cache_key: reranked}
 
             return {"retrieved_chunks": reranked, "retrieval_cache": retrieval_cache_update, "node_trace": node_trace}
-
-        elif function == "recurrent":
-            # Discovery pass: semantic search excluding anchor courses
-            anchor_ids = set(course_ids)
-            all_results = semantic_search(eval_query, retrieve_k)
-            discovery_chunks = [c for c in all_results if c.get("course_id") not in anchor_ids]
-
-            retrieval_cache_update = {}
-            if config.SESSION_CACHE_ENABLED:
-                cache_key = _make_retrieval_cache_key(function, course_ids, rewritten_query, eval_query)
-                existing_cache = state.get("retrieval_cache", {})
-                retrieval_cache_update = {**existing_cache, cache_key: discovery_chunks}
-
-            return {
-                "discovery_chunks": discovery_chunks,
-                "retrieval_cache": retrieval_cache_update,
-                "node_trace": node_trace,
-            }
 
         else:
             return {"retrieved_chunks": [], "node_trace": node_trace}
@@ -108,7 +85,6 @@ def retrieval_node(state: PipelineState) -> dict:
     except Exception as e:
         return {
             "retrieved_chunks": [],
-            "discovery_chunks": [],
             "error": f"Retrieval failed: {e}",
             "node_trace": node_trace,
         }

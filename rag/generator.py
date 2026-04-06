@@ -17,72 +17,6 @@ from rag.prompts import (
     COMPARISON_SYSTEM,
 )
 
-# ---------------------------------------------------------------------------
-# Eval Pass — context-aware search string for recurrent discovery
-# ---------------------------------------------------------------------------
-
-@observe(as_type="generation", name="EvalSearch_Stage")
-def generate_eval_search_string(
-    anchor_chunks: list[dict],
-    original_query: str,
-    intent_type: str,
-) -> str:
-    """Recurrent Eval Pass: generate a context-aware vector search string.
-
-    Given anchor chunks (already retrieved) and the user's original query,
-    produce a concise 1-2 sentence search string for the corpus-wide
-    discovery step. Uses temperature=0 for determinism.
-
-    Args:
-        anchor_chunks:  Chunks from the anchor course(s) metadata fetch.
-        original_query: The user's original question (or rewritten_query).
-        intent_type:    Advisory dimension (e.g. "PLANNING", "ACADEMIC").
-
-    Returns:
-        A concise search string for the hybrid discovery step.
-    """
-    # Summarize anchor content, capped to avoid token bloat
-    anchor_text = " ".join(
-        f"{c.get('header_text', '')} {c.get('content', '')}" for c in anchor_chunks
-    )[:2000]
-
-    eval_prompt = (
-        f"You are helping a student find related courses at Texas A&M University.\n\n"
-        f"The student asked: {original_query}\n\n"
-        f"Intent dimension: {intent_type}\n\n"
-        f"Here is content from the anchor course(s) they mentioned:\n{anchor_text}\n\n"
-        f"Based on the anchor course content and the student's question, write a concise "
-        f"search string (1-2 sentences) that captures what additional courses or content "
-        f"to search for. Output ONLY the search string, no other text."
-    )
-
-    _lf_get_client().update_current_generation(
-        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
-        input=[{"role": "user", "content": eval_prompt}],
-        metadata={"intent_type": intent_type},
-    )
-
-    llm_result = None
-    try:
-        llm_result = call_llm(
-            messages=[{"role": "user", "content": eval_prompt}],
-            temperature=0,
-            max_tokens=4096,  # TAMU gateway requires min 4096 or response is empty
-        )
-        text = llm_result.text.strip() or original_query
-    except Exception:
-        return original_query
-
-    _lf_get_client().update_current_generation(
-        output=text,
-        usage_details={
-            "input": llm_result.input_tokens or 0,
-            "output": llm_result.output_tokens or 0,
-        } if llm_result and llm_result.input_tokens is not None else None,
-    )
-
-    return text
-
 
 # ---------------------------------------------------------------------------
 # Function-adaptive system prompt assembly
@@ -96,9 +30,9 @@ def build_system_prompt(
     """Build a function-adaptive system prompt.
 
     Args:
-        function: Router function type (e.g., "hybrid_course", "recurrent").
+        function: Router function type (e.g., "hybrid_course", "recursive").
         course_ids: List of course IDs referenced in the query.
-        intent_type: Advisory intent type from the router (e.g., "CAREER").
+        intent_type: Advisory intent type from the router (e.g. "CAREER").
     """
     parts = [_BASE_SYSTEM]
     parts.append(_FUNCTION_PROMPTS.get(function, _FUNCTION_PROMPTS["semantic_general"]))
@@ -145,7 +79,7 @@ def generate(
         function:       Retrieval function from the router (e.g. "hybrid_course").
         course_ids:     Extracted course IDs for context.
         intent_type:    Advisory intent type from the router (e.g. "CAREER").
-        data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
+        data_gaps:      [(course_id, category)] pairs missing from DB (recursive only).
         data_integrity: False if any data gaps were found; triggers disclaimer.
 
     Returns:
@@ -160,8 +94,8 @@ def generate(
         )
 
     # Route multi-course known-course queries to streaming comparison.
-    # Recurrent queries may have multiple anchor course IDs but need pairing framing, not comparison.
-    if course_ids and len(course_ids) > 1 and function != "recurrent":
+    # Recursive queries may have multiple anchor course IDs but need pairing framing, not comparison.
+    if course_ids and len(course_ids) > 1 and function != "recursive":
         return "".join(generate_comparison(results, question, course_ids))
 
     context_xml = format_context_xml(results)
@@ -179,7 +113,7 @@ def generate(
     # Advisory queries (intent_type set) on hybrid_course also benefit from thinking.
     thinking_budget = (
         config.THINKING_BUDGET_SEMANTIC
-        if function in ["recurrent", "semantic_general"] or intent_type is not None
+        if function in ["recursive", "semantic_general"] or intent_type is not None
         else config.THINKING_BUDGET_METADATA
     )
 
@@ -285,7 +219,7 @@ def generate_stream(
         function:       Retrieval function from the router.
         course_ids:     Extracted course IDs for context.
         intent_type:    Advisory intent type from the router (e.g. "CAREER").
-        data_gaps:      [(course_id, category)] pairs missing from DB (recurrent only).
+        data_gaps:      [(course_id, category)] pairs missing from DB (recursive only).
         data_integrity: False if any data gaps were found; triggers disclaimer.
 
     Yields:
@@ -297,19 +231,10 @@ def generate_stream(
         return
 
     # Multi-course known-course comparison: stream free-form markdown directly.
-    # Recurrent queries with multiple anchors stream normally using their own prompts.
-    if course_ids and len(course_ids) > 1 and function != "recurrent":
+    # Recursive queries with multiple anchors stream normally using their own prompts.
+    if course_ids and len(course_ids) > 1 and function != "recursive":
         yield from generate_comparison(results, question, course_ids)
         return
-
-    # Schedule conflict notice (recurrent path only)
-    if conflicted_course_ids:
-        names = ", ".join(conflicted_course_ids)
-        plural = len(conflicted_course_ids) > 1
-        yield (
-            f"_Note: {names} {'were' if plural else 'was'} excluded — "
-            f"{'their' if plural else 'its'} meeting time conflicts with your anchor course._\n\n"
-        )
 
     # Prepend data integrity disclaimer before streaming begins
     if not data_integrity and data_gaps:
@@ -332,7 +257,7 @@ def generate_stream(
 
     thinking_budget = (
         config.THINKING_BUDGET_SEMANTIC
-        if function in ["recurrent", "semantic_general"] or intent_type is not None
+        if function in ["recursive", "semantic_general"] or intent_type is not None
         else config.THINKING_BUDGET_METADATA
     )
 
@@ -355,39 +280,3 @@ def generate_stream(
     validate_citations_with_trace(complete_text, function)
 
     # Gate 2 (groundedness scoring) intentionally disabled — uses LLM on every query.
-
-
-# ---------------------------------------------------------------------------
-# generator_order — thin orchestration wrapper (moved from pipeline.py)
-# ---------------------------------------------------------------------------
-
-def generator_order(
-    recurrent: bool,
-    chunks: list[dict],
-    query: str,
-    router_result,
-    data_gaps=None,
-    data_integrity: bool = True,
-    conflicted_course_ids=None,
-):
-    """Generator_Stage: eval search string (recurrent) or answer stream (final).
-
-    Returns:
-        str (recurrent=True) or Iterator[str] (recurrent=False)
-    """
-    if recurrent:
-        return generate_eval_search_string(
-            chunks,
-            router_result.rewritten_query or query,
-            router_result.intent_type or "GENERAL",
-        )
-    return generate_stream(
-        results=chunks,
-        question=query,
-        function=router_result.function,
-        course_ids=router_result.course_ids,
-        intent_type=router_result.intent_type,
-        data_gaps=data_gaps or [],
-        data_integrity=data_integrity,
-        conflicted_course_ids=conflicted_course_ids or [],
-    )

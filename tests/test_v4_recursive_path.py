@@ -143,3 +143,65 @@ def test_recursive_generator_rejects_invalid_function():
         result = recursive_generator_node(state)
 
     assert result["function"] == "semantic_general"
+
+
+def test_retrieval_node_has_no_recurrent_branch():
+    import inspect
+    from rag.nodes.retrieval_node import retrieval_node
+    source = inspect.getsource(retrieval_node)
+    assert "recurrent" not in source
+
+
+def test_generator_node_uses_recursive_prompt_when_recursive_search_true():
+    from rag.nodes.generator_node import generator_node
+    captured = {}
+
+    def fake_generate_stream(results, question, function, **kwargs):
+        captured["function"] = function
+        return iter(["answer"])
+
+    state = {
+        "query": "what should I take with CSCE 605?",
+        "retrieved_chunks": [{"course_id": "CSCE 314", "text": "data structures"}],
+        "function": "semantic_general",
+        "recursive_search": True,
+        "course_ids": [],
+        "node_trace": [],
+        "timing_ms": {},
+    }
+    with patch("rag.generator.generate_stream", side_effect=fake_generate_stream):
+        generator_node(state)
+
+    assert captured["function"] == "recursive"
+
+
+def test_route_after_router_recursive_goes_to_recursive_retrieval():
+    from rag.edges.routing import route_after_router
+    assert route_after_router({"function": "recursive"}) == "recursive_retrieval"
+
+
+def test_route_after_router_hybrid_goes_to_retrieval():
+    from rag.edges.routing import route_after_router
+    assert route_after_router({"function": "hybrid_course"}) == "retrieval"
+
+
+def test_route_after_router_out_of_scope():
+    from rag.edges.routing import route_after_router
+    assert route_after_router({"function": "out_of_scope"}) == "out_of_scope"
+
+
+def test_route_after_retrieval_does_not_exist():
+    import rag.edges.routing as routing_mod
+    assert not hasattr(routing_mod, "route_after_retrieval")
+
+
+def test_build_graph_has_recursive_nodes():
+    from rag.graph.builder import build_graph
+    graph = build_graph()
+    node_names = set(graph.nodes.keys())
+    assert "recursive_retrieval" in node_names
+    assert "recursive_generator" in node_names
+    assert "anchor" not in node_names
+    assert "eval_search" not in node_names
+    assert "schedule_filter" not in node_names
+    assert "merge" not in node_names

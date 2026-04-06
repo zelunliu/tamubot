@@ -22,13 +22,10 @@ _memory_graph = None
 _INITIAL_STATE: dict = {
     "node_trace": [],
     "timing_ms": {},
-    "conflicted_course_ids": [],
     "data_gaps": [],
     "data_integrity": True,
-    "anchor_chunks": [],
-    "discovery_chunks": [],
+    "recursive_chunks": [],
     "retrieved_chunks": [],
-    # Reset per-turn transient fields so stale checkpoint values don't leak
     "answer": "",
     "history_context": "",
     "rewritten_query": "",
@@ -62,6 +59,20 @@ def _make_invoke_kwargs(trace, thread_config: Optional[dict] = None) -> dict:
     return {"config": config} if config else {}
 
 
+def _build_router_result(result: dict):
+    """Reconstruct a RouterResult from state fields for backward compat with app.py."""
+    from rag.router import RouterResult
+    return RouterResult(
+        course_ids=result.get("course_ids", []),
+        intent_type=result.get("intent_type"),
+        recursive_search=result.get("recursive_search", False),
+        rewritten_query=result.get("rewritten_query", ""),
+        section=result.get("section"),
+        function=result.get("function", "out_of_scope"),
+        retrieval_mode=result.get("retrieval_mode", ""),
+    )
+
+
 def run_pipeline(
     query: str,
     trace=None,
@@ -79,10 +90,10 @@ def run_pipeline(
 
     five_tuple = (
         result.get("retrieved_chunks", []),
-        result.get("router_result"),
+        _build_router_result(result),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
-        result.get("conflicted_course_ids", []),
+        [],  # conflicted_course_ids removed — schedule_filter no longer runs
     )
     if return_timing:
         return (*five_tuple, result.get("timing_ms", {}))
@@ -133,10 +144,10 @@ def run_pipeline_with_memory(
     answer_str = result.get("answer") or ""
     return (
         result.get("retrieved_chunks", []),
-        result.get("router_result"),
+        _build_router_result(result),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
-        result.get("conflicted_course_ids", []),
+        [],  # conflicted_course_ids removed
         [answer_str] if answer_str else [],
     )
 
