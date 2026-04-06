@@ -10,14 +10,14 @@ import config
 from rag.graph.middleware import error_guard_middleware, timing_middleware
 
 logger = logging.getLogger("tamubot")
-from rag.state.pipeline_state import ConversationMessage, ConversationState
+from rag.state.pipeline_state import ConversationMessage, PipelineState
 from rag.tools.llm import call_llm
 from rag.tools.mem0 import Mem0Manager
 
 
 @timing_middleware
 @error_guard_middleware
-def history_update_node(state: ConversationState) -> dict:
+def history_update_node(state: PipelineState) -> dict:
     """Append current turn to history; update session summary; fire mem0 async."""
     history = list(state.get("history", []))
     logger.info("history_update: start turn_number=%d prior_history_len=%d", state.get("turn_number", 0), len(history))
@@ -33,16 +33,10 @@ def history_update_node(state: ConversationState) -> dict:
     if query:
         history.append(ConversationMessage(role="user", content=query))
     if answer:
-        router_result = state.get("router_result")
-        rr_summary = None
-        if router_result is not None:
-            try:
-                rr_summary = {
-                    "function": router_result.function,
-                    "course_ids": router_result.course_ids,
-                }
-            except Exception:
-                pass
+        rr_summary = {
+            "function": state.get("function", "out_of_scope"),
+            "course_ids": state.get("course_ids", []),
+        }
         history.append(ConversationMessage(role="assistant", content=answer, router_result=rr_summary))
 
     turn_number = state.get("turn_number", 0) + 1

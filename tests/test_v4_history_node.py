@@ -198,17 +198,14 @@ def test_history_inject_summary_appears_before_recent_turns():
 def test_history_update_stores_router_result_summary():
     """history_update_node stores function and course_ids in rr_summary."""
     from unittest.mock import MagicMock, patch
-    from rag.state.pipeline_state import RouterResult
     from rag.nodes.history_update_node import history_update_node
 
-    rr = RouterResult(
-        course_ids=["CSCE 638"],
-        rewritten_query="schedule CSCE 638")
     state = {
         "query": "schedule for CSCE 638?",
         "answer": "MWF 9-10am.",
         "history": [],
-        "router_result": rr,
+        "function": "hybrid_course",
+        "course_ids": ["CSCE 638"],
         "turn_number": 0,
         "node_trace": [],
         "timing_ms": {},
@@ -221,6 +218,7 @@ def test_history_update_stores_router_result_summary():
     assistant_msg = next(m for m in history if m["role"] == "assistant")
     assert assistant_msg["router_result"]["course_ids"] == ["CSCE 638"]
     assert "function" in assistant_msg["router_result"]
+    assert assistant_msg["router_result"]["function"] == "hybrid_course"
     assert "specific_categories" not in assistant_msg["router_result"]
 
 

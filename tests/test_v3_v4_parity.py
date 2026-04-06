@@ -44,13 +44,13 @@ PARITY_QUERIES = [
     ),
     (
         "compare CSCE 221 with similar courses",
-        "recurrent",
+        "recursive",
         RouterResult(
             course_ids=["202611_CSCE_221_500"],
             rewritten_query="compare CSCE 221 similar courses",
-            function="recurrent",
+            function="recursive",
             intent_type="ACADEMIC",
-            recurrent_search=True,
+            recursive_search=True,
         ),
     ),
 ]
