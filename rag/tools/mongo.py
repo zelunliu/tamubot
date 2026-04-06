@@ -24,6 +24,15 @@ COURSES_COLLECTION = "courses_v3"
 VECTOR_INDEX = "vector_index_v3"
 TEXT_INDEX = "text_index_v3"
 
+# Categories that describe what a course is *about* — used to build the
+# discovery search string for the recursive path (anchor pass).
+ANCHOR_CATEGORIES: set[str] = {
+    "COURSE_OVERVIEW",
+    "LEARNING_OUTCOMES",
+    "SCHEDULE",
+    "PREREQUISITES",
+}
+
 _client: Optional[MongoClient] = None
 
 
@@ -149,7 +158,7 @@ def fetch_anchor_chunks(
 
     for course_id in course_ids:
         pipeline = [
-            {"$match": {"course_id": course_id, "anchor": True}},
+            {"$match": {"course_id": course_id, "category": {"$in": list(ANCHOR_CATEGORIES)}}},
             _projection(),
         ]
         results = list(db[CHUNKS_COLLECTION].aggregate(pipeline))

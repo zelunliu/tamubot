@@ -9,7 +9,7 @@ import re
 # Functions that require citation validation
 _FACTUAL_FUNCTIONS = frozenset([
     "hybrid_course",
-    "recurrent",
+    "recursive",
     "semantic_general",
 ])
 

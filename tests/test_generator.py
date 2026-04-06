@@ -102,9 +102,9 @@ class TestTemperatureRouting:
         """semantic_general should use 0.2 temperature (synthesis)."""
         assert _FUNCTION_TEMPERATURES["semantic_general"] == 0.2
 
-    def test_recurrent_synthesis_temperature(self):
-        """recurrent should use 0.2 temperature (advisory synthesis)."""
-        assert _FUNCTION_TEMPERATURES["recurrent"] == 0.2
+    def test_recursive_synthesis_temperature(self):
+        """recursive should use 0.2 temperature (advisory synthesis)."""
+        assert _FUNCTION_TEMPERATURES["recursive"] == 0.2
 
     def test_out_of_scope_deterministic(self):
         """out_of_scope should use 0.0 temperature."""
@@ -245,7 +245,7 @@ def test_comparison_system_exists_and_is_compact():
 
 def test_router_prompt_has_all_required_output_fields():
     from rag.prompts import ROUTER_PROMPT
-    for field in ["course_ids", "intent_type", "recurrent_search", "rewritten_query"]:
+    for field in ["course_ids", "intent_type", "recursive_search", "rewritten_query"]:
         assert field in ROUTER_PROMPT, f"ROUTER_PROMPT missing field: {field}"
 
 

@@ -1,7 +1,7 @@
 """Data-driven routing matrix — reference documentation only.
 
 This module is NOT wired to the LangGraph graph routing functions in builder.py.
-The graph uses route_after_router() and route_after_retrieval() directly.
+The graph uses route_after_router() directly.
 This matrix exists as a single source of truth for supported function types
 and their retrieval strategies.
 """
@@ -12,7 +12,7 @@ from typing import TypedDict
 
 class RoutingEntry(TypedDict):
     requires_retrieval: bool
-    retrieval_passes: list[str]   # e.g. ["anchor", "discover"] or ["hybrid_course"]
+    retrieval_passes: list[str]   # e.g. ["recursive_retrieval", "retrieval"] or ["hybrid_course"]
     generation_mode: str          # "stream" | "canned"
 
 

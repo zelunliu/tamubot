@@ -1,4 +1,4 @@
-"""Schedule parsing and conflict detection for recurrent course recommendations."""
+"""Schedule parsing and conflict detection for recursive course recommendations."""
 
 import re
 from dataclasses import dataclass

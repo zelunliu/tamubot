@@ -75,10 +75,14 @@ def test_pipeline_passes_callback_handler_when_trace_provided():
 
     mock_graph_result = {
         "retrieved_chunks": [],
-        "router_result": MagicMock(function="out_of_scope", course_ids=[], requires_retrieval=False),
+        "function": "out_of_scope",
+        "course_ids": [],
+        "intent_type": None,
+        "recursive_search": False,
+        "rewritten_query": "",
+        "retrieval_mode": "",
         "data_gaps": [],
         "data_integrity": True,
-        "conflicted_course_ids": [],
         "answer_stream": [],
         "answer": "",
     }
@@ -121,10 +125,14 @@ def test_pipeline_no_callback_when_trace_is_none():
     """run_pipeline_with_memory passes no callbacks when trace=None."""
     mock_graph_result = {
         "retrieved_chunks": [],
-        "router_result": MagicMock(function="out_of_scope", course_ids=[], requires_retrieval=False),
+        "function": "out_of_scope",
+        "course_ids": [],
+        "intent_type": None,
+        "recursive_search": False,
+        "rewritten_query": "",
+        "retrieval_mode": "",
         "data_gaps": [],
         "data_integrity": True,
-        "conflicted_course_ids": [],
         "answer_stream": [],
         "answer": "",
     }

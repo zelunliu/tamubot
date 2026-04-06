@@ -4,18 +4,16 @@ from unittest.mock import MagicMock, patch
 
 def _make_mock_result(function: str = "hybrid_course") -> dict:
     """Minimal LangGraph result dict with timing_ms populated."""
-    from rag.router import RouterResult
-    rr = RouterResult(
-        course_ids=["202611_CSCE_221_500"],
-        rewritten_query="test",
-        function=function,
-    )
     return {
         "retrieved_chunks": [{"content": "chunk"}],
-        "router_result": rr,
+        "function": function,
+        "course_ids": ["202611_CSCE_221_500"],
+        "rewritten_query": "test",
+        "intent_type": "ACADEMIC",
+        "recursive_search": False,
+        "retrieval_mode": "",
         "data_gaps": [],
         "data_integrity": True,
-        "conflicted_course_ids": [],
         "timing_ms": {
             "router_node": 12.3,
             "retrieval_node": 45.6,

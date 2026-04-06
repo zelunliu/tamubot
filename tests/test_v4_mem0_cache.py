@@ -58,7 +58,7 @@ def test_router_cache_hit_skips_llm():
         "rewritten_query": "CSCE 221 grading policy",
         "intent_type": "ACADEMIC",
         "specific_categories": [],
-        "recurrent_search": False,
+        "recursive_search": False,
         "requires_retrieval": True,
     }
     query = "CSCE 221 grading?"
@@ -124,7 +124,6 @@ def _base_retrieval_state(function="hybrid_course", **extra):
         "function": function,
         "course_ids": ["202611_CSCE_221_500"],
         "rewritten_query": "CSCE 221 grading policy",
-        "eval_query": "",
         "specific_categories": [],
         "node_trace": [],
         "timing_ms": {},
@@ -203,14 +202,17 @@ def test_retrieval_cache_miss_calls_retrieval_and_writes_cache():
     assert cache_key in written_cache
 
 
-def test_retrieval_cache_key_recurrent_uses_eval_query():
-    """Recurrent path cache key is based on eval_query, not rewritten_query."""
+def test_retrieval_cache_key_same_query_same_key():
+    """Same function/course_ids/rewritten_query produces identical cache keys."""
     from rag.nodes.retrieval_node import _make_retrieval_cache_key
 
-    key1 = _make_retrieval_cache_key("recurrent", ["cid1"], "rewritten", "eval query abc")
-    key2 = _make_retrieval_cache_key("recurrent", ["cid1"], "other rewritten", "eval query abc")
-    assert key1 == key2  # same eval_query → same key despite different rewritten_query
-    assert key1.startswith("recurrent|")
+    key1 = _make_retrieval_cache_key("hybrid_course", ["cid1"], "grading policy")
+    key2 = _make_retrieval_cache_key("hybrid_course", ["cid1"], "grading policy")
+    assert key1 == key2
+
+    # Different rewritten_query → different key
+    key3 = _make_retrieval_cache_key("hybrid_course", ["cid1"], "office hours")
+    assert key1 != key3
 
 
 # ---------------------------------------------------------------------------
