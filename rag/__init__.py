@@ -4,7 +4,8 @@ Import only from this module, not from submodules.
 """
 from rag.graph.pipeline import get_current_state, run_pipeline, run_pipeline_with_memory
 from rag.models import VALID_CATEGORIES, ChunkDoc, CourseDoc, PolicyDoc
-from rag.state.pipeline_state import ConversationState, PipelineState, RouterResult
+from rag.router import RouterResult
+from rag.state.pipeline_state import ConversationState, PipelineState
 from rag.tools.langfuse import compute_ragas_metrics, get_langfuse, run_ragas_background
 
 __all__ = [

@@ -1,7 +1,6 @@
 """Tests for v4 PipelineState contract."""
-import pickle
-
-from rag.state.pipeline_state import PipelineState, ConversationMessage
+import typing
+from rag.state.pipeline_state import PipelineState, ConversationState, ConversationMessage
 
 
 def test_pipeline_state_importable():
@@ -19,20 +18,37 @@ def test_pipeline_state_minimal_fields():
     assert state["node_trace"] == []
 
 
-def test_router_result_is_picklable():
-    """RouterResult dataclass must be picklable for LangGraph checkpointing."""
-    from rag.router import RouterResult
-    rr = RouterResult(
-        course_ids=["202611_CSCE_120_500"],
-        rewritten_query="office hours CSCE 120",
-        function="hybrid_course",
-    )
-    pickled = pickle.dumps(rr)
-    restored = pickle.loads(pickled)
-    assert restored.course_ids == rr.course_ids
-    assert restored.function == rr.function
+def test_conversation_state_is_alias_for_pipeline_state():
+    """ConversationState is now an alias — both refer to the same TypedDict."""
+    assert ConversationState is PipelineState
+
+
+def test_pipeline_state_has_recursive_fields():
+    state: PipelineState = {
+        "recursive_search": True,
+        "recursive_chunks": [{"course_id": "CSCE 605", "text": "something"}],
+    }
+    assert state["recursive_search"] is True
+    assert len(state["recursive_chunks"]) == 1
+
+
+def test_pipeline_state_has_session_fields():
+    """Session fields (formerly ConversationState) live directly in PipelineState."""
+    state: PipelineState = {
+        "session_id": "abc123",
+        "history": [{"role": "user", "content": "hello"}],
+        "turn_number": 1,
+    }
+    assert state["session_id"] == "abc123"
+    assert state["turn_number"] == 1
 
 
 def test_conversation_message_importable():
     msg: ConversationMessage = {"role": "user", "content": "hello"}
     assert msg["role"] == "user"
+
+
+def test_no_router_result_field_in_pipeline_state():
+    """router_result is no longer a field in PipelineState — fields are promoted."""
+    hints = typing.get_type_hints(PipelineState)
+    assert "router_result" not in hints
