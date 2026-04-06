@@ -42,24 +42,26 @@ Examples:
 - "What is the TAMU academic integrity policy?" → "ACADEMIC" (discovery, no course_id)
 - "If I don't access Perusall through Canvas, will my grades show up?" → "ADMINISTRATIVE"
 
-RECURRENT SEARCH
-Set recurrent_search = true ONLY when the user wants to discover unknown courses using
-a named course as an anchor ("What should I take with CS 638?", "What follows CS 638?").
+RECURSIVE SEARCH
+Set recursive_search = true ONLY when the user wants to discover unknown courses using
+a named course as an anchor ("What should I take with CS 638?", "What follows CS 638?",
+"What courses are similar to CS 638?", "Who else teaches courses like CS 638?").
 False when the question is about named courses only, or no course ID is mentioned.
 
 QUERY REWRITING
-Expand with synonyms for retrieval:
-- "late work" → "attendance makeup deadline extensions late submission"
-- "ChatGPT"/"AI tools" → "AI policy artificial intelligence generative AI tools"
-- "prereqs" → "prerequisites required courses corequisites"
-- "grade breakdown" → "grading policy grade distribution weight percentage"
+For recursive queries, rewritten_query must be a focused lookup string targeting the
+anchor course content (strip the discovery intent):
+- "What should I take with CSCE 605?" → "retrieve course CSCE 605"
+- "Who teaches CSCE 605?" → "retrieve professor CSCE 605"
+- "Good courses with CSCE 605 this semester?" → "retrieve schedule CSCE 605"
+For all other queries, expand with synonyms as usual.
 
 Output ONLY a JSON object with these fields:
 {{
   "course_ids": [],
   "section": null,
   "intent_type": null,
-  "recurrent_search": false,
+  "recursive_search": false,
   "rewritten_query": "..."
 }}
 
@@ -119,12 +121,12 @@ _HYBRID_COURSE_DEFAULT = (
 # Primary prompt per function — describes the factual framing of the response.
 _FUNCTION_PROMPTS: dict[str, str] = {
     "hybrid_course": _HYBRID_COURSE_DEFAULT,
-    "recurrent": (
-        "The user wants to find courses that pair with, complement, follow from, or are similar to "
-        "a specific course. The context includes the anchor course's content and the most relevant "
-        "discovered courses. Explain what makes each discovered course a good complement, grounding "
-        "your reasoning in the anchor course's learning outcomes, prerequisites, and topics. "
-        "Present course recommendations clearly, one per paragraph or as a bulleted list. "
+    "recursive": (
+        "The user wants to find courses related to a specific anchor course. "
+        "You have already retrieved information about the anchor course and used it "
+        "to run a targeted discovery search. Answer based on the discovered courses, using "
+        "the anchor course as context for why each result is relevant. "
+        "Present recommendations clearly — one per paragraph or as a bulleted list. "
         "Recommend at most 3 courses — prioritize depth of explanation over breadth."
     ),
     "semantic_general": (
@@ -137,7 +139,7 @@ _FUNCTION_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Advisory overlay appended when intent_type is present (recurrent_* and semantic_general).
+# Advisory overlay appended when intent_type is present (recursive and semantic_general).
 _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
     "ACADEMIC": (
         "Address the academic dimension: discuss learning outcomes, topics covered, and academic content."
@@ -165,11 +167,11 @@ _SEMANTIC_TYPE_PROMPTS: dict[str, str] = {
 
 # Per-function generation temperature (function-based stochasticity).
 # hybrid_course: 0.0 (deterministic extraction, maximum fidelity to context).
-# recurrent, semantic_general: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
+# recursive, semantic_general: 0.2 (advisory reasoning, linguistic fluidity for synthesis).
 # out_of_scope: 0.0 (canned response, no generation).
 _FUNCTION_TEMPERATURES: dict[str, float] = {
     "hybrid_course":    0.0,
-    "recurrent":        0.2,
+    "recursive":        0.2,
     "semantic_general": 0.2,
     "out_of_scope":     0.0,
 }

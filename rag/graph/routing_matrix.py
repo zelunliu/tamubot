@@ -22,9 +22,9 @@ ROUTING_MATRIX: dict[str, RoutingEntry] = {
         "retrieval_passes": [],
         "generation_mode": "canned",
     },
-    "recurrent": {
+    "recursive": {
         "requires_retrieval": True,
-        "retrieval_passes": ["anchor", "discover"],
+        "retrieval_passes": ["recursive_retrieval", "retrieval"],
         "generation_mode": "stream",
     },
     "hybrid_course": {

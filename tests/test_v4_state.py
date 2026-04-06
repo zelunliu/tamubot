@@ -52,3 +52,17 @@ def test_no_router_result_field_in_pipeline_state():
     """router_result is no longer a field in PipelineState — fields are promoted."""
     hints = typing.get_type_hints(PipelineState)
     assert "router_result" not in hints
+
+
+def test_recursive_prompt_key_exists():
+    from rag.prompts import _FUNCTION_PROMPTS, _FUNCTION_TEMPERATURES
+    assert "recursive" in _FUNCTION_PROMPTS
+    assert "recurrent" not in _FUNCTION_PROMPTS
+    assert "recursive" in _FUNCTION_TEMPERATURES
+    assert "recurrent" not in _FUNCTION_TEMPERATURES
+
+
+def test_router_prompt_uses_recursive_search():
+    from rag.prompts import ROUTER_PROMPT
+    assert "recursive_search" in ROUTER_PROMPT
+    assert "recurrent_search" not in ROUTER_PROMPT
