@@ -1,573 +1,409 @@
-"""Chunking quality evaluation for TamuBot.
+"""Retrieval-only chunking benchmark.
 
-Measures embedding-space cohesion and separation for chunks stored in MongoDB,
-using Voyage-3 cosine similarity as a proxy for semantic quality.
-
-Provides:
-  load_chunks_for_crns()     — load chunks from MongoDB for a list of CRNs
-  retrieve_for_query()       — retrieve top-k chunks for a query via hybrid search
-  intra_chunk_cohesion()     — avg cosine similarity of chunk content to its category centroid
-  inter_chunk_separation()   — avg cosine distance between chunk centroids across categories
-  chunk_size_stats()         — token-count distribution (min/max/mean/std)
-  run_eval()                 — full eval loop over a list of CRNs with Langfuse logging
-  print_summary()            — print a formatted summary table
-  main()                     — CLI entry point
+Measures precision_at_k, recall_at_k (RAGAS ContextRecall), f1_at_k,
+hit_rate_at_k, and retrieved_tokens per query. Logs per-query traces and
+a run-level aggregate trace to Langfuse.
 
 Usage:
-    python evals/eval_chunking.py --crns-file tamu_data/evals/eval_corpus.json
-    python evals/eval_chunking.py --crn 123456
-    python evals/eval_chunking.py --crns-file tamu_data/evals/eval_corpus.json --output results.json
-    python evals/eval_chunking.py --query "What is the grading policy?" --crn 123456
+    python evals/eval_chunking.py \\
+        --golden-set tamu_data/evals/golden_sets/golden_20260313_draft_v1.jsonl \\
+        [--experiment chunk_600_ov100] \\
+        [--top-k 7] \\
+        [--threshold 0.85] \\
+        [--ragas] \\
+        [--output tamu_data/evals/reports/chunking_YYYYMMDD.json]
 """
-
-from __future__ import annotations
 
 import argparse
 import json
-import math
+import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config
+
+logger = logging.getLogger("tamubot.eval_chunking")
 
 
 # ---------------------------------------------------------------------------
-# Cosine similarity helper
+# Golden set loader
 # ---------------------------------------------------------------------------
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def _centroid(vectors: list[list[float]]) -> list[float]:
-    """Compute element-wise mean of a list of vectors."""
-    if not vectors:
-        return []
-    n = len(vectors)
-    dim = len(vectors[0])
-    result = [0.0] * dim
-    for v in vectors:
-        for i, x in enumerate(v):
-            result[i] += x
-    return [x / n for x in result]
-
-
-def _tokens_approx(text: str) -> int:
-    """Approximate token count: len(text) / 4, rounded."""
-    return max(0, round(len(text) / 4))
+def load_golden_set(path: Path) -> list[dict]:
+    """Load a golden set JSONL file. Returns list of question dicts."""
+    items = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                items.append(json.loads(line))
+    return items
 
 
 # ---------------------------------------------------------------------------
-# Task 2: MongoDB loader
+# Embedding-based metrics (cheap, always computed)
 # ---------------------------------------------------------------------------
 
-def load_chunks_for_crns(crns: list[str]) -> list[dict]:
-    """Load all chunks from MongoDB for the given CRNs.
-
-    Returns a flat list of chunk dicts, each containing at minimum:
-      crn, chunk_index, category, content, course_id, embedding (may be None).
+def compute_embedding_metrics(
+    query: str,
+    chunks: list[dict],
+    threshold: float = 0.85,
+    _labels: Optional[list[bool]] = None,
+) -> dict:
+    """Compute embedding-based retrieval metrics without an LLM.
 
     Args:
-        crns: List of CRN strings (e.g. ["123456", "234567"]).
+        query:     User query string.
+        chunks:    Reranked chunk dicts (must have 'content' key).
+        threshold: Voyage-3 cosine similarity threshold (default 0.85).
+        _labels:   Pre-computed relevance labels (skips Voyage AI; for tests).
 
     Returns:
-        List of chunk dicts from the chunks_v3 collection.
+        Dict with keys: precision_at_k (float), hit_rate_at_k (float),
+        retrieved_tokens (int).
     """
-    from pymongo import MongoClient
+    if not chunks:
+        return {"precision_at_k": 0.0, "hit_rate_at_k": 0.0, "retrieved_tokens": 0}
 
-    client = MongoClient(config.MONGODB_URI)
-    db = client[config.MONGODB_DB]
-    collection = db["chunks_v3"]
+    from evals.eval_retrieval_metrics import label_relevant
 
-    chunks = list(collection.find(
-        {"crn": {"$in": crns}},
-        {
-            "crn": 1,
-            "chunk_index": 1,
-            "category": 1,
-            "content": 1,
-            "course_id": 1,
-            "embedding": 1,
-            "has_table": 1,
-            "anchor": 1,
-            "_id": 0,
-        },
-    ))
-    client.close()
-    return chunks
+    labels = _labels if _labels is not None else label_relevant(query, chunks, threshold)
+    k = len(labels)
+    n_relevant = sum(labels)
+
+    return {
+        "precision_at_k": round(n_relevant / k, 4) if k > 0 else 0.0,
+        "hit_rate_at_k": 1.0 if n_relevant > 0 else 0.0,
+        "retrieved_tokens": sum(len(c.get("content", "")) // 4 for c in chunks),
+    }
 
 
 # ---------------------------------------------------------------------------
-# Task 3: retrieve_for_query
+# Helpers
 # ---------------------------------------------------------------------------
+
+def _compute_f1(precision: float, recall: float) -> float:
+    if precision + recall == 0.0:
+        return 0.0
+    return round(2.0 * precision * recall / (precision + recall), 4)
+
+
+def _compute_aggregates(results: list[dict]) -> dict:
+    """Mean of each numeric metric across all query results."""
+    metrics = [
+        "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
+        "recall_at_k", "f1_at_k", "context_precision",
+    ]
+    aggregates: dict = {}
+    for m in metrics:
+        values = [r[m] for r in results if r.get(m) is not None]
+        if values:
+            aggregates[f"avg_{m}"] = round(sum(values) / len(values), 4)
+    aggregates["n_queries"] = len(results)
+    return aggregates
+
+
+# ---------------------------------------------------------------------------
+# Retrieval
+# ---------------------------------------------------------------------------
+
+from rag.router import classify_query, compute_dynamic_k  # noqa: E402
+from rag.tools.mongo import hybrid_search, semantic_search  # noqa: E402
+from rag.tools.voyage import rerank  # noqa: E402
+
 
 def retrieve_for_query(
     query: str,
-    crn: Optional[str] = None,
-    course_id: Optional[str] = None,
-    top_k: int = 10,
+    rr,
+    top_k: Optional[int] = None,
 ) -> list[dict]:
-    """Retrieve top-k chunks for a query using hybrid search.
+    """Run hybrid/semantic search + rerank for a single query.
 
     Args:
-        query:     Search query string.
-        crn:       Optional CRN filter (resolved to course_id if provided).
-        course_id: Optional course_id filter (e.g. "CSCE 638").
-        top_k:     Number of chunks to return after reranking.
+        query:  Original user query (used as fallback if rr.rewritten_query is empty).
+        rr:     RouterResult from classify_query().
+        top_k:  Override for rerank_k. If None, uses compute_dynamic_k().
 
     Returns:
-        List of chunk dicts sorted by relevance (descending).
+        Reranked list of chunk dicts, or [] when the function has no retrieval
+        path (e.g. out_of_scope, recurrent without course_ids).
     """
-    from rag.tools.mongo import hybrid_search
-    from rag.tools.voyage import rerank
+    dk = compute_dynamic_k(rr.function, len(rr.course_ids))
+    retrieve_k = dk["retrieve_k"]
+    rerank_k = top_k if top_k is not None else dk["rerank_k"]
 
-    filters: dict = {}
-    if crn:
-        # Look up course_id from crn if not provided
-        if not course_id:
-            from pymongo import MongoClient
-            client = MongoClient(config.MONGODB_URI)
-            db = client[config.MONGODB_DB]
-            doc = db["chunks_v3"].find_one({"crn": crn}, {"course_id": 1})
-            client.close()
-            if doc:
-                course_id = doc.get("course_id")
-    if course_id:
-        filters["course_id"] = course_id
+    search_query = rr.rewritten_query or query
 
-    # Retrieve candidates
-    candidates = hybrid_search(query, filters=filters or None, k=top_k * 2)
-    if not candidates:
+    if rr.function == "semantic_general":
+        pre_results = semantic_search(search_query, retrieve_k)
+    elif rr.course_ids:
+        pre_results = hybrid_search(search_query, rr.course_ids[0], retrieve_k)
+    else:
         return []
 
-    # Rerank and slice
-    return rerank(query, candidates, top_k=top_k)
+    return rerank(search_query, pre_results, rerank_k)
 
 
 # ---------------------------------------------------------------------------
-# Embedding metrics
+# Langfuse logging
 # ---------------------------------------------------------------------------
 
-def _embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
-    """Embed a list of texts using Voyage-3."""
-    import voyageai
-    vo = voyageai.Client(api_key=config.VOYAGE_API_KEY)
-    # Voyage AI has a batch limit; chunk into groups of 128
-    batch_size = 128
-    all_embeddings: list[list[float]] = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        result = vo.embed(batch, model="voyage-3", input_type=input_type)
-        all_embeddings.extend(result.embeddings)
-    return all_embeddings
+from rag import get_langfuse  # noqa: E402
+from rag.tools.langfuse import compute_retrieval_ragas  # noqa: E402
 
 
-def intra_chunk_cohesion(chunks: list[dict]) -> dict:
-    """Measure intra-chunk cohesion: how similar each chunk is to its category centroid.
-
-    For each category, embeds all chunk contents, computes the centroid, then
-    averages the cosine similarity of each chunk to that centroid.
-
-    Args:
-        chunks: List of chunk dicts (must have 'content' and 'category' keys).
-
-    Returns:
-        Dict with:
-          overall_cohesion  — mean cosine similarity across all chunks
-          per_category      — {category: mean_cosine} mapping
-          n_chunks          — total number of chunks evaluated
-    """
-    if not chunks:
-        return {"overall_cohesion": 0.0, "per_category": {}, "n_chunks": 0}
-
-    # Group by category
-    by_category: dict[str, list[dict]] = {}
-    for c in chunks:
-        cat = c.get("category", "UNKNOWN")
-        by_category.setdefault(cat, []).append(c)
-
-    # Embed all contents at once for efficiency
-    contents = [c.get("content", "") for c in chunks]
-    chunk_idx_map = {id(c): i for i, c in enumerate(chunks)}
-
+def _log_query_to_langfuse(lf, row: dict, run_name: str) -> None:
+    """Create a Langfuse trace for one query and score all non-None metrics."""
     try:
-        all_embeddings = _embed_texts(contents, input_type="document")
+        trace = lf.trace(
+            name="retrieval_eval",
+            input={"query": row["query"]},
+            tags=["chunking_eval", run_name],
+            session_id=run_name,
+        )
+        for metric in (
+            "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
+            "recall_at_k", "f1_at_k", "context_precision", "context_recall",
+        ):
+            value = row.get(metric)
+            if value is not None:
+                lf.create_score(trace_id=trace.id, name=metric, value=float(value))
     except Exception as e:
-        return {"error": str(e), "overall_cohesion": 0.0, "per_category": {}, "n_chunks": 0}
-
-    # Map chunk → embedding
-    embeddings_by_chunk: dict[int, list[float]] = {
-        id(c): all_embeddings[i] for i, c in enumerate(chunks)
-    }
-
-    per_category: dict[str, float] = {}
-    all_sims: list[float] = []
-
-    for cat, cat_chunks in by_category.items():
-        cat_embeds = [embeddings_by_chunk[id(c)] for c in cat_chunks]
-        centroid = _centroid(cat_embeds)
-        sims = [_cosine(e, centroid) for e in cat_embeds]
-        avg_sim = sum(sims) / len(sims) if sims else 0.0
-        per_category[cat] = round(avg_sim, 4)
-        all_sims.extend(sims)
-
-    overall = sum(all_sims) / len(all_sims) if all_sims else 0.0
-    return {
-        "overall_cohesion": round(overall, 4),
-        "per_category": per_category,
-        "n_chunks": len(chunks),
-    }
+        logger.warning(f"Langfuse per-query logging failed: {e}")
 
 
-def inter_chunk_separation(chunks: list[dict]) -> dict:
-    """Measure inter-chunk separation: cosine distance between category centroids.
-
-    A higher distance means categories are more semantically distinct in
-    embedding space — a sign of clean chunking boundaries.
-
-    Args:
-        chunks: List of chunk dicts (must have 'content' and 'category' keys).
-
-    Returns:
-        Dict with:
-          avg_separation     — mean pairwise centroid cosine distance
-          pairwise           — {(cat_a, cat_b): distance} for all category pairs
-          n_categories       — number of distinct categories
-    """
-    if not chunks:
-        return {"avg_separation": 0.0, "pairwise": {}, "n_categories": 0}
-
-    by_category: dict[str, list[str]] = {}
-    for c in chunks:
-        cat = c.get("category", "UNKNOWN")
-        by_category.setdefault(cat, []).append(c.get("content", ""))
-
-    categories = list(by_category.keys())
-    if len(categories) < 2:
-        return {
-            "avg_separation": 0.0,
-            "pairwise": {},
-            "n_categories": len(categories),
-        }
-
-    # Embed each category's contents and compute centroids
-    centroids: dict[str, list[float]] = {}
-    for cat, texts in by_category.items():
-        try:
-            embeds = _embed_texts(texts, input_type="document")
-            centroids[cat] = _centroid(embeds)
-        except Exception:
-            continue
-
-    # Pairwise cosine distance between centroids
-    pairwise: dict[str, float] = {}
-    distances: list[float] = []
-    cats = list(centroids.keys())
-    for i in range(len(cats)):
-        for j in range(i + 1, len(cats)):
-            a, b = cats[i], cats[j]
-            sim = _cosine(centroids[a], centroids[b])
-            dist = 1.0 - sim
-            pairwise[f"{a} vs {b}"] = round(dist, 4)
-            distances.append(dist)
-
-    avg = sum(distances) / len(distances) if distances else 0.0
-    return {
-        "avg_separation": round(avg, 4),
-        "pairwise": pairwise,
-        "n_categories": len(cats),
-    }
-
-
-def chunk_size_stats(chunks: list[dict]) -> dict:
-    """Compute token-count distribution statistics for a list of chunks.
-
-    Args:
-        chunks: List of chunk dicts with 'content' key.
-
-    Returns:
-        Dict with min, max, mean, std, median token counts and n_chunks.
-    """
-    if not chunks:
-        return {"min": 0, "max": 0, "mean": 0.0, "std": 0.0, "median": 0.0, "n_chunks": 0}
-
-    counts = [_tokens_approx(c.get("content", "")) for c in chunks]
-    n = len(counts)
-    mean = sum(counts) / n
-    variance = sum((x - mean) ** 2 for x in counts) / n
-    std = math.sqrt(variance)
-    sorted_counts = sorted(counts)
-    mid = n // 2
-    median = (sorted_counts[mid] if n % 2 == 1
-              else (sorted_counts[mid - 1] + sorted_counts[mid]) / 2.0)
-
-    return {
-        "min": min(counts),
-        "max": max(counts),
-        "mean": round(mean, 1),
-        "std": round(std, 1),
-        "median": round(median, 1),
-        "n_chunks": n,
-    }
+def _log_aggregates_to_langfuse(lf, results: list[dict], run_name: str) -> None:
+    """Log run-level mean metrics as a summary trace in Langfuse."""
+    try:
+        aggregates = _compute_aggregates(results)
+        trace = lf.trace(
+            name="retrieval_eval_aggregate",
+            input={"run_name": run_name, "n_queries": len(results)},
+            output=aggregates,
+            tags=["chunking_eval", run_name, "aggregate"],
+            session_id=run_name,
+        )
+        for metric, value in aggregates.items():
+            if isinstance(value, float):
+                lf.create_score(trace_id=trace.id, name=metric, value=value)
+        lf.flush()
+    except Exception as e:
+        logger.warning(f"Langfuse aggregate logging failed: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Task 4: run_eval loop + Langfuse logging
+# Main eval loop
 # ---------------------------------------------------------------------------
 
 def run_eval(
-    crns: list[str],
-    trace_id: Optional[str] = None,
-    log_to_langfuse: bool = True,
-) -> dict:
-    """Run full chunking evaluation for a list of CRNs.
-
-    Loads chunks from MongoDB, computes cohesion, separation, and size stats,
-    then optionally logs aggregate scores to Langfuse.
+    golden_items: list[dict],
+    experiment: str,
+    top_k: Optional[int],
+    threshold: float,
+    ragas_enabled: bool,
+    lf,
+) -> tuple[list[dict], str]:
+    """Run retrieval eval over all golden items.
 
     Args:
-        crns:             List of CRN strings to evaluate.
-        trace_id:         Langfuse trace ID to attach scores to. Optional.
-        log_to_langfuse:  Whether to upload scores to Langfuse (default True).
+        golden_items:   List of golden set question dicts.
+        experiment:     Experiment name prefix for Langfuse run name.
+        top_k:          Override for rerank_k (None → use compute_dynamic_k).
+        threshold:      Voyage-3 cosine similarity threshold for relevance.
+        ragas_enabled:  If True, run RAGAS ContextPrecision + ContextRecall.
+        lf:             Langfuse client (or None to skip logging).
 
     Returns:
-        Dict with keys: crns, n_chunks, size_stats, cohesion, separation,
-        and per_crn results.
+        Tuple of (results list, run_name string).
     """
-    print(f"Loading chunks for {len(crns)} CRN(s)...")
-    chunks = load_chunks_for_crns(crns)
-    if not chunks:
-        return {"error": "No chunks found for given CRNs", "crns": crns}
+    run_name = f"{experiment}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    results: list[dict] = []
 
-    print(f"  Loaded {len(chunks)} chunks across {len(set(c.get('crn') for c in chunks))} CRNs.")
+    for i, item in enumerate(golden_items, 1):
+        query = item.get("question", item.get("query", ""))
+        reference = item.get("reference_answer", "")
 
-    # Size stats (no API calls needed)
-    size = chunk_size_stats(chunks)
+        if not query:
+            continue
+        if ragas_enabled and not reference:
+            print(f"  [{i:2d}] SKIP (no reference_answer): {query[:60]}")
+            continue
 
-    # Cohesion (requires Voyage embeds)
-    print("Computing intra-chunk cohesion...")
-    cohesion = intra_chunk_cohesion(chunks)
+        print(f"  [{i:2d}/{len(golden_items)}] {query[:60]}...")
 
-    # Separation (requires Voyage embeds — use cached centroids when possible)
-    print("Computing inter-chunk separation...")
-    separation = inter_chunk_separation(chunks)
-
-    # Per-CRN breakdown (size only — avoids redundant embed calls)
-    per_crn: dict[str, dict] = {}
-    for crn in crns:
-        crn_chunks = [c for c in chunks if c.get("crn") == crn]
-        per_crn[crn] = chunk_size_stats(crn_chunks)
-
-    result = {
-        "crns": crns,
-        "n_chunks": len(chunks),
-        "size_stats": size,
-        "cohesion": cohesion,
-        "separation": separation,
-        "per_crn": per_crn,
-    }
-
-    # Langfuse logging
-    if log_to_langfuse:
         try:
-            from rag.tools.langfuse import get_langfuse
-            lf = get_langfuse()
-            if lf:
-                scores_to_log = {
-                    "chunking_cohesion": cohesion.get("overall_cohesion", 0.0),
-                    "chunking_separation": separation.get("avg_separation", 0.0),
-                    "chunk_mean_tokens": size.get("mean", 0.0),
-                    "chunk_std_tokens": size.get("std", 0.0),
-                }
-                for name, value in scores_to_log.items():
-                    if isinstance(value, (int, float)) and not math.isnan(value):
-                        lf.create_score(
-                            trace_id=trace_id or "eval_chunking",
-                            name=name,
-                            value=float(value),
-                            comment=f"eval_chunking — {len(crns)} CRNs, {len(chunks)} chunks",
-                        )
-                print(f"  Langfuse scores logged for trace '{trace_id or 'eval_chunking'}'.")
+            rr = classify_query(query)
         except Exception as e:
-            print(f"  Langfuse logging skipped: {e}")
+            print(f"    Router error: {e}")
+            continue
 
-    return result
+        if not rr.requires_retrieval:
+            print(f"    Skip: {rr.function} has no retrieval")
+            continue
 
+        try:
+            chunks = retrieve_for_query(query, rr, top_k=top_k)
+        except Exception as e:
+            print(f"    Retrieval error: {e}")
+            continue
 
-# ---------------------------------------------------------------------------
-# Task 5: print_summary + JSON output
-# ---------------------------------------------------------------------------
+        emb = compute_embedding_metrics(query, chunks, threshold)
 
-def print_summary(result: dict) -> None:
-    """Print a formatted summary of chunking evaluation results.
+        ragas_scores: dict = {}
+        if ragas_enabled and chunks and reference:
+            contexts = [c.get("content", "") for c in chunks]
+            ragas_scores = compute_retrieval_ragas(
+                question=query, contexts=contexts, reference=reference
+            )
 
-    Args:
-        result: Dict returned by run_eval().
-    """
-    if "error" in result:
-        print(f"\nERROR: {result['error']}")
-        return
+        recall = ragas_scores.get("context_recall")
+        precision = emb["precision_at_k"]
+        f1 = _compute_f1(precision, recall) if recall is not None else None
 
-    crns = result.get("crns", [])
-    n = result.get("n_chunks", 0)
-    size = result.get("size_stats", {})
-    cohesion = result.get("cohesion", {})
-    separation = result.get("separation", {})
+        row = {
+            "query": query,
+            **emb,
+            "recall_at_k": recall,
+            "f1_at_k": f1,
+            "context_precision": ragas_scores.get("context_precision"),
+            "context_recall": recall,
+        }
+        results.append(row)
 
-    sep_line = "=" * 56
-    print(f"\n{sep_line}")
-    print(f"  CHUNKING EVAL SUMMARY — {len(crns)} CRN(s), {n} chunks")
-    print(sep_line)
+        if lf:
+            _log_query_to_langfuse(lf, row, run_name)
 
-    print(f"\n  TOKEN SIZE DISTRIBUTION")
-    print(f"    min:    {size.get('min', 'N/A')}")
-    print(f"    max:    {size.get('max', 'N/A')}")
-    print(f"    mean:   {size.get('mean', 'N/A')}")
-    print(f"    std:    {size.get('std', 'N/A')}")
-    print(f"    median: {size.get('median', 'N/A')}")
+        recall_str = f"  recall={recall:.3f}" if recall is not None else ""
+        print(
+            f"    prec={precision:.3f}  hit={emb['hit_rate_at_k']:.0f}"
+            f"  tokens={emb['retrieved_tokens']}{recall_str}"
+        )
 
-    print(f"\n  EMBEDDING COHESION (intra-category)")
-    print(f"    overall: {cohesion.get('overall_cohesion', 'N/A')}")
-    per_cat = cohesion.get("per_category", {})
-    if per_cat:
-        for cat, score in sorted(per_cat.items()):
-            print(f"      {cat:<30s}  {score:.4f}")
+    if lf and results:
+        _log_aggregates_to_langfuse(lf, results, run_name)
 
-    print(f"\n  EMBEDDING SEPARATION (inter-category)")
-    print(f"    avg:     {separation.get('avg_separation', 'N/A')}")
-    print(f"    n_cats:  {separation.get('n_categories', 'N/A')}")
-
-    per_crn = result.get("per_crn", {})
-    if per_crn and len(per_crn) > 1:
-        print(f"\n  PER-CRN TOKEN STATS")
-        print(f"    {'CRN':<12}  {'n':>5}  {'mean':>7}  {'std':>7}")
-        for crn, s in sorted(per_crn.items()):
-            print(f"    {crn:<12}  {s.get('n_chunks', 0):>5}  "
-                  f"{s.get('mean', 0):>7.1f}  {s.get('std', 0):>7.1f}")
-
-    print(f"\n{sep_line}\n")
+    return results, run_name
 
 
 # ---------------------------------------------------------------------------
-# Task 6: CLI entry point
+# Summary output
+# ---------------------------------------------------------------------------
+
+def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
+    """Print aligned per-query and aggregate metrics to stdout."""
+    has_ragas = any(r.get("recall_at_k") is not None for r in results)
+    print(f"\n{'='*80}")
+    print(f"  RETRIEVAL EVAL: {run_name}  |  {len(results)} queries")
+    print(f"{'='*80}")
+
+    header = f"  {'Query':<42} {'Prec':>6} {'Hit':>5} {'Tokens':>7}"
+    if has_ragas:
+        header += f" {'Recall':>7} {'F1':>6}"
+    print(header)
+    print(f"  {'-'*78}")
+
+    for r in results:
+        recall_str = ""
+        if has_ragas:
+            rec = r.get("recall_at_k")
+            f1 = r.get("f1_at_k")
+            recall_str = (
+                f" {rec:>7.3f} {f1:>6.3f}"
+                if rec is not None and f1 is not None
+                else f" {'N/A':>7} {'N/A':>6}"
+            )
+        print(
+            f"  {r['query'][:42]:<42}"
+            f" {r['precision_at_k']:>6.3f}"
+            f" {r['hit_rate_at_k']:>5.0f}"
+            f" {r['retrieved_tokens']:>7d}"
+            f"{recall_str}"
+        )
+
+    print(f"{'='*80}")
+    print("  AGGREGATES:")
+    for k, v in aggregates.items():
+        print(f"    {k:<30} {v}")
+    print(f"{'='*80}\n")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="TamuBot chunking quality evaluation"
+        description="Retrieval-only chunking benchmark — compare chunking strategies by retrieval quality"
     )
     parser.add_argument(
-        "--crn",
-        help="Single CRN to evaluate",
+        "--golden-set", type=Path, required=True,
+        help="Path to golden set JSONL (e.g. tamu_data/evals/golden_sets/golden_*.jsonl)",
     )
     parser.add_argument(
-        "--crns-file",
-        type=Path,
-        help="Path to JSON file containing a list of CRNs (e.g. eval_corpus.json)",
+        "--experiment", default="chunking_eval",
+        help="Experiment name prefix for Langfuse run (default: chunking_eval)",
     )
     parser.add_argument(
-        "--query",
-        help="Run retrieve_for_query() for this query and show top-k results",
+        "--top-k", type=int, default=None,
+        help="Override rerank_k; default uses compute_dynamic_k() per query",
     )
     parser.add_argument(
-        "--course-id",
-        help="Course ID filter for --query mode (e.g. 'CSCE 638')",
+        "--threshold", type=float, default=0.85,
+        help="Voyage-3 cosine similarity threshold for relevance labels (default: 0.85)",
     )
     parser.add_argument(
-        "--top-k",
-        type=int,
-        default=10,
-        help="Number of results for --query mode (default: 10)",
+        "--ragas", action="store_true",
+        help="Enable RAGAS ContextPrecision + ContextRecall (costs LLM tokens, ~30s/query)",
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        help="Write eval results JSON to this path",
-    )
-    parser.add_argument(
-        "--no-langfuse",
-        action="store_true",
-        help="Skip Langfuse score logging",
-    )
-    parser.add_argument(
-        "--trace-id",
-        help="Langfuse trace ID for score upload (optional)",
+        "--output", type=Path,
+        help="Write JSON results to this path (optional)",
     )
     args = parser.parse_args()
 
-    # Validate API key requirements
-    if not config.VOYAGE_API_KEY and not args.query:
-        print("ERROR: VOYAGE_API_KEY is not set. Embedding metrics require Voyage AI.")
+    if not args.golden_set.exists():
+        print(f"ERROR: Golden set not found: {args.golden_set}")
         sys.exit(1)
 
-    # Query mode: retrieve and print top chunks
-    if args.query:
-        print(f"Retrieving top-{args.top_k} chunks for: '{args.query}'")
-        chunks = retrieve_for_query(
-            query=args.query,
-            crn=args.crn,
-            course_id=args.course_id,
-            top_k=args.top_k,
-        )
-        if not chunks:
-            print("  No chunks retrieved.")
-        else:
-            for i, c in enumerate(chunks, 1):
-                score = c.get("score", "N/A")
-                course = c.get("course_id", "?")
-                cat = c.get("category", "?")
-                preview = c.get("content", "")[:100].replace("\n", " ")
-                print(f"  [{i:2d}] {course} | {cat} | score={score} | {preview}...")
-        return
+    print(f"\nLoading golden set: {args.golden_set}")
+    golden_items = load_golden_set(args.golden_set)
+    print(f"  {len(golden_items)} items loaded")
 
-    # Resolve CRNs
-    crns: list[str] = []
-    if args.crn:
-        crns = [args.crn]
-    elif args.crns_file:
-        if not args.crns_file.exists():
-            print(f"ERROR: File not found: {args.crns_file}")
-            sys.exit(1)
-        with args.crns_file.open(encoding="utf-8") as f:
-            data = json.load(f)
-        # Support both plain list and dict with "crns" key
-        if isinstance(data, list):
-            crns = [str(item) for item in data]
-        elif isinstance(data, dict):
-            crns = [str(item) for item in data.get("crns", data.get("crnList", list(data.keys())))]
-        else:
-            print("ERROR: Unrecognised CRN file format (expected list or dict).")
-            sys.exit(1)
-    else:
-        parser.print_help()
-        sys.exit(0)
+    lf = get_langfuse()
+    print(f"  Langfuse: {'connected' if lf else 'not configured (logging skipped)'}")
 
-    if not crns:
-        print("ERROR: No CRNs resolved from input.")
-        sys.exit(1)
-
-    print(f"Evaluating {len(crns)} CRN(s)...")
-    result = run_eval(
-        crns=crns,
-        trace_id=args.trace_id,
-        log_to_langfuse=not args.no_langfuse,
+    print(
+        f"\nRunning eval: ragas={'yes' if args.ragas else 'no'}"
+        f"  threshold={args.threshold}"
+        f"  top_k={args.top_k or 'auto'}\n"
     )
 
-    print_summary(result)
+    results, run_name = run_eval(
+        golden_items=golden_items,
+        experiment=args.experiment,
+        top_k=args.top_k,
+        threshold=args.threshold,
+        ragas_enabled=args.ragas,
+        lf=lf,
+    )
+
+    if not results:
+        print("No results produced. Check golden set and pipeline connectivity.")
+        sys.exit(1)
+
+    aggregates = _compute_aggregates(results)
+    print_summary(results, run_name, aggregates)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        # Remove non-serialisable items if any
         with args.output.open("w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2)
+            json.dump(
+                {"run_name": run_name, "aggregates": aggregates, "items": results},
+                f, indent=2,
+            )
         print(f"Results written to {args.output}")
 
 

@@ -81,7 +81,12 @@ validate-ragas:
 	python evals/validate_ragas.py --benchmark $(BENCH)
 
 eval-chunking:
-	python evals/eval_chunking.py --crns-file tamu_data/evals/eval_corpus.json $(if $(OUTPUT),--output $(OUTPUT),)
+	python evals/eval_chunking.py \
+		--golden-set $(GOLDEN) \
+		--experiment $(EXP) \
+		$(if $(RAGAS),--ragas,) \
+		$(if $(TOP_K),--top-k $(TOP_K),) \
+		$(if $(OUTPUT),--output $(OUTPUT),)
 
 # --- Docker Sandbox ---
 sandbox-up:

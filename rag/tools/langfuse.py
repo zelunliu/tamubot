@@ -310,20 +310,25 @@ def compute_retrieval_ragas(
         result = evaluate(dataset=dataset, metrics=metrics)
         scores: dict = result.to_pandas().iloc[0].to_dict()
 
+        import math
+        clean = {
+            k: round(float(v), 4)
+            for k, v in scores.items()
+            if isinstance(v, (int, float)) and not math.isnan(v)
+        }
+
         lf = get_langfuse()
         if lf and trace_id:
-            import math
-            for metric_name, value in scores.items():
-                if isinstance(value, (int, float)) and not math.isnan(value):
-                    lf.create_score(
-                        trace_id=trace_id,
-                        name=metric_name,
-                        value=float(value),
-                        comment="RAGAS retrieval evaluation",
-                    )
+            for name, value in clean.items():
+                lf.create_score(
+                    trace_id=trace_id,
+                    name=name,
+                    value=value,
+                    comment="RAGAS retrieval evaluation",
+                )
 
-        logger.info(f"Retrieval RAGAS scores for trace {trace_id}: {scores}")
-        return scores
+        logger.info(f"Retrieval RAGAS scores for trace {trace_id}: {clean}")
+        return clean
 
     except Exception as e:
         logger.warning(f"Retrieval RAGAS evaluation failed: {e}")
