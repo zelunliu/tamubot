@@ -1,10 +1,6 @@
 """Unit tests for pure functions in evals/eval_chunking.py."""
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # load_golden_set
