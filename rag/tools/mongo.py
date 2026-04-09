@@ -24,14 +24,6 @@ COURSES_COLLECTION = "courses_v3"
 VECTOR_INDEX = "vector_index_v3"
 TEXT_INDEX = "text_index_v3"
 
-# Categories that describe what a course is *about* — used to build the
-# discovery search string for the recurrent path (anchor pass).
-ANCHOR_CATEGORIES: set[str] = {
-    "COURSE_OVERVIEW",
-    "LEARNING_OUTCOMES",
-    "SCHEDULE",
-    "PREREQUISITES",
-}
 
 _client: Optional[MongoClient] = None
 
@@ -145,8 +137,13 @@ def semantic_search(query: str, k: int) -> list[dict]:
 
 def fetch_anchor_chunks(
     course_ids: list[str],
+    categories: list[str] | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]], bool]:
-    """Fetch all anchor=True chunks for each course.
+    """Fetch anchor chunks for each course, optionally filtered by category.
+
+    Args:
+        course_ids: List of course IDs to fetch anchor chunks for.
+        categories: Optional list of categories to filter by. If None, fetches all chunks.
 
     Returns (chunks, data_gaps, data_integrity).
     data_gaps = list of (course_id, section) pairs where anchor chunks are missing.
@@ -157,8 +154,11 @@ def fetch_anchor_chunks(
     data_gaps: list[tuple[str, str]] = []
 
     for course_id in course_ids:
+        match: dict = {"course_id": course_id}
+        if categories:
+            match["category"] = {"$in": categories}
         pipeline = [
-            {"$match": {"course_id": course_id, "category": {"$in": list(ANCHOR_CATEGORIES)}}},
+            {"$match": match},
             _projection(),
         ]
         results = list(db[CHUNKS_COLLECTION].aggregate(pipeline))
