@@ -166,7 +166,7 @@ def _log_query_to_langfuse(lf, row: dict, run_name: str) -> None:
         )
         for metric in (
             "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-            "recall_at_k", "f1_at_k", "context_precision", "context_recall",
+            "recall_at_k", "f1_at_k", "context_precision",
         ):
             value = row.get(metric)
             if value is not None:
@@ -269,7 +269,6 @@ def run_eval(
             "recall_at_k": recall,
             "f1_at_k": f1,
             "context_precision": ragas_scores.get("context_precision"),
-            "context_recall": recall,
         }
         results.append(row)
 

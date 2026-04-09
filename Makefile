@@ -86,6 +86,7 @@ eval-chunking:
 		--experiment $(EXP) \
 		$(if $(RAGAS),--ragas,) \
 		$(if $(TOP_K),--top-k $(TOP_K),) \
+		$(if $(THRESHOLD),--threshold $(THRESHOLD),) \
 		$(if $(OUTPUT),--output $(OUTPUT),)
 
 # --- Docker Sandbox ---
