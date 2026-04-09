@@ -244,3 +244,87 @@ def run_groundedness_scoring_background(
         daemon=True,
     )
     thread.start()
+
+
+# ---------------------------------------------------------------------------
+# Retrieval evaluation (ContextPrecision + ContextRecall)
+# ---------------------------------------------------------------------------
+
+def compute_retrieval_ragas(
+    question: str,
+    contexts: list[str],
+    reference: str,
+    trace_id: Optional[str] = None,
+) -> dict:
+    """Compute RAGAS ContextPrecision + ContextRecall and upload scores to Langfuse.
+
+    Uses TAMU gateway as the critic LLM.  Unlike compute_ragas_metrics() this
+    function evaluates *retrieval quality* rather than generation quality, so it
+    requires a reference answer instead of a generated answer.
+
+    Args:
+        question:  The original user query.
+        contexts:  Retrieved chunk texts that were passed to the generator.
+        reference: Ground-truth reference answer for precision/recall computation.
+        trace_id:  Langfuse trace ID to attach scores to. Optional.
+
+    Returns:
+        Dict of metric_name → float score, or {} on failure.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+        from ragas import EvaluationDataset, SingleTurnSample, evaluate
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import ContextPrecision, ContextRecall
+
+        import config
+
+        critic_llm = LangchainLLMWrapper(
+            ChatOpenAI(
+                model=config.TAMU_MODEL,
+                api_key=config.TAMU_API_KEY,
+                base_url=config.TAMU_BASE_URL,
+                temperature=0,
+            )
+        )
+
+        sample = SingleTurnSample(
+            user_input=question,
+            retrieved_contexts=contexts,
+            reference=reference,
+        )
+        dataset = EvaluationDataset(samples=[sample])
+
+        metrics = [
+            ContextPrecision(llm=critic_llm),
+            ContextRecall(llm=critic_llm),
+        ]
+
+        # Disable litellm budget cap to avoid spurious cost-limit errors.
+        try:
+            import litellm
+            litellm.max_budget = None
+        except Exception:
+            pass
+
+        result = evaluate(dataset=dataset, metrics=metrics)
+        scores: dict = result.to_pandas().iloc[0].to_dict()
+
+        lf = get_langfuse()
+        if lf and trace_id:
+            import math
+            for metric_name, value in scores.items():
+                if isinstance(value, (int, float)) and not math.isnan(value):
+                    lf.create_score(
+                        trace_id=trace_id,
+                        name=metric_name,
+                        value=float(value),
+                        comment="RAGAS retrieval evaluation",
+                    )
+
+        logger.info(f"Retrieval RAGAS scores for trace {trace_id}: {scores}")
+        return scores
+
+    except Exception as e:
+        logger.warning(f"Retrieval RAGAS evaluation failed: {e}")
+        return {}
