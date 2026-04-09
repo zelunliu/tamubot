@@ -31,7 +31,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from rag import RouterResult, generator_order
+from rag import RouterResult
+from rag.generator import generate_stream
 from rag.graph.pipeline import run_pipeline as run_pipeline_v4
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
@@ -111,7 +112,7 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
     error: Optional[str] = None
     chunks: list[dict] = []
     answer = ""
-    rr = RouterResult(rewritten_query=query, category_confidence=0.0)
+    rr = RouterResult(rewritten_query=query)
     data_gaps: list = []
     data_integrity = True
     conflicted_ids: list = []
@@ -144,11 +145,12 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
     t_gen = time.perf_counter()
     if not error:
         try:
-            stream = generator_order(
-                recurrent=is_recurrent,
-                chunks=chunks,
-                query=query,
-                router_result=rr,
+            stream = generate_stream(
+                results=chunks,
+                question=query,
+                function=rr.function,
+                course_ids=rr.course_ids,
+                intent_type=rr.intent_type,
                 data_gaps=data_gaps,
                 data_integrity=data_integrity,
                 conflicted_course_ids=conflicted_ids,

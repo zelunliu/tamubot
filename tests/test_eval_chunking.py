@@ -214,7 +214,7 @@ def test_run_eval_skips_item_without_reference_when_ragas():
 
     with patch("evals.eval_chunking.classify_query") as mock_cq:
         from evals.eval_chunking import run_eval
-        results, _ = run_eval(items, "test", None, 0.85, ragas_enabled=True, lf=None)
+        results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=True, lf=None)
 
     mock_cq.assert_not_called()
     assert results == []
@@ -226,7 +226,7 @@ def test_run_eval_skips_item_without_question():
 
     with patch("evals.eval_chunking.classify_query") as mock_cq:
         from evals.eval_chunking import run_eval
-        results, _ = run_eval(items, "test", None, 0.85, ragas_enabled=False, lf=None)
+        results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=False, lf=None)
 
     mock_cq.assert_not_called()
     assert results == []
@@ -248,7 +248,7 @@ def test_run_eval_returns_embedding_metrics_only():
                return_value={"precision_at_k": 1.0, "hit_rate_at_k": 1.0, "retrieved_tokens": 30}):
         from evals.eval_chunking import run_eval
         results, run_name = run_eval(
-            [_make_item()], "test_exp", None, 0.85, ragas_enabled=False, lf=None
+            [_make_item()], "test_exp", "test_ds", None, 0.85, ragas_enabled=False, lf=None
         )
 
     assert len(results) == 1
@@ -258,24 +258,41 @@ def test_run_eval_returns_embedding_metrics_only():
     assert run_name.startswith("test_exp_")
 
 
-def test_run_eval_logs_to_langfuse():
-    """Calls _log_query_to_langfuse and _log_aggregates_to_langfuse when lf is set."""
+def test_run_eval_logs_trace_and_scores_to_langfuse():
+    """When lf is set: creates one trace per query, scores each metric, links dataset item."""
     mock_rr = MagicMock()
     mock_rr.function = "hybrid_course"
-    mock_rr.course_ids = ["202611_CSCE_638_500"]
+    mock_rr.course_ids = ["CSCE_638"]
     mock_rr.rewritten_query = "grading"
     mock_rr.requires_retrieval = True
 
     mock_lf = MagicMock()
+    mock_span = MagicMock()
+    mock_span.trace_id = "trace-abc"
+    mock_lf.start_observation.return_value = mock_span
 
-    with patch("evals.eval_chunking.classify_query", return_value=mock_rr), \
+    with patch("evals.eval_chunking.upsert_langfuse_dataset") as mock_upsert, \
+         patch("evals.eval_chunking.classify_query", return_value=mock_rr), \
          patch("evals.eval_chunking.retrieve_for_query", return_value=[{"content": "x"}]), \
          patch("evals.eval_chunking.compute_embedding_metrics",
-               return_value={"precision_at_k": 0.5, "hit_rate_at_k": 1.0, "retrieved_tokens": 10}), \
-         patch("evals.eval_chunking._log_query_to_langfuse") as mock_lq, \
-         patch("evals.eval_chunking._log_aggregates_to_langfuse") as mock_la:
+               return_value={"precision_at_k": 0.5, "hit_rate_at_k": 1.0, "retrieved_tokens": 10}):
         from evals.eval_chunking import run_eval
-        run_eval([_make_item()], "exp", None, 0.85, ragas_enabled=False, lf=mock_lf)
+        results, run_name = run_eval(
+            [_make_item()], "exp", "test_ds", None, 0.85, ragas_enabled=False, lf=mock_lf
+        )
 
-    mock_lq.assert_called_once()
-    mock_la.assert_called_once()
+    # dataset upsert called
+    mock_upsert.assert_called_once()
+    # one trace created per query
+    mock_lf.start_observation.assert_called_once()
+    # scores attached
+    score_names = {call.kwargs["name"] for call in mock_span.score_trace.call_args_list}
+    assert "precision_at_k" in score_names
+    assert "hit_rate_at_k" in score_names
+    assert "retrieved_tokens" in score_names
+    # dataset item linked via source_trace_id
+    mock_lf.create_dataset_item.assert_called_once()
+    assert mock_lf.create_dataset_item.call_args.kwargs["source_trace_id"] == "trace-abc"
+    # results returned
+    assert len(results) == 1
+    assert results[0]["precision_at_k"] == 0.5

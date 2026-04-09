@@ -1,20 +1,22 @@
 """Retrieval-only chunking benchmark.
 
 Measures precision_at_k, recall_at_k (RAGAS ContextRecall), f1_at_k,
-hit_rate_at_k, and retrieved_tokens per query. Logs per-query traces and
-a run-level aggregate trace to Langfuse.
+hit_rate_at_k, and retrieved_tokens per query. Logs to a Langfuse dataset
+experiment run — each query is one row, each metric is a column.
 
 Usage:
     python evals/eval_chunking.py \\
         --golden-set tamu_data/evals/golden_sets/golden_20260313_draft_v1.jsonl \\
         [--experiment chunk_600_ov100] \\
+        [--dataset chunking_golden_v1] \\
         [--top-k 7] \\
-        [--threshold 0.85] \\
+        [--threshold 0.35] \\
         [--ragas] \\
         [--output tamu_data/evals/reports/chunking_YYYYMMDD.json]
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -50,7 +52,7 @@ def load_golden_set(path: Path) -> list[dict]:
 def compute_embedding_metrics(
     query: str,
     chunks: list[dict],
-    threshold: float = 0.85,
+    threshold: float = 0.35,
     _labels: Optional[list[bool]] = None,
 ) -> dict:
     """Compute embedding-based retrieval metrics without an LLM.
@@ -58,7 +60,7 @@ def compute_embedding_metrics(
     Args:
         query:     User query string.
         chunks:    Reranked chunk dicts (must have 'content' key).
-        threshold: Voyage-3 cosine similarity threshold (default 0.85).
+        threshold: Voyage-3 cosine similarity threshold (default 0.35).
         _labels:   Pre-computed relevance labels (skips Voyage AI; for tests).
 
     Returns:
@@ -148,50 +150,156 @@ def retrieve_for_query(
 
 
 # ---------------------------------------------------------------------------
-# Langfuse logging
+# Langfuse dataset upsert
 # ---------------------------------------------------------------------------
 
 from rag import get_langfuse  # noqa: E402
 from rag.tools.langfuse import compute_retrieval_ragas  # noqa: E402
 
 
-def _log_query_to_langfuse(lf, row: dict, run_name: str) -> None:
-    """Create a Langfuse trace for one query and score all non-None metrics."""
-    try:
-        trace = lf.trace(
-            name="retrieval_eval",
-            input={"query": row["query"]},
-            tags=["chunking_eval", run_name],
-            session_id=run_name,
-        )
-        for metric in (
-            "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-            "recall_at_k", "f1_at_k", "context_precision",
-        ):
-            value = row.get(metric)
-            if value is not None:
-                lf.create_score(trace_id=trace.id, name=metric, value=float(value))
-    except Exception as e:
-        logger.warning(f"Langfuse per-query logging failed: {e}")
+def _item_id(question: str) -> str:
+    """Stable 16-char ID for a question — used for idempotent upsert."""
+    return hashlib.md5(question.encode()).hexdigest()[:16]
 
 
-def _log_aggregates_to_langfuse(lf, results: list[dict], run_name: str) -> None:
-    """Log run-level mean metrics as a summary trace in Langfuse."""
+def upsert_langfuse_dataset(lf, golden_items: list[dict], dataset_name: str):
+    """Create-or-upsert a Langfuse dataset and upload all golden items.
+
+    Dataset column layout (flat, Langfuse-friendly):
+      input           — question string (renders as readable text column)
+      expected_output — reference answer string (renders as readable text column)
+      metadata        — flat dict of structured params (each key = a column)
+
+    Returns the DatasetClient, or None on failure.
+    """
     try:
-        aggregates = _compute_aggregates(results)
-        trace = lf.trace(
-            name="retrieval_eval_aggregate",
-            input={"run_name": run_name, "n_queries": len(results)},
-            output=aggregates,
-            tags=["chunking_eval", run_name, "aggregate"],
-            session_id=run_name,
+        lf.create_dataset(
+            name=dataset_name,
+            description=(
+                "TamuBot chunking eval — retrieval quality benchmark. "
+                "Each item is a golden question with router expectations and reference answer."
+            ),
         )
-        for metric, value in aggregates.items():
-            if isinstance(value, float):
-                lf.create_score(trace_id=trace.id, name=metric, value=value)
-        lf.flush()
+    except Exception:
+        pass  # dataset already exists — that's fine
+
+    uploaded = 0
+    for item in golden_items:
+        question = item.get("question", item.get("query", ""))
+        if not question:
+            continue
+        try:
+            lf.create_dataset_item(
+                id=_item_id(question),
+                dataset_name=dataset_name,
+                # Flat strings → render as clean text columns in Langfuse UI
+                input=question,
+                expected_output=item.get("reference_answer") or "",
+                # Structured params → each key becomes a searchable metadata column
+                # (keep values short — Langfuse OTel propagation limit is 200 chars)
+                metadata={
+                    "expected_function": item.get("expected_function"),
+                    "source_course_id":  item.get("source_course_id"),
+                    "source_category":   item.get("source_category"),
+                    "stratum":           item.get("stratum"),
+                    "category":          item.get("category"),
+                },
+            )
+            uploaded += 1
+        except Exception as e:
+            logger.warning(f"Dataset item upsert failed for '{question[:40]}': {e}")
+
+    print(f"  Langfuse dataset '{dataset_name}': {uploaded}/{len(golden_items)} items upserted.")
+
+    try:
+        return lf.get_dataset(dataset_name)
     except Exception as e:
-        logger.warning(f"Langfuse aggregate logging failed: {e}")
+        logger.warning(f"Could not fetch dataset after upsert: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Per-query runner (shared by Langfuse and fallback paths)
+# ---------------------------------------------------------------------------
+
+def _run_one_query(
+    question: str,
+    reference: str,
+    top_k: Optional[int],
+    threshold: float,
+    ragas_enabled: bool,
+    i: int,
+    total: int,
+) -> Optional[dict]:
+    """Run retrieval + metrics for one question. Returns result dict or None to skip."""
+    if not question:
+        return None
+
+    if ragas_enabled and not reference:
+        print(f"  [{i:2d}/{total}] SKIP (no reference_answer): {question[:60]}")
+        return None
+
+    print(f"  [{i:2d}/{total}] {question[:65]}...")
+
+    try:
+        rr = classify_query(question)
+    except Exception as e:
+        print(f"    Router error: {e}")
+        return None
+
+    if not rr.requires_retrieval:
+        print(f"    Skip: {rr.function} has no retrieval")
+        return None
+
+    try:
+        chunks = retrieve_for_query(question, rr, top_k=top_k)
+    except Exception as e:
+        print(f"    Retrieval error: {e}")
+        return None
+
+    emb = compute_embedding_metrics(question, chunks, threshold)
+
+    ragas_scores: dict = {}
+    if ragas_enabled and chunks and reference:
+        contexts = [c.get("content", "") for c in chunks]
+        ragas_scores = compute_retrieval_ragas(
+            question=question, contexts=contexts, reference=reference
+        )
+
+    recall = ragas_scores.get("context_recall")
+    precision = emb["precision_at_k"]
+    f1 = _compute_f1(precision, recall) if recall is not None else None
+
+    recall_str = f"  recall={recall:.3f}" if recall is not None else ""
+    print(
+        f"    prec={precision:.3f}  hit={emb['hit_rate_at_k']:.0f}"
+        f"  tokens={emb['retrieved_tokens']}{recall_str}"
+    )
+
+    return {
+        "query":             question,
+        "precision_at_k":    emb["precision_at_k"],
+        "hit_rate_at_k":     emb["hit_rate_at_k"],
+        "retrieved_tokens":  emb["retrieved_tokens"],
+        "recall_at_k":       recall,
+        "f1_at_k":           f1,
+        "context_precision": ragas_scores.get("context_precision"),
+        "router_function":   rr.function,
+        "course_ids":        rr.course_ids,
+    }
+
+
+def _score_trace(span, row: dict) -> None:
+    """Attach all numeric metrics as scores on a Langfuse trace.
+
+    Each metric becomes a separate named score — in the Traces list the user
+    can enable them as columns (Columns toggle → score names).
+    """
+    for name in ("precision_at_k", "hit_rate_at_k", "retrieved_tokens",
+                 "recall_at_k", "f1_at_k", "context_precision"):
+        value = row.get(name)
+        if value is not None:
+            span.score_trace(name=name, value=float(value))
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +309,7 @@ def _log_aggregates_to_langfuse(lf, results: list[dict], run_name: str) -> None:
 def run_eval(
     golden_items: list[dict],
     experiment: str,
+    dataset_name: str,
     top_k: Optional[int],
     threshold: float,
     ragas_enabled: bool,
@@ -208,81 +317,69 @@ def run_eval(
 ) -> tuple[list[dict], str]:
     """Run retrieval eval over all golden items.
 
-    Args:
-        golden_items:   List of golden set question dicts.
-        experiment:     Experiment name prefix for Langfuse run name.
-        top_k:          Override for rerank_k (None → use compute_dynamic_k).
-        threshold:      Voyage-3 cosine similarity threshold for relevance.
-        ragas_enabled:  If True, run RAGAS ContextPrecision + ContextRecall.
-        lf:             Langfuse client (or None to skip logging).
+    Langfuse layout when lf is set:
+      • One trace per query in the Traces list — add score names as columns
+        via the Columns toggle to see precision_at_k / hit_rate_at_k / etc.
+      • Dataset items (input=question, expected_output=reference) linked to
+        their traces via source_trace_id.
+      • All traces tagged [experiment, run_name, "chunking_eval"] for filtering.
 
     Returns:
         Tuple of (results list, run_name string).
     """
     run_name = f"{experiment}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    if lf:
+        upsert_langfuse_dataset(lf, golden_items, dataset_name)
+        print(f"\nRunning eval: experiment={experiment!r}  run={run_name!r}\n")
+
     results: list[dict] = []
 
     for i, item in enumerate(golden_items, 1):
-        query = item.get("question", item.get("query", ""))
-        reference = item.get("reference_answer", "")
+        question = item.get("question", item.get("query", ""))
+        reference = item.get("reference_answer", "") or ""
 
-        if not query:
-            continue
-        if ragas_enabled and not reference:
-            print(f"  [{i:2d}] SKIP (no reference_answer): {query[:60]}")
+        row = _run_one_query(question, reference, top_k, threshold, ragas_enabled, i, len(golden_items))
+        if row is None:
             continue
 
-        print(f"  [{i:2d}/{len(golden_items)}] {query[:60]}...")
-
-        try:
-            rr = classify_query(query)
-        except Exception as e:
-            print(f"    Router error: {e}")
-            continue
-
-        if not rr.requires_retrieval:
-            print(f"    Skip: {rr.function} has no retrieval")
-            continue
-
-        try:
-            chunks = retrieve_for_query(query, rr, top_k=top_k)
-        except Exception as e:
-            print(f"    Retrieval error: {e}")
-            continue
-
-        emb = compute_embedding_metrics(query, chunks, threshold)
-
-        ragas_scores: dict = {}
-        if ragas_enabled and chunks and reference:
-            contexts = [c.get("content", "") for c in chunks]
-            ragas_scores = compute_retrieval_ragas(
-                question=query, contexts=contexts, reference=reference
-            )
-
-        recall = ragas_scores.get("context_recall")
-        precision = emb["precision_at_k"]
-        f1 = _compute_f1(precision, recall) if recall is not None else None
-
-        row = {
-            "query": query,
-            **emb,
-            "recall_at_k": recall,
-            "f1_at_k": f1,
-            "context_precision": ragas_scores.get("context_precision"),
-        }
         results.append(row)
 
         if lf:
-            _log_query_to_langfuse(lf, row, run_name)
+            try:
+                span = lf.start_observation(
+                    name="retrieval_eval",
+                    input=question,
+                    output={k: v for k, v in row.items() if k != "query"},
+                    metadata={
+                        "experiment":      experiment,
+                        "run_name":        run_name,
+                        "router_function": row["router_function"],
+                        "course_ids":      row["course_ids"],
+                    },
+                )
+                _score_trace(span, row)
+                span.end()
+                # Link trace to its dataset item so the item shows the source trace
+                lf.create_dataset_item(
+                    id=_item_id(question),
+                    dataset_name=dataset_name,
+                    input=question,
+                    expected_output=reference,
+                    metadata={
+                        "expected_function": item.get("expected_function"),
+                        "source_course_id":  item.get("source_course_id"),
+                        "source_category":   item.get("source_category"),
+                        "stratum":           item.get("stratum"),
+                        "category":          item.get("category"),
+                    },
+                    source_trace_id=span.trace_id,
+                )
+            except Exception as e:
+                logger.warning(f"Langfuse logging failed for '{question[:40]}': {e}")
 
-        recall_str = f"  recall={recall:.3f}" if recall is not None else ""
-        print(
-            f"    prec={precision:.3f}  hit={emb['hit_rate_at_k']:.0f}"
-            f"  tokens={emb['retrieved_tokens']}{recall_str}"
-        )
-
-    if lf and results:
-        _log_aggregates_to_langfuse(lf, results, run_name)
+    if lf:
+        lf.flush()
 
     return results, run_name
 
@@ -315,7 +412,7 @@ def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
                 else f" {'N/A':>7} {'N/A':>6}"
             )
         print(
-            f"  {r['query'][:42]:<42}"
+            f"  {r.get('query', '')[:42]:<42}"
             f" {r['precision_at_k']:>6.3f}"
             f" {r['hit_rate_at_k']:>5.0f}"
             f" {r['retrieved_tokens']:>7d}"
@@ -343,15 +440,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--experiment", default="chunking_eval",
-        help="Experiment name prefix for Langfuse run (default: chunking_eval)",
+        help="Experiment name in Langfuse (default: chunking_eval)",
+    )
+    parser.add_argument(
+        "--dataset",
+        help="Langfuse dataset name to upsert items into (default: stem of --golden-set filename)",
     )
     parser.add_argument(
         "--top-k", type=int, default=None,
         help="Override rerank_k; default uses compute_dynamic_k() per query",
     )
     parser.add_argument(
-        "--threshold", type=float, default=0.85,
-        help="Voyage-3 cosine similarity threshold for relevance labels (default: 0.85)",
+        "--threshold", type=float, default=0.35,
+        help="Voyage-3 cosine similarity threshold for relevance labels (default: 0.35)",
     )
     parser.add_argument(
         "--ragas", action="store_true",
@@ -367,22 +468,26 @@ def main() -> None:
         print(f"ERROR: Golden set not found: {args.golden_set}")
         sys.exit(1)
 
+    dataset_name = args.dataset or args.golden_set.stem
+
     print(f"\nLoading golden set: {args.golden_set}")
     golden_items = load_golden_set(args.golden_set)
     print(f"  {len(golden_items)} items loaded")
 
     lf = get_langfuse()
     print(f"  Langfuse: {'connected' if lf else 'not configured (logging skipped)'}")
-
     print(
-        f"\nRunning eval: ragas={'yes' if args.ragas else 'no'}"
-        f"  threshold={args.threshold}"
-        f"  top_k={args.top_k or 'auto'}\n"
+        f"  Dataset:  {dataset_name}"
+        f"  |  experiment: {args.experiment}"
+        f"  |  threshold: {args.threshold}"
+        f"  |  top_k: {args.top_k or 'auto'}"
+        f"  |  ragas: {'yes' if args.ragas else 'no'}"
     )
 
     results, run_name = run_eval(
         golden_items=golden_items,
         experiment=args.experiment,
+        dataset_name=dataset_name,
         top_k=args.top_k,
         threshold=args.threshold,
         ragas_enabled=args.ragas,
