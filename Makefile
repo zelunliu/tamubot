@@ -1,7 +1,7 @@
 .PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
         ingest-corpus test typecheck lint format eval-router probe probe-v3 probe-full \
         eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4 \
-        sandbox-up sandbox-down sandbox-shell
+        eval-chunking sandbox-up sandbox-down sandbox-shell
 
 # --- App ---
 run:
@@ -79,6 +79,9 @@ bench-ragas:
 
 validate-ragas:
 	python evals/validate_ragas.py --benchmark $(BENCH)
+
+eval-chunking:
+	python evals/eval_chunking.py --crns-file tamu_data/evals/eval_corpus.json $(if $(OUTPUT),--output $(OUTPUT),)
 
 # --- Docker Sandbox ---
 sandbox-up:
