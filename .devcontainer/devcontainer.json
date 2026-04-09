@@ -3,7 +3,7 @@
   "dockerComposeFile": "../docker-compose.yml",
   "service": "claude",
   "workspaceFolder": "/workspace",
-  "remoteUser": "root",
+  "remoteUser": "claude",
   "overrideCommand": true,
   "customizations": {
     "vscode": {

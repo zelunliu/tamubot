@@ -3,8 +3,11 @@ services:
     build: .
     volumes:
       - .:/workspace
-      - ${HOME}/.claude:/root/.claude
+      - C:/Users/iredl/.claude:/home/claude/.claude
+      - C:/Users/iredl/.claude.json:/home/claude/.claude.json
     env_file: .env
+    ports:
+      - "8501:8501"
     environment:
       - TAMU_BASE_URL=http://api-proxy:8080/tamu
       - VOYAGE_BASE_URL=http://api-proxy:8080/voyage
@@ -24,7 +27,7 @@ services:
 
   app:
     build: .
-    command: streamlit run app.py --server.port 8501
+    command: streamlit run app.py --server.port 8501 --server.headless true
     volumes:
       - .:/workspace
     env_file: .env
@@ -34,3 +37,4 @@ services:
       - TAMU_BASE_URL=http://api-proxy:8080/tamu
       - VOYAGE_BASE_URL=http://api-proxy:8080/voyage
     depends_on: [api-proxy]
+    restart: unless-stopped

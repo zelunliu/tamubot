@@ -24,14 +24,14 @@ COURSES_COLLECTION = "courses_v3"
 VECTOR_INDEX = "vector_index_v3"
 TEXT_INDEX = "text_index_v3"
 
-# Categories that describe what a course is *about* — used to build the
-# discovery search string for the recursive path (anchor pass).
-ANCHOR_CATEGORIES: set[str] = {
-    "COURSE_OVERVIEW",
-    "LEARNING_OUTCOMES",
-    "SCHEDULE",
-    "PREREQUISITES",
-}
+# # Categories that describe what a course is *about* — used to build the
+# # discovery search string for the recurrent path (anchor pass).
+# ANCHOR_CATEGORIES: set[str] = {
+#     "COURSE_OVERVIEW",
+#     "LEARNING_OUTCOMES",
+#     "SCHEDULE",
+#     "PREREQUISITES",
+# }
 
 _client: Optional[MongoClient] = None
 

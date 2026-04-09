@@ -1,9 +1,5 @@
 # CLAUDE.md
 
-## Task Notification
-
-Timer starts automatically via `UserPromptSubmit` hook. Notification fires via `Stop` hook for tasks `>15s`. No manual tool calls needed.
-
 > Module-level detail: `rag/CLAUDE.md`, `ingestion_pipeline/CLAUDE.md`, `evals/CLAUDE.md`
 
 ## Docker Sandbox (standard dev entry point)
@@ -20,7 +16,12 @@ Docs: `docs/DOCKER_SETUP.md` (Windows 11 WSL2 + Mac) | `docs/API_SAFETY.md` (pro
 ## Commands
 
 ```bash
-source .venv/Scripts/activate && streamlit run app.py   # Windows Git Bash (outside container)
+# Inside container (no Docker available) — bare host / WSL2 direct
+streamlit run app.py --server.headless true          # start app
+
+# Windows Git Bash (outside container, with venv)
+source .venv/Scripts/activate && streamlit run app.py
+
 make test | lint | typecheck | format | eval-router | probe | probe-full
 ```
 

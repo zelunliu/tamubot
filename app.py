@@ -219,6 +219,8 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     st.stop()
 
             answer_tokens: list[str] = []
+            source_docs: list[dict] = []
+            router_result = None
             with st.spinner("Routing, retrieving, and generating..."):
                 try:
                     result = run_pipeline_with_memory(prompt, trace=lf_trace, thread_config=thread_config)

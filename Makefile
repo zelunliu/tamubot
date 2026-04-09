@@ -89,3 +89,6 @@ sandbox-down:
 
 sandbox-shell:
 	docker exec -it tamubot-claude-1 bash
+
+claude:
+	docker compose run --rm claude claude --dangerously-skip-permissions
