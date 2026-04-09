@@ -8,9 +8,9 @@ Tests cover:
 """
 
 import config
-from rag.tools.context import format_context_xml
 from rag.gates import validate_citations_gate1
 from rag.prompts import _FUNCTION_TEMPERATURES
+from rag.tools.context import format_context_xml
 
 
 class TestFormatContextXmlPrimacyRecency:
@@ -181,6 +181,7 @@ class TestThinkingBudgetConfiguration:
 def test_generate_stream_includes_conversation_history_block():
     """generate_stream with history_context includes <conversation_history> XML block."""
     from unittest.mock import patch
+
     from rag.generator import generate_stream
 
     captured_messages = []
@@ -211,6 +212,7 @@ def test_generate_stream_includes_conversation_history_block():
 def test_generate_stream_no_history_context_no_block():
     """generate_stream without history_context does not include <conversation_history> block."""
     from unittest.mock import patch
+
     from rag.generator import generate_stream
 
     captured_messages = []
@@ -251,8 +253,8 @@ def test_router_prompt_has_all_required_output_fields():
 
 def test_generate_comparison_uses_comparison_system(monkeypatch):
     """generate_comparison streams using COMPARISON_SYSTEM as the system prompt."""
-    from rag.prompts import COMPARISON_SYSTEM
     import rag.generator as gen_mod
+    from rag.prompts import COMPARISON_SYSTEM
 
     captured_messages = []
 

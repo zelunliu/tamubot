@@ -40,7 +40,8 @@ def test_history_inject_with_2_prior_turns_enriches_query():
 
 def test_history_update_appends_turn():
     """history_update_node should append current query + answer to history."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
     state = {
         "query": "CSCE 221 grading?",
@@ -63,7 +64,8 @@ def test_history_update_appends_turn():
 
 
 def test_history_update_increments_turn_number():
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
     state = {
         "query": "test", "answer": "ok", "history": [],
@@ -79,8 +81,9 @@ def test_history_update_increments_turn_number():
 
 def test_history_update_compression_triggered_at_max_turns():
     """When history exceeds MAX_HISTORY_TURNS * 2 messages, compression truncates."""
+    from unittest.mock import patch
+
     import config
-    from unittest.mock import MagicMock, patch
     from rag.nodes.history_update_node import history_update_node
 
     # Build history longer than the limit
@@ -109,7 +112,8 @@ def test_history_update_compression_triggered_at_max_turns():
 
 def test_history_update_clears_non_checkpointable_fields():
     """history_update_node must set answer_stream to None."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
     state = {
         "query": "test", "answer": "ok", "history": [],
@@ -197,7 +201,8 @@ def test_history_inject_summary_appears_before_recent_turns():
 
 def test_history_update_stores_router_result_summary():
     """history_update_node stores function and course_ids in rr_summary."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
 
     state = {
@@ -265,7 +270,8 @@ def test_history_inject_empty_history_no_context():
 
 def test_history_update_node_updates_summary_on_second_turn():
     """history_update_node should call LLM to update history_summary when turn_number > 1."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
 
     state = {
@@ -299,7 +305,8 @@ def test_history_update_node_updates_summary_on_second_turn():
 
 def test_history_update_node_updates_summary_on_first_turn():
     """history_update_node should call LLM on turn_number 0 (first turn)."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
 
     state = {
@@ -333,7 +340,8 @@ def test_history_update_node_updates_summary_on_first_turn():
 
 def test_history_update_node_updates_summary_even_when_mem0_disabled():
     """history_update_node always updates history_summary regardless of MEM0_ENABLED."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_update_node import history_update_node
 
     state = {
@@ -364,7 +372,8 @@ def test_history_update_node_updates_summary_even_when_mem0_disabled():
 
 def test_history_inject_node_hybrid_context():
     """history_inject_node should combine facts + gist + last 2 turns."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
+
     from rag.nodes.history_inject_node import history_inject_node
 
     state = {
@@ -377,7 +386,9 @@ def test_history_inject_node_hybrid_context():
             {"role": "user", "content": "What about data science?"},
             {"role": "assistant", "content": "CSCE 689 covers data science topics."},
         ],
-        "history_summary": "User is a CS senior exploring electives. Previously asked about CS electives and data science.",
+        "history_summary": (
+            "User is a CS senior exploring electives. Previously asked about CS electives and data science."
+        ),
         "session_id": "test-session",
         "node_trace": [],
     }
@@ -403,6 +414,7 @@ def test_history_inject_node_hybrid_context():
 def test_history_inject_node_no_mem0_falls_back_to_gist_and_flow():
     """Without mem0 enabled, should still return gist + flow."""
     from unittest.mock import patch
+
     from rag.nodes.history_inject_node import history_inject_node
 
     state = {

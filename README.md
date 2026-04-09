@@ -2,7 +2,7 @@
 
 A RAG-based chatbot that answers questions about TAMU courses, syllabi, grading policies, schedules, and university policies. Built on MongoDB Atlas, Voyage AI, and Gemini.
 
-**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.0 Flash (parser + generator) · Langfuse (observability) · RAGAS (evaluation) · Scrapy · Pydantic v2
+**Tech stack:** Streamlit · MongoDB Atlas · Voyage AI (voyage-3 embeddings + rerank-2) · Gemini 2.5 Flash (router) · Gemini 2.5 Flash (parser + generator) · Langfuse (observability) · RAGAS (evaluation) · Scrapy · Pydantic v2
 
 ---
 

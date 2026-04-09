@@ -37,9 +37,9 @@ USE_MONGODB = config.RETRIEVAL_BACKEND == "mongodb"
 _session_manager = None
 
 if USE_MONGODB:
-    from rag.tools.mongo import get_syllabus_urls
     from rag.graph.pipeline import run_pipeline_with_memory
     from rag.graph.session import SessionManager
+    from rag.tools.mongo import get_syllabus_urls
     _session_manager = SessionManager()
 else:
     from typing import Any, List

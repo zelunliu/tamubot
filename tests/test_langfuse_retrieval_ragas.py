@@ -1,5 +1,4 @@
 """Unit tests for compute_retrieval_ragas() in rag/tools/langfuse.py."""
-import math
 from unittest.mock import MagicMock, patch
 
 import pandas as pd

@@ -1,9 +1,8 @@
 """Tests for graph middleware and pipeline observability wiring."""
 from unittest.mock import MagicMock, patch
 
-from rag.graph.middleware import timing_middleware, error_guard_middleware
 from rag.graph.exceptions import V4PipelineError
-
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 
 # ── timing_middleware tests ──────────────────────────────────────────────────
 

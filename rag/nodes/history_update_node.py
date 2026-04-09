@@ -8,11 +8,11 @@ import logging
 
 import config
 from rag.graph.middleware import error_guard_middleware, timing_middleware
-
-logger = logging.getLogger("tamubot")
 from rag.state.pipeline_state import ConversationMessage, PipelineState
 from rag.tools.llm import call_llm
 from rag.tools.mem0 import Mem0Manager
+
+logger = logging.getLogger("tamubot")
 
 
 @timing_middleware

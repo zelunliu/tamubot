@@ -1,5 +1,6 @@
 """Integration tests: full graph run with mock tools for all 3 main paths."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 from rag.graph.builder import build_graph
 from rag.router import RouterResult
 
@@ -24,7 +25,9 @@ def _invoke_graph(function: str):
          patch("rag.tools.voyage.rerank", side_effect=lambda q, c, top_k: c), \
          patch("rag.generator.generate_stream", return_value=iter(["answer"])), \
          patch("rag.tools.llm.call_llm") as mock_llm:
-        mock_llm.return_value.text = '{"function": "semantic_general", "course_ids": [], "rewritten_query": "related courses"}'
+        mock_llm.return_value.text = (
+            '{"function": "semantic_general", "course_ids": [], "rewritten_query": "related courses"}'
+        )
         graph = build_graph()
         return graph.invoke({
             "query": "test", "node_trace": [], "timing_ms": {},

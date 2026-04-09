@@ -1,5 +1,6 @@
 """Tests for the LangGraph graph with mock tools."""
 from unittest.mock import MagicMock, patch
+
 from rag.graph.builder import build_graph
 from rag.router import RouterResult
 
@@ -37,7 +38,9 @@ def _invoke_graph(function="hybrid_course", query="what are office hours?"):
          patch("rag.tools.voyage.rerank", side_effect=lambda q, c, top_k: c[:top_k] if c else []), \
          patch("rag.generator.generate_stream", return_value=iter(["Hello ", "world"])), \
          patch("rag.tools.llm.call_llm") as mock_llm:
-        mock_llm.return_value.text = '{"function": "semantic_general", "course_ids": [], "rewritten_query": "related courses"}'
+        mock_llm.return_value.text = (
+            '{"function": "semantic_general", "course_ids": [], "rewritten_query": "related courses"}'
+        )
         graph = build_graph()
         return graph.invoke(_base_state(query=query))
 

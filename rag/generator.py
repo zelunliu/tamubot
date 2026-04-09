@@ -4,11 +4,9 @@ Takes reranked retrieval results and generates a grounded, cited response
 using Gemini Flash with function-adaptive system prompts.
 """
 
+
 import config
-from langfuse import get_client as _lf_get_client, observe
-from rag.tools.context import collapse_whitespace, format_context_xml
 from rag.gates import validate_citations_with_trace
-from rag.tools.llm import call_llm, stream_llm
 from rag.prompts import (
     _BASE_SYSTEM,
     _FUNCTION_PROMPTS,
@@ -16,7 +14,8 @@ from rag.prompts import (
     _SEMANTIC_TYPE_PROMPTS,
     COMPARISON_SYSTEM,
 )
-
+from rag.tools.context import collapse_whitespace, format_context_xml
+from rag.tools.llm import call_llm, stream_llm
 
 # ---------------------------------------------------------------------------
 # Function-adaptive system prompt assembly

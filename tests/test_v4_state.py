@@ -1,6 +1,7 @@
 """Tests for v4 PipelineState contract."""
 import typing
-from rag.state.pipeline_state import PipelineState, ConversationState, ConversationMessage
+
+from rag.state.pipeline_state import ConversationMessage, ConversationState, PipelineState
 
 
 def test_pipeline_state_importable():

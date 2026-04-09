@@ -12,10 +12,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from langfuse import get_client as _lf_get_client
+from langfuse import observe
+
 import config
-from langfuse import get_client as _lf_get_client, observe
-from rag.tools.llm import call_llm
 from rag.prompts import ROUTER_PROMPT
+from rag.tools.llm import call_llm
 
 # ---------------------------------------------------------------------------
 # Dynamic-k helper (pure Python, no LLM)

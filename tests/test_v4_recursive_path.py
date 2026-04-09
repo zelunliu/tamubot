@@ -1,5 +1,7 @@
 """Tests for the recursive search path."""
 from unittest.mock import patch
+
+from rag.nodes.recursive_generator_node import recursive_generator_node
 from rag.nodes.recursive_retrieval_node import recursive_retrieval_node
 
 
@@ -65,8 +67,6 @@ def test_recursive_retrieval_fallback_on_error():
     assert "error" in result
 
 
-from rag.nodes.recursive_generator_node import recursive_generator_node
-
 
 def test_recursive_generator_overwrites_function_and_query():
     state = {
@@ -78,7 +78,10 @@ def test_recursive_generator_overwrites_function_and_query():
         "node_trace": [],
         "timing_ms": {},
     }
-    llm_response = '{"function": "semantic_general", "course_ids": [], "rewritten_query": "graduate systems courses complementing graph theory"}'
+    llm_response = (
+        '{"function": "semantic_general", "course_ids": [], '
+        '"rewritten_query": "graduate systems courses complementing graph theory"}'
+    )
     with patch("rag.tools.llm.call_llm") as mock_llm:
         mock_llm.return_value.text = llm_response
         result = recursive_generator_node(state)
@@ -99,7 +102,10 @@ def test_recursive_generator_hybrid_course_output():
         "node_trace": [],
         "timing_ms": {},
     }
-    llm_response = '{"function": "hybrid_course", "course_ids": ["CSCE 520", "CSCE 601"], "rewritten_query": "prerequisite foundational content"}'
+    llm_response = (
+        '{"function": "hybrid_course", "course_ids": ["CSCE 520", "CSCE 601"], '
+        '"rewritten_query": "prerequisite foundational content"}'
+    )
     with patch("rag.tools.llm.call_llm") as mock_llm:
         mock_llm.return_value.text = llm_response
         result = recursive_generator_node(state)
@@ -147,6 +153,7 @@ def test_recursive_generator_rejects_invalid_function():
 
 def test_retrieval_node_has_no_recurrent_branch():
     import inspect
+
     from rag.nodes.retrieval_node import retrieval_node
     source = inspect.getsource(retrieval_node)
     assert "recurrent" not in source

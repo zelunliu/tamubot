@@ -1,5 +1,6 @@
 """Tests for router_node behavior: OOS derivation, JSON parse failure fallback."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 from rag.nodes.router_node import router_node
 from rag.router import RouterResult
 

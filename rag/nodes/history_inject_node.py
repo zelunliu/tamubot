@@ -19,9 +19,11 @@ from rag.tools.mem0 import Mem0Manager
 logger = logging.getLogger("tamubot")
 
 try:
-    from langfuse import get_client as _lf_get_client, observe as _lf_observe
+    from langfuse import get_client as _lf_get_client
+    from langfuse import observe as _lf_observe
 except ImportError:
-    _lf_get_client = lambda: None  # type: ignore[assignment]
+    def _lf_get_client():  # type: ignore[misc]
+        return None
     def _lf_observe(**_kw):  # type: ignore[misc]
         return lambda fn: fn
 

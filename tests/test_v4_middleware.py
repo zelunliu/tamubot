@@ -1,7 +1,8 @@
 """Unit tests for v4 middleware decorators."""
 import pytest
-from rag.graph.middleware import error_guard_middleware, timing_middleware
+
 from rag.graph.exceptions import V4PipelineError
+from rag.graph.middleware import error_guard_middleware, timing_middleware
 
 
 def test_error_guard_preserves_node_trace_on_v4_pipeline_error():
