@@ -81,12 +81,15 @@ validate-ragas:
 	python evals/validate_ragas.py --benchmark $(BENCH)
 
 eval-chunking:
-	python evals/eval_chunking.py \
+	SESSION_CACHE_ENABLED=false python evals/eval_chunking.py \
 		--golden-set $(GOLDEN) \
 		--experiment $(EXP) \
 		$(if $(RAGAS),--ragas,) \
 		$(if $(TOP_K),--top-k $(TOP_K),) \
 		$(if $(THRESHOLD),--threshold $(THRESHOLD),) \
+		$(if $(CHUNK_SIZE),--chunk-size $(CHUNK_SIZE),) \
+		$(if $(CHUNK_OVERLAP),--chunk-overlap $(CHUNK_OVERLAP),) \
+		$(if $(DESC),--description "$(DESC)",) \
 		$(if $(OUTPUT),--output $(OUTPUT),)
 
 # --- Docker Sandbox ---

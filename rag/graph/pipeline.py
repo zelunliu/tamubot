@@ -17,6 +17,7 @@ except ImportError:
     _LFTraceContext = None  # type: ignore[assignment,misc]
 
 _graph = None
+_eval_graph = None
 _memory_graph = None
 
 _INITIAL_STATE: dict = {
@@ -38,6 +39,14 @@ def _get_graph():
     if _graph is None:
         _graph = build_graph()
     return _graph
+
+
+def _get_eval_graph():
+    global _eval_graph
+    if _eval_graph is None:
+        from rag.graph.builder import build_graph_eval
+        _eval_graph = build_graph_eval()
+    return _eval_graph
 
 
 def _make_invoke_kwargs(trace, thread_config: Optional[dict] = None) -> dict:
@@ -98,6 +107,29 @@ def run_pipeline(
     if return_timing:
         return (*five_tuple, result.get("timing_ms", {}))
     return five_tuple
+
+
+def run_pipeline_eval(
+    query: str,
+    trace=None,
+) -> tuple[list[dict], Any, dict]:
+    """Run router + retrieval only (no generator). For eval use.
+
+    Same tracing as run_pipeline() — passes trace through CallbackHandler so
+    every graph node (router, retrieval) appears as a child span in Langfuse.
+    Session cache is disabled via SESSION_CACHE_ENABLED env var at eval time.
+
+    Returns:
+        (chunks, router_result, timing_ms)
+    """
+    initial_state: PipelineState = {**_INITIAL_STATE, "query": query}
+    invoke_kwargs = _make_invoke_kwargs(trace)
+    result = _get_eval_graph().invoke(initial_state, **invoke_kwargs)
+    return (
+        result.get("retrieved_chunks", []),
+        _build_router_result(result),
+        result.get("timing_ms", {}),
+    )
 
 
 def run_pipeline_with_memory(

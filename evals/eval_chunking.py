@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -97,7 +98,7 @@ def _compute_aggregates(results: list[dict]) -> dict:
     """Mean of each numeric metric across all query results."""
     metrics = [
         "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-        "recall_at_k", "f1_at_k", "context_precision",
+        "latency_ms", "recall_at_k", "f1_at_k", "context_precision",
     ]
     aggregates: dict = {}
     for m in metrics:
@@ -109,44 +110,10 @@ def _compute_aggregates(results: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Retrieval
+# Retrieval — via the production eval graph (same code path as normal runs)
 # ---------------------------------------------------------------------------
 
-from rag.router import classify_query, compute_dynamic_k  # noqa: E402
-from rag.tools.mongo import hybrid_search, semantic_search  # noqa: E402
-from rag.tools.voyage import rerank  # noqa: E402
-
-
-def retrieve_for_query(
-    query: str,
-    rr,
-    top_k: Optional[int] = None,
-) -> list[dict]:
-    """Run hybrid/semantic search + rerank for a single query.
-
-    Args:
-        query:  Original user query (used as fallback if rr.rewritten_query is empty).
-        rr:     RouterResult from classify_query().
-        top_k:  Override for rerank_k. If None, uses compute_dynamic_k().
-
-    Returns:
-        Reranked list of chunk dicts, or [] when the function has no retrieval
-        path (e.g. out_of_scope, recurrent without course_ids).
-    """
-    dk = compute_dynamic_k(rr.function, len(rr.course_ids))
-    retrieve_k = dk["retrieve_k"]
-    rerank_k = top_k if top_k is not None else dk["rerank_k"]
-
-    search_query = rr.rewritten_query or query
-
-    if rr.function == "semantic_general":
-        pre_results = semantic_search(search_query, retrieve_k)
-    elif rr.course_ids:
-        pre_results = hybrid_search(search_query, rr.course_ids[0], retrieve_k)
-    else:
-        return []
-
-    return rerank(search_query, pre_results, rerank_k)
+from rag.graph.pipeline import run_pipeline_eval  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +197,17 @@ def _run_one_query(
     ragas_enabled: bool,
     i: int,
     total: int,
+    span=None,
 ) -> Optional[dict]:
-    """Run retrieval + metrics for one question. Returns result dict or None to skip."""
+    """Run router + retrieval via the production eval graph. Returns result dict or None.
+
+    RAGAS is intentionally NOT run here — it runs after span.end() in the loop
+    so it doesn't inflate the Langfuse trace latency.
+
+    Args:
+        span: Open Langfuse observation — passed to run_pipeline_eval() so the
+              graph's CallbackHandler nests router/retrieval spans under it.
+    """
     if not question:
         return None
 
@@ -242,64 +218,72 @@ def _run_one_query(
     print(f"  [{i:2d}/{total}] {question[:65]}...")
 
     try:
-        rr = classify_query(question)
+        t0 = time.perf_counter()
+        chunks, router_result, timing_ms = run_pipeline_eval(question, trace=span)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
     except Exception as e:
-        print(f"    Router error: {e}")
+        print(f"    Pipeline error: {e}")
         return None
 
-    if not rr.requires_retrieval:
-        print(f"    Skip: {rr.function} has no retrieval")
+    if not router_result.requires_retrieval:
+        print(f"    Skip: {router_result.function} has no retrieval")
         return None
 
-    try:
-        chunks = retrieve_for_query(question, rr, top_k=top_k)
-    except Exception as e:
-        print(f"    Retrieval error: {e}")
-        return None
+    # top_k is a metric evaluation cutoff — slice the ranked chunks from pipeline
+    eval_chunks = chunks[:top_k] if top_k is not None else chunks
 
-    emb = compute_embedding_metrics(question, chunks, threshold)
+    emb = compute_embedding_metrics(question, eval_chunks, threshold)
 
-    ragas_scores: dict = {}
-    if ragas_enabled and chunks and reference:
-        contexts = [c.get("content", "") for c in chunks]
-        ragas_scores = compute_retrieval_ragas(
-            question=question, contexts=contexts, reference=reference
-        )
-
-    recall = ragas_scores.get("context_recall")
-    precision = emb["precision_at_k"]
-    f1 = _compute_f1(precision, recall) if recall is not None else None
-
-    recall_str = f"  recall={recall:.3f}" if recall is not None else ""
     print(
-        f"    prec={precision:.3f}  hit={emb['hit_rate_at_k']:.0f}"
-        f"  tokens={emb['retrieved_tokens']}{recall_str}"
+        f"    prec={emb['precision_at_k']:.3f}  hit={emb['hit_rate_at_k']:.0f}"
+        f"  tokens={emb['retrieved_tokens']}  latency={latency_ms:.0f}ms"
     )
 
     return {
-        "query":             question,
-        "precision_at_k":    emb["precision_at_k"],
-        "hit_rate_at_k":     emb["hit_rate_at_k"],
-        "retrieved_tokens":  emb["retrieved_tokens"],
-        "recall_at_k":       recall,
-        "f1_at_k":           f1,
-        "context_precision": ragas_scores.get("context_precision"),
-        "router_function":   rr.function,
-        "course_ids":        rr.course_ids,
+        "query":            question,
+        "_chunks":          eval_chunks,      # kept for RAGAS in loop, excluded from results
+        "precision_at_k":   emb["precision_at_k"],
+        "hit_rate_at_k":    emb["hit_rate_at_k"],
+        "retrieved_tokens": emb["retrieved_tokens"],
+        "latency_ms":       latency_ms,
+        "recall_at_k":      None,             # filled by loop after RAGAS
+        "f1_at_k":          None,
+        "context_precision": None,
+        "router_function":  router_result.function,
+        "course_ids":       router_result.course_ids,
     }
 
 
-def _score_trace(span, row: dict) -> None:
-    """Attach all numeric metrics as scores on a Langfuse trace.
+def _score_trace(
+    lf,
+    trace_id: str,
+    row: dict,
+    chunk_size: Optional[int],
+    chunk_overlap: Optional[int],
+    top_k: Optional[int],
+    threshold: float,
+) -> None:
+    """Post numeric metrics as scores on a Langfuse trace via create_score().
 
-    Each metric becomes a separate named score — in the Traces list the user
-    can enable them as columns (Columns toggle → score names).
+    Called after span.end() so scores don't block trace latency measurement.
+    RAGAS scores (context_precision, context_recall) are posted by
+    compute_retrieval_ragas() directly — not duplicated here.
     """
+    # Per-query retrieval metrics (embedding-based, cheap)
     for name in ("precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-                 "recall_at_k", "f1_at_k", "context_precision"):
+                 "recall_at_k", "f1_at_k"):
         value = row.get(name)
         if value is not None:
-            span.score_trace(name=name, value=float(value))
+            lf.create_score(trace_id=trace_id, name=name, value=float(value))
+
+    # Run-level config — same value for every item but visible as score columns
+    if chunk_size is not None:
+        lf.create_score(trace_id=trace_id, name="chunk_size", value=float(chunk_size))
+    if chunk_overlap is not None:
+        lf.create_score(trace_id=trace_id, name="chunk_overlap", value=float(chunk_overlap))
+    lf.create_score(trace_id=trace_id, name="top_k",
+                    value=float(top_k if top_k is not None else -1))
+    lf.create_score(trace_id=trace_id, name="threshold", value=float(threshold))
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +298,9 @@ def run_eval(
     threshold: float,
     ragas_enabled: bool,
     lf,
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    description: Optional[str] = None,
 ) -> tuple[list[dict], str]:
     """Run retrieval eval over all golden items.
 
@@ -339,44 +326,87 @@ def run_eval(
         question = item.get("question", item.get("query", ""))
         reference = item.get("reference_answer", "") or ""
 
-        row = _run_one_query(question, reference, top_k, threshold, ragas_enabled, i, len(golden_items))
-        if row is None:
-            continue
-
-        results.append(row)
-
+        # Open Langfuse span BEFORE pipeline call.
+        # The span's trace_id is passed to run_pipeline_eval() → CallbackHandler,
+        # which nests router + retrieval node spans under this trace — same
+        # structure as production runs.
+        span = None
         if lf:
             try:
                 span = lf.start_observation(
-                    name="retrieval_eval",
+                    name=f"chunking_eval_{run_name}",
                     input=question,
-                    output={k: v for k, v in row.items() if k != "query"},
-                    metadata={
-                        "experiment":      experiment,
-                        "run_name":        run_name,
-                        "router_function": row["router_function"],
-                        "course_ids":      row["course_ids"],
-                    },
-                )
-                _score_trace(span, row)
-                span.end()
-                # Link trace to its dataset item so the item shows the source trace
-                lf.create_dataset_item(
-                    id=_item_id(question),
-                    dataset_name=dataset_name,
-                    input=question,
-                    expected_output=reference,
-                    metadata={
-                        "expected_function": item.get("expected_function"),
-                        "source_course_id":  item.get("source_course_id"),
-                        "source_category":   item.get("source_category"),
-                        "stratum":           item.get("stratum"),
-                        "category":          item.get("category"),
-                    },
-                    source_trace_id=span.trace_id,
+                    metadata={"experiment": experiment, "run_name": run_name},
                 )
             except Exception as e:
-                logger.warning(f"Langfuse logging failed for '{question[:40]}': {e}")
+                logger.warning(f"Langfuse span open failed for '{question[:40]}': {e}")
+
+        row = _run_one_query(
+            question, reference, top_k, threshold, ragas_enabled,
+            i, len(golden_items), span=span,
+        )
+
+        # End span BEFORE RAGAS — trace latency = router + retrieval only.
+        trace_id = None
+        if lf and span is not None:
+            try:
+                if row is not None:
+                    span.update(
+                        output={"router_function": row["router_function"],
+                                "n_chunks": len(row["_chunks"])},
+                        metadata={"experiment": experiment, "run_name": run_name,
+                                  "router_function": row["router_function"],
+                                  "course_ids": row["course_ids"]},
+                    )
+                span.end()
+                trace_id = span.trace_id
+            except Exception as e:
+                logger.warning(f"Langfuse span end failed for '{question[:40]}': {e}")
+
+        if row is None:
+            continue
+
+        # Run RAGAS after span.end() — doesn't inflate trace latency.
+        # compute_retrieval_ragas() posts context_precision + context_recall
+        # scores directly to Langfuse via trace_id.
+        if ragas_enabled and row["_chunks"] and reference:
+            contexts = [c.get("content", "") for c in row["_chunks"]]
+            ragas_scores = compute_retrieval_ragas(
+                question=question, contexts=contexts, reference=reference,
+                trace_id=trace_id,
+            )
+            recall = ragas_scores.get("context_recall")
+            precision_ragas = ragas_scores.get("context_precision")
+            f1 = _compute_f1(row["precision_at_k"], recall) if recall is not None else None
+            row["recall_at_k"] = recall
+            row["f1_at_k"] = f1
+            row["context_precision"] = precision_ragas
+            recall_str = f"  recall={recall:.3f}" if recall is not None else ""
+            print(f"    ...{recall_str}")
+
+        # Strip internal _chunks before storing
+        row.pop("_chunks", None)
+        results.append(row)
+
+        # Post embedding-based scores + config metadata to Langfuse
+        if lf and trace_id:
+            try:
+                _score_trace(lf, trace_id, row, chunk_size, chunk_overlap, top_k, threshold)
+                lf.api.dataset_run_items.create(
+                    run_name=run_name,
+                    run_description=description,
+                    metadata={
+                        "chunk_size":    chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                        "top_k":         top_k if top_k is not None else "auto",
+                        "threshold":     threshold,
+                    },
+                    dataset_item_id=_item_id(question),
+                    trace_id=trace_id,
+                    observation_id=span.id,
+                )
+            except Exception as e:
+                logger.warning(f"Langfuse scoring failed for '{question[:40]}': {e}")
 
     if lf:
         lf.flush()
@@ -395,7 +425,7 @@ def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
     print(f"  RETRIEVAL EVAL: {run_name}  |  {len(results)} queries")
     print(f"{'='*80}")
 
-    header = f"  {'Query':<42} {'Prec':>6} {'Hit':>5} {'Tokens':>7}"
+    header = f"  {'Query':<42} {'Prec':>6} {'Hit':>5} {'Tokens':>7} {'Lat(ms)':>8}"
     if has_ragas:
         header += f" {'Recall':>7} {'F1':>6}"
     print(header)
@@ -411,11 +441,14 @@ def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
                 if rec is not None and f1 is not None
                 else f" {'N/A':>7} {'N/A':>6}"
             )
+        lat = r.get("latency_ms")
+        lat_str = f"{lat:>8.0f}" if lat is not None else f"{'N/A':>8}"
         print(
             f"  {r.get('query', '')[:42]:<42}"
             f" {r['precision_at_k']:>6.3f}"
             f" {r['hit_rate_at_k']:>5.0f}"
             f" {r['retrieved_tokens']:>7d}"
+            f" {lat_str}"
             f"{recall_str}"
         )
 
@@ -459,6 +492,18 @@ def main() -> None:
         help="Enable RAGAS ContextPrecision + ContextRecall (costs LLM tokens, ~30s/query)",
     )
     parser.add_argument(
+        "--chunk-size", type=int, default=None,
+        help="Chunk token size used during ingestion (stored in Langfuse run metadata)",
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=None,
+        help="Chunk overlap tokens used during ingestion (stored in Langfuse run metadata)",
+    )
+    parser.add_argument(
+        "--description", type=str, default=None,
+        help="Human-readable goal or notes for this run (stored in Langfuse run description)",
+    )
+    parser.add_argument(
         "--output", type=Path,
         help="Write JSON results to this path (optional)",
     )
@@ -492,6 +537,9 @@ def main() -> None:
         threshold=args.threshold,
         ragas_enabled=args.ragas,
         lf=lf,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        description=args.description,
     )
 
     if not results:
