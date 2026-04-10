@@ -124,76 +124,42 @@ def test_compute_f1():
 # retrieve_for_query
 # ---------------------------------------------------------------------------
 
-def test_retrieve_for_query_returns_empty_for_out_of_scope():
-    """Returns [] when router function has no retrieval path."""
+def _make_mock_router_result(function="hybrid_course", course_ids=None, requires_retrieval=True):
     mock_rr = MagicMock()
-    mock_rr.function = "out_of_scope"
-    mock_rr.course_ids = []
+    mock_rr.function = function
+    mock_rr.course_ids = course_ids or ["202611_CSCE_638_500"]
+    mock_rr.requires_retrieval = requires_retrieval
     mock_rr.rewritten_query = "query"
-
-    with patch("evals.eval_chunking.compute_dynamic_k", return_value={"retrieve_k": 20, "rerank_k": 5}), \
-         patch("evals.eval_chunking.hybrid_search") as mock_hs, \
-         patch("evals.eval_chunking.semantic_search") as mock_sem, \
-         patch("evals.eval_chunking.rerank"):
-        from evals.eval_chunking import retrieve_for_query
-        result = retrieve_for_query("query", mock_rr, top_k=None)
-
-    assert result == []
-    mock_hs.assert_not_called()
-    mock_sem.assert_not_called()
+    return mock_rr
 
 
-def test_retrieve_for_query_uses_hybrid_for_course_queries():
-    """Calls hybrid_search when course_ids are present."""
-    mock_rr = MagicMock()
-    mock_rr.function = "hybrid_course"
-    mock_rr.course_ids = ["202611_CSCE_638_500"]
-    mock_rr.rewritten_query = "grading policy"
+def test_run_one_query_skips_out_of_scope():
+    """Returns None when pipeline reports no retrieval required."""
+    mock_rr = _make_mock_router_result(function="out_of_scope", course_ids=[], requires_retrieval=False)
 
-    fake_chunks = [{"content": "chunk1"}, {"content": "chunk2"}]
-    fake_reranked = [{"content": "chunk1"}]
+    with patch("evals.eval_chunking.run_pipeline_eval",
+               return_value=([], mock_rr, {})):
+        from evals.eval_chunking import _run_one_query
+        result = _run_one_query("query", "ref", None, 0.35, False, 1, 1)
 
-    with patch("evals.eval_chunking.compute_dynamic_k", return_value={"retrieve_k": 20, "rerank_k": 5}), \
-         patch("evals.eval_chunking.hybrid_search", return_value=fake_chunks) as mock_hs, \
-         patch("evals.eval_chunking.rerank", return_value=fake_reranked) as mock_rr_fn:
-        from evals.eval_chunking import retrieve_for_query
-        result = retrieve_for_query("grading query", mock_rr, top_k=None)
-
-    mock_hs.assert_called_once_with("grading policy", "202611_CSCE_638_500", 20)
-    mock_rr_fn.assert_called_once_with("grading policy", fake_chunks, 5)
-    assert result == fake_reranked
+    assert result is None
 
 
-def test_retrieve_for_query_top_k_overrides_dynamic():
-    """--top-k CLI flag overrides compute_dynamic_k rerank_k."""
-    mock_rr = MagicMock()
-    mock_rr.function = "hybrid_course"
-    mock_rr.course_ids = ["202611_CSCE_638_500"]
-    mock_rr.rewritten_query = "query"
+def test_run_one_query_applies_top_k_slice():
+    """top_k slices the chunks returned by the pipeline before metric calculation."""
+    mock_rr = _make_mock_router_result()
+    chunks = [{"content": f"chunk{i}"} for i in range(10)]
 
-    with patch("evals.eval_chunking.compute_dynamic_k", return_value={"retrieve_k": 20, "rerank_k": 5}), \
-         patch("evals.eval_chunking.hybrid_search", return_value=[{"content": "c"}]), \
-         patch("evals.eval_chunking.rerank", return_value=[]) as mock_rr_fn:
-        from evals.eval_chunking import retrieve_for_query
-        retrieve_for_query("query", mock_rr, top_k=3)
+    with patch("evals.eval_chunking.run_pipeline_eval",
+               return_value=(chunks, mock_rr, {})), \
+         patch("evals.eval_chunking.compute_embedding_metrics",
+               return_value={"precision_at_k": 0.5, "hit_rate_at_k": 1.0, "retrieved_tokens": 20}) as mock_emb:
+        from evals.eval_chunking import _run_one_query
+        _run_one_query("query", "ref", 3, 0.35, False, 1, 1)
 
-    mock_rr_fn.assert_called_once_with("query", [{"content": "c"}], 3)
-
-
-def test_retrieve_for_query_semantic_general():
-    """Calls semantic_search (not hybrid_search) for semantic_general function."""
-    mock_rr = MagicMock()
-    mock_rr.function = "semantic_general"
-    mock_rr.course_ids = []
-    mock_rr.rewritten_query = "related courses"
-
-    with patch("evals.eval_chunking.compute_dynamic_k", return_value={"retrieve_k": 30, "rerank_k": 10}), \
-         patch("evals.eval_chunking.semantic_search", return_value=[{"content": "s"}]) as mock_sem, \
-         patch("evals.eval_chunking.rerank", return_value=[{"content": "s"}]):
-        from evals.eval_chunking import retrieve_for_query
-        retrieve_for_query("semantic query", mock_rr, top_k=None)
-
-    mock_sem.assert_called_once_with("related courses", 30)
+    # Only 3 chunks passed to embedding metrics
+    called_chunks = mock_emb.call_args[0][1]
+    assert len(called_chunks) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -208,11 +174,11 @@ def test_run_eval_skips_item_without_reference_when_ragas():
     """Items without reference_answer are skipped when --ragas is on."""
     items = [{"question": "Q1", "reference_answer": ""}]
 
-    with patch("evals.eval_chunking.classify_query") as mock_cq:
+    with patch("evals.eval_chunking.run_pipeline_eval") as mock_pipe:
         from evals.eval_chunking import run_eval
         results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=True, lf=None)
 
-    mock_cq.assert_not_called()
+    mock_pipe.assert_not_called()
     assert results == []
 
 
@@ -220,26 +186,20 @@ def test_run_eval_skips_item_without_question():
     """Items missing 'question' key are skipped."""
     items = [{"reference_answer": "ref"}]
 
-    with patch("evals.eval_chunking.classify_query") as mock_cq:
+    with patch("evals.eval_chunking.run_pipeline_eval") as mock_pipe:
         from evals.eval_chunking import run_eval
         results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=False, lf=None)
 
-    mock_cq.assert_not_called()
+    mock_pipe.assert_not_called()
     assert results == []
 
 
 def test_run_eval_returns_embedding_metrics_only():
     """Without --ragas, returns precision, hit_rate, tokens per query."""
-    mock_rr = MagicMock()
-    mock_rr.function = "hybrid_course"
-    mock_rr.course_ids = ["202611_CSCE_638_500"]
-    mock_rr.rewritten_query = "grading"
-    mock_rr.requires_retrieval = True
-
+    mock_rr = _make_mock_router_result()
     chunks = [{"content": "Grading: A=90+" * 10}]
 
-    with patch("evals.eval_chunking.classify_query", return_value=mock_rr), \
-         patch("evals.eval_chunking.retrieve_for_query", return_value=chunks), \
+    with patch("evals.eval_chunking.run_pipeline_eval", return_value=(chunks, mock_rr, {})), \
          patch("evals.eval_chunking.compute_embedding_metrics",
                return_value={"precision_at_k": 1.0, "hit_rate_at_k": 1.0, "retrieved_tokens": 30}):
         from evals.eval_chunking import run_eval
@@ -256,20 +216,15 @@ def test_run_eval_returns_embedding_metrics_only():
 
 def test_run_eval_logs_trace_and_scores_to_langfuse():
     """When lf is set: creates one trace per query, scores each metric, links dataset item."""
-    mock_rr = MagicMock()
-    mock_rr.function = "hybrid_course"
-    mock_rr.course_ids = ["CSCE_638"]
-    mock_rr.rewritten_query = "grading"
-    mock_rr.requires_retrieval = True
-
+    mock_rr = _make_mock_router_result()
     mock_lf = MagicMock()
     mock_span = MagicMock()
     mock_span.trace_id = "trace-abc"
     mock_lf.start_observation.return_value = mock_span
 
     with patch("evals.eval_chunking.upsert_langfuse_dataset") as mock_upsert, \
-         patch("evals.eval_chunking.classify_query", return_value=mock_rr), \
-         patch("evals.eval_chunking.retrieve_for_query", return_value=[{"content": "x"}]), \
+         patch("evals.eval_chunking.run_pipeline_eval",
+               return_value=([{"content": "x"}], mock_rr, {})), \
          patch("evals.eval_chunking.compute_embedding_metrics",
                return_value={"precision_at_k": 0.5, "hit_rate_at_k": 1.0, "retrieved_tokens": 10}):
         from evals.eval_chunking import run_eval
@@ -279,16 +234,17 @@ def test_run_eval_logs_trace_and_scores_to_langfuse():
 
     # dataset upsert called
     mock_upsert.assert_called_once()
-    # one trace created per query
+    # one span opened per query
     mock_lf.start_observation.assert_called_once()
-    # scores attached
-    score_names = {call.kwargs["name"] for call in mock_span.score_trace.call_args_list}
+    # span ended before scoring
+    mock_span.end.assert_called_once()
+    # scores posted via create_score (not score_trace)
+    score_names = {call.kwargs["name"] for call in mock_lf.create_score.call_args_list}
     assert "precision_at_k" in score_names
     assert "hit_rate_at_k" in score_names
     assert "retrieved_tokens" in score_names
-    # dataset item linked via source_trace_id
-    mock_lf.create_dataset_item.assert_called_once()
-    assert mock_lf.create_dataset_item.call_args.kwargs["source_trace_id"] == "trace-abc"
+    # dataset item linked via dataset_run_items
+    mock_lf.api.dataset_run_items.create.assert_called_once()
     # results returned
     assert len(results) == 1
     assert results[0]["precision_at_k"] == 0.5
