@@ -16,6 +16,10 @@ Usage:
     # Tag traces for before/after comparison
     python evals/run_probe.py --query "..." --tag "generator_v2"
 
+    # Use conversation-memory pipeline (multi-turn simulation)
+    python evals/run_probe.py --query "tell me about CSCE 638" --memory --thread-id sess1
+    python evals/run_probe.py --query "what are the assignments?" --memory --thread-id sess1
+
     # Also run RAGAS faithfulness+relevancy scoring (async, ~30s)
     python evals/run_probe.py --test-ids 1 --ragas
 """
@@ -39,7 +43,9 @@ from evals.eval_pipeline import (  # noqa: F401  (TestCase re-exported for calle
     TEST_SUITE,
     TestCase,
 )
-from rag import generate, get_langfuse, route_retrieve_rerank, run_ragas_background
+from rag import get_langfuse, run_pipeline_with_memory, run_ragas_background
+from rag.generator import generate
+from rag.router import route_retrieve_rerank
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,6 +61,11 @@ def _trace_url(trace_id: str) -> str:
     return f"{config.LANGFUSE_BASE_URL}/trace/{trace_id}"
 
 
+def _est_tokens(text: str) -> int:
+    """Rough token estimate: chars / 4."""
+    return max(1, len(text) // 4)
+
+
 # ---------------------------------------------------------------------------
 # Core probe runner
 # ---------------------------------------------------------------------------
@@ -66,6 +77,8 @@ def run_probe(
     ragas: bool = False,
     index: int = 1,
     total: int = 1,
+    memory: bool = False,
+    thread_id: str | None = None,
 ) -> dict:
     """Run one query through the full 3-stage pipeline and print a summary.
 
@@ -76,31 +89,39 @@ def run_probe(
         ragas:      If True, kick off async RAGAS faithfulness+relevancy scoring.
         index:      1-based position in the current batch (for display).
         total:      Total queries in the batch (for display).
+        memory:     If True, use run_pipeline_with_memory for multi-turn context.
+        thread_id:  Thread ID for memory pipeline (default: session_id).
 
     Returns:
-        Summary dict with function, chunk count, trace URL, etc.
+        Summary dict with function, chunk count, trace URL, token estimates, etc.
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     trace_name = f"Probe_{ts}_{_sanitize(query)}"
     tags = ["probe"]
     if tag:
         tags.append(tag)
+    if memory:
+        tags.append("memory")
 
     # --- Langfuse trace ---
     lf = get_langfuse()
-    trace = None
+    span = None
     trace_id = None
     if lf is not None:
-        trace = lf.trace(
-            name=trace_name,
-            input={"query": query},
-            metadata={
-                "tags": tags,
-                "session_id": session_id or f"probe_{ts}",
-                "tag": tag,
-            },
-        )
-        trace_id = trace.id
+        try:
+            span = lf.start_observation(
+                name=trace_name,
+                input={"query": query},
+                metadata={
+                    "tags": tags,
+                    "session_id": session_id or f"probe_{ts}",
+                    "tag": tag,
+                    "memory": memory,
+                },
+            )
+            trace_id = span.trace_id
+        except Exception as e:
+            print(f"  [WARNING] Langfuse trace creation failed: {e}", file=sys.stderr)
     else:
         print(
             "  [WARNING] Langfuse not configured (LANGFUSE_PUBLIC_KEY unset) "
@@ -108,29 +129,42 @@ def run_probe(
             file=sys.stderr,
         )
 
-    # --- Stage 1+2: route → retrieve → rerank ---
+    # --- Pipeline (memory or stateless) ---
     t0 = time.time()
-    reranked, router_result, data_gaps, data_integrity, _conflicted, _timing = route_retrieve_rerank(query, trace=trace)
-    retrieval_elapsed = time.time() - t0
+    answer = ""
 
-    # --- Stage 3: generate (blocking) ---
-    t1 = time.time()
-    answer = generate(
-        results=reranked,
-        question=query,
-        function=router_result.function,
-        course_ids=router_result.course_ids or None,
-        intent_type=router_result.intent_type,
-        data_gaps=data_gaps,
-        data_integrity=data_integrity,
-        trace=trace,
-    )
-    generation_elapsed = time.time() - t1
+    if memory:
+        effective_thread = thread_id or session_id or f"probe_{ts}"
+        thread_config = {"configurable": {"thread_id": effective_thread}}
+        reranked, router_result, data_gaps, data_integrity, _conflicted, answer_tokens = (
+            run_pipeline_with_memory(query, trace=span, thread_config=thread_config)
+        )
+        retrieval_elapsed = time.time() - t0
+        t1 = time.time()
+        answer = "".join(answer_tokens)
+        generation_elapsed = time.time() - t1
+    else:
+        reranked, router_result, data_gaps, data_integrity, _conflicted, _timing = (
+            route_retrieve_rerank(query, trace=span)
+        )
+        retrieval_elapsed = time.time() - t0
+
+        t1 = time.time()
+        answer = generate(
+            results=reranked,
+            question=query,
+            function=router_result.function,
+            course_ids=router_result.course_ids or None,
+            intent_type=router_result.intent_type,
+            data_gaps=data_gaps,
+            data_integrity=data_integrity,
+        )
+        generation_elapsed = time.time() - t1
 
     # Attach final answer to trace
-    if trace is not None:
+    if span is not None:
         try:
-            trace.update(output=answer[:500])
+            span.end(output=answer[:500])
         except Exception:
             pass
 
@@ -143,29 +177,29 @@ def run_probe(
     if lf is not None:
         lf.flush()
 
+    # --- Token estimates ---
+    chunk_text = "".join(doc.get("content", "") for doc in reranked)
+    est_in = _est_tokens(query + chunk_text)
+    est_out = _est_tokens(answer)
+
+    # --- Answer preview (first 120 chars, single line) ---
+    answer_preview = answer[:120].replace("\n", " ")
+    if len(answer) > 120:
+        answer_preview += "…"
+
     # --- Derive display values ---
     courses_str = ", ".join(router_result.course_ids) if router_result.course_ids else "(none)"
-    cats_str = (
-        ", ".join(router_result.specific_categories)
-        if router_result.specific_categories
-        else "(none)"
-    )
-    has_citations = "[Source" in answer
-    # Gate 1 result: N/A for functions that don't require citations
-    no_citation_fns = {"out_of_scope"}
-    if router_result.function in no_citation_fns:
-        gate1_status = "N/A"
-    else:
-        gate1_status = "PASS" if has_citations else "MISSING"
+    total_elapsed = retrieval_elapsed + generation_elapsed
 
     # --- Print summary ---
-    print(f"\n[{index}/{total}] \"{query}\"")
-    print(f"  → function: {router_result.function} | courses: {courses_str} | categories: {cats_str}")
-    print(
-        f"  → {len(reranked)} chunks after rerank "
-        f"| retrieval: {retrieval_elapsed:.1f}s | generation: {generation_elapsed:.1f}s"
-    )
-    print(f"  → Gate1 citations: {gate1_status} | answer: {len(answer)} chars")
+    print(f"\n[{index}/{total}] Q: {query}")
+    print(f"  → function: {router_result.function} | courses: {courses_str}")
+    print(f"  → {len(reranked)} chunks | retrieval: {retrieval_elapsed:.1f}s | generation: {generation_elapsed:.1f}s | total: {total_elapsed:.1f}s")
+    print(f"  → ~{est_in} in-tokens | ~{est_out} out-tokens | {len(answer)} chars")
+    print(f"  → A: {answer_preview}")
+    if memory:
+        effective_thread = thread_id or session_id or f"probe_{ts}"
+        print(f"  [memory] thread: {effective_thread}")
     if trace_id:
         print(f"  → Trace: {_trace_url(trace_id)}")
     if ragas and trace_id:
@@ -175,13 +209,15 @@ def run_probe(
         "query": query,
         "function": router_result.function,
         "course_ids": router_result.course_ids,
-        "specific_categories": router_result.specific_categories,
         "n_chunks": len(reranked),
         "answer_len": len(answer),
-        "has_citations": has_citations,
-        "gate1_status": gate1_status,
+        "answer_preview": answer_preview,
+        "est_in_tokens": est_in,
+        "est_out_tokens": est_out,
         "retrieval_elapsed": round(retrieval_elapsed, 2),
         "generation_elapsed": round(generation_elapsed, 2),
+        "total_elapsed": round(total_elapsed, 2),
+        "memory": memory,
         "trace_id": trace_id,
         "trace_url": _trace_url(trace_id) if trace_id else None,
     }
@@ -210,7 +246,7 @@ def main() -> None:
     group.add_argument(
         "--suite",
         choices=["smoke", "all"],
-        help="'smoke' = 3-query sanity check (metadata + recurrent + comparison); 'all' = full TEST_SUITE",
+        help="'smoke' = 3-query sanity check (hybrid_course + recursive + comparison); 'all' = full TEST_SUITE",
     )
 
     parser.add_argument(
@@ -224,13 +260,25 @@ def main() -> None:
         action="store_true",
         help="Also run async RAGAS faithfulness+relevancy scoring (~30s, appears in Langfuse)",
     )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Use conversation-memory pipeline (run_pipeline_with_memory) for multi-turn simulation",
+    )
+    parser.add_argument(
+        "--thread-id",
+        type=str,
+        default=None,
+        dest="thread_id",
+        help="Thread ID for memory pipeline — reuse across invocations to build conversation history",
+    )
     args = parser.parse_args()
 
     # Smoke suite — fast sanity check covering the three main paths
     SMOKE_QUERIES = [
-        "tell me about CSCE 638",                       # metadata_default
-        "what should I take alongside CSCE 638?",       # recurrent_default (5-step pipeline)
-        "compare CSCE 638 and CSCE 670",                # metadata_default → generate_comparison
+        "tell me about CSCE 638",                       # hybrid_course
+        "what should I take alongside CSCE 638?",       # recursive (5-step pipeline)
+        "compare CSCE 638 and CSCE 670",                # hybrid_course → generate_comparison
     ]
 
     # Build the list of queries to run
@@ -261,6 +309,9 @@ def main() -> None:
     total = len(queries)
 
     print(f"\nRunning {total} probe quer{'ies' if total != 1 else 'y'} (session: {session_id})")
+    if args.memory:
+        effective_thread = args.thread_id or session_id
+        print(f"Memory: ON | thread: {effective_thread}")
     if args.tag:
         print(f"Tag: {args.tag}")
     if not (config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY):
@@ -276,6 +327,8 @@ def main() -> None:
                 ragas=args.ragas,
                 index=i,
                 total=total,
+                memory=args.memory,
+                thread_id=args.thread_id,
             )
             results.append(result)
         except Exception as exc:

@@ -28,13 +28,13 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from rag import (
+from rag import RouterResult
+from rag.generator import generate
+from rag.router import (
     FUNCTION_CATEGORY_STRATEGIES,
-    RouterResult,
     classify_query,
     compute_dynamic_k,
     deduplicate_chunks,
-    generate,
 )
 
 # ---------------------------------------------------------------------------
