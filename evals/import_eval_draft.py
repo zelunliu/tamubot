@@ -116,7 +116,6 @@ def main():
             "expected_course_ids": [source_course_id] if source_course_id else [],
             "expected_specific_categories": [],
             "expected_semantic_intent": False,
-            # human_judgment preserved for validate_ragas.py
             "human_judgment": row.get("human_judgment"),
         }
         golden_items.append(item)

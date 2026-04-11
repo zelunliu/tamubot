@@ -1,7 +1,7 @@
 .PHONY: run scrape-catalog scrape-classes scrape-simple-syllabus setup-atlas ingest ingest-dept \
-        ingest-corpus test typecheck lint format eval-router probe probe-v3 probe-full \
-        eval-draft import-draft bench bench-ragas validate-ragas test-v4 probe-v4 \
-        eval-chunking sandbox-up sandbox-down sandbox-shell
+        ingest-corpus test typecheck lint format probe probe-v3 probe-full \
+        eval-draft import-draft bench bench-ragas test-v4 probe-v4 \
+        eval-chunking sandbox-up sandbox-down sandbox-shell agent
 
 # --- App ---
 run:
@@ -46,9 +46,6 @@ lint:
 format:
 	.venv/bin/ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
 
-eval-router:
-	python evals/eval_router_metrics.py
-
 probe:
 	python evals/run_probe.py --suite smoke
 
@@ -77,9 +74,6 @@ bench:
 bench-ragas:
 	python evals/run_benchmark.py --golden-set $(GOLDEN) --experiment-name $(EXP) --ragas
 
-validate-ragas:
-	python evals/validate_ragas.py --benchmark $(BENCH)
-
 eval-chunking:
 	SESSION_CACHE_ENABLED=false python evals/eval_chunking.py \
 		--golden-set $(GOLDEN) \
@@ -100,7 +94,7 @@ sandbox-down:
 	docker compose down
 
 sandbox-shell:
-	docker exec -it tamubot-claude-1 bash
+	docker exec -it tamubot-dev-1 bash
 
-claude:
-	docker compose run --rm claude claude --dangerously-skip-permissions
+agent:
+	docker exec -it tamubot-dev-1 claude --dangerously-skip-permissions

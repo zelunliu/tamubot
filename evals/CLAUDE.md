@@ -20,6 +20,5 @@ make validate-ragas BENCH=...           # after filling human_judgment column
 ## Key Exports
 ```python
 from evals.eval_pipeline import TEST_SUITE, TestCase
-from evals.eval_statistics import adjusted_wald_ci, mcnemar_exact, wilcoxon_test, eval_summary_table
 ```
 

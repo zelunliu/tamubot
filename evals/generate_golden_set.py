@@ -249,7 +249,7 @@ def _derive_router_ground_truth(
     """Derive expected router output fields from stratum type and source chunk.
 
     These are the "correct answers" the router should produce for this question —
-    used in eval_router_metrics.py to measure router accuracy.
+    used by the benchmark to measure router accuracy.
     """
     spec = STRATUM_MAP[stratum]
     course_id = chunk.get("course_id", "")
