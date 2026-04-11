@@ -34,6 +34,7 @@ import config
 from rag import RouterResult
 from rag.generator import generate_stream
 from rag.graph.pipeline import run_pipeline as run_pipeline_v4
+from rag.tools.langfuse import get_langfuse
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
 
@@ -102,11 +103,30 @@ class BenchmarkRow:
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
-def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
+def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: str = "") -> BenchmarkRow:
     """Run one golden set item through the full v4 pipeline (router → retrieval → generation)."""
     query = item["question"]
     source_course_id = str(item.get("source_course_id") or "")
     expected_fn = str(item.get("expected_function", ""))
+
+    # Langfuse trace per question (enables avg_chunk_score in UI)
+    lf = get_langfuse()
+    lf_span = None
+    trace_id: Optional[str] = None
+    if lf is not None:
+        try:
+            lf_span = lf.start_observation(
+                name=f"benchmark_q{question_id}",
+                input={"question": query},
+                metadata={
+                    "experiment": experiment_name,
+                    "question_id": question_id,
+                    "expected_function": expected_fn,
+                },
+            )
+            trace_id = lf_span.trace_id
+        except Exception:
+            pass
 
     t0 = time.perf_counter()
     error: Optional[str] = None
@@ -121,7 +141,7 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
     timing_ms: dict = {}
     try:
         chunks, rr_result, data_gaps, data_integrity, conflicted_ids, timing_ms = run_pipeline_v4(
-            query, return_timing=True
+            query, trace=lf_span, return_timing=True
         )
         if rr_result is not None:
             rr = rr_result
@@ -160,6 +180,25 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0) -> BenchmarkRow:
             error = f"generation: {e}"
     generator_ms = round((time.perf_counter() - t_gen) * 1000, 1)
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    # Langfuse: close span and post avg chunk relevance score
+    if lf_span is not None:
+        try:
+            lf_span.end(output=answer[:500])
+        except Exception:
+            pass
+        try:
+            chunk_scores = [c["score"] for c in chunks if isinstance(c.get("score"), (int, float))]
+            if chunk_scores and lf is not None and trace_id:
+                lf.create_score(
+                    trace_id=trace_id,
+                    name="avg_chunk_score",
+                    value=sum(chunk_scores) / len(chunk_scores),
+                    comment="Mean Voyage reranker relevance score across retrieved chunks",
+                )
+                lf.flush()
+        except Exception:
+            pass
 
     # RAGAS (optional)
     ragas_faithfulness: Optional[float] = None
@@ -650,7 +689,7 @@ def main():
             time.sleep(2)  # avoid RPM spikes (proxy limit: 30/min)
         q_preview = item.get("question", "")[:60]
         print(f"\n[{i:3d}/{len(items)}] {q_preview}...", flush=True)
-        row = run_one(item, do_ragas=args.ragas, question_id=i)
+        row = run_one(item, do_ragas=args.ragas, question_id=i, experiment_name=args.experiment_name)
         rows.append(row)
         fn_ok = "v" if row.router_function_correct else "x"
         status = row.error or "OK"
@@ -681,7 +720,6 @@ def main():
     if errors:
         print(f"  Errors:          {errors}")
     print(f"{'='*55}")
-    print(f"\nTo validate RAGAS: python evals/validate_ragas.py --benchmark {xlsx_path}")
 
 
 if __name__ == "__main__":
