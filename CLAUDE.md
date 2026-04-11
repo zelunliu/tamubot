@@ -37,9 +37,9 @@ Invoke via the Skill tool automatically (no `/` command needed) when intent matc
 
 - **probe-rag**: user asks to test a query, run a probe, check RAG output, or inspect a Langfuse trace
 - **scrape**: user asks to scrape a site, download syllabi, or add/run a crawler
-- **process-syllabi**: user asks to parse/process syllabi or run the ingestion pipeline on PDFs
-- **github-collab**: user says "push", "open a PR", "create a branch", "start a feature", "I merged", "clean up branch", "am I ready to push", or "run checks"
-- **refine-syllabi**: user asks to audit, refine, or improve syllabus parsing quality, check for boilerplate leaks, or iterate on the ingestion prompt
+- **chunk-syllabi**: user asks to re-chunk syllabi, run chunking experiments, or inspect token-level chunk output
+- **run-eval**: user asks to run eval, run benchmark, benchmark the pipeline, benchmark RAG, or run chunking eval
+- **golden-set**: user asks to create, generate, refine, or export a golden set / eval set
 - **server-ops**: user says "restart localhost/server/app", "start/stop server", "kill the server", "server status", "clear cache", or any variant of managing the local dev server
 - **task-budget**: any task involving TAMU API, Voyage AI, or Google AI calls (RAG queries, probes, ingestion, benchmarks)
 - **research-prompts**: user asks to generate or write a research prompt

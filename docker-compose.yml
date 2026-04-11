@@ -6,8 +6,6 @@ services:
       - C:/Users/iredl/.claude:/home/claude/.claude
       - C:/Users/iredl/.claude.json:/home/claude/.claude.json
     env_file: .env
-    ports:
-      - "8501:8501"
     environment:
       - TAMU_BASE_URL=http://api-proxy:8080/tamu
       - VOYAGE_BASE_URL=http://api-proxy:8080/voyage

@@ -231,23 +231,16 @@ def rrf_sweep(
 
     import voyageai
 
-    from rag import hybrid_search
+    from rag.tools.mongo import hybrid_search
 
     vo = voyageai.Client(api_key=config.VOYAGE_API_KEY)
     query_embed = vo.embed([query], model="voyage-3", input_type="query").embeddings[0]
 
+    course_id = filters.get("course_id", "") if filters else ""
+
     sweep_results: dict[int, dict] = {}
     for k_param in k_values:
-        try:
-            results = hybrid_search(
-                query,
-                filters=filters,
-                k=20,
-                rrf_k=k_param,
-            )
-        except TypeError:
-            # hybrid_search may not accept rrf_k — fall back to default
-            results = hybrid_search(query, filters=filters, k=20)
+        results = hybrid_search(query, course_id=course_id, k=20)
 
         if not results:
             sweep_results[k_param] = {"ndcg": 0.0, "n_results": 0}
@@ -295,7 +288,9 @@ def evaluate_retrieval_golden_set(
     Returns:
         Dict with per-item results and aggregate statistics.
     """
-    from rag import classify_query, compute_dynamic_k, hybrid_search, rerank, search_semantic
+    from rag.router import classify_query, compute_dynamic_k
+    from rag.tools.mongo import hybrid_search, semantic_search
+    from rag.tools.voyage import rerank
 
     item_results = []
     for i, item in enumerate(golden_set, 1):
@@ -326,10 +321,10 @@ def evaluate_retrieval_golden_set(
         # Pre-rerank retrieval
         try:
             if fn == "semantic_general":
-                pre_results = search_semantic(search_query, top_k=retrieve_k)
-            elif rr.course_ids and mode == "hybrid":
+                pre_results = semantic_search(search_query, k=retrieve_k)
+            elif rr.course_ids and "hybrid" in mode:
                 pre_results = hybrid_search(
-                    search_query, filters={"course_id": rr.course_ids[0]}, k=retrieve_k
+                    search_query, course_id=rr.course_ids[0], k=retrieve_k
                 )
             else:
                 item_results.append({"query": query, "skipped": True, "reason": "metadata path"})
@@ -449,13 +444,15 @@ def main():
 
     elif args.query:
         print(f"Evaluating single query: '{args.query}'")
-        from rag import classify_query, hybrid_search, rerank
+        from rag.router import classify_query
+        from rag.tools.mongo import hybrid_search
+        from rag.tools.voyage import rerank
 
         rr = classify_query(args.query)
         print(f"  Router: fn={rr.function}, mode={rr.retrieval_mode}")
         search_query = rr.rewritten_query or args.query
 
-        pre = hybrid_search(search_query, filters={"course_id": args.course_id}, k=20)
+        pre = hybrid_search(search_query, course_id=args.course_id, k=20)
         post = rerank(search_query, pre, top_k=args.k)
 
         labels = label_relevant(args.query, post, threshold=args.threshold)

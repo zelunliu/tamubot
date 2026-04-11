@@ -150,20 +150,32 @@ def upsert_langfuse_dataset(lf, golden_items: list[dict], dataset_name: str):
     except Exception:
         pass  # dataset already exists — that's fine
 
+    # Fetch existing items to avoid duplicate creation
+    existing: set[str] = set()
+    try:
+        page = 1
+        while True:
+            resp = lf.api.dataset_items.list(dataset_name=dataset_name, page=page, limit=100)
+            for it in resp.data:
+                q = it.input if isinstance(it.input, str) else ""
+                if q:
+                    existing.add(q)
+            if len(resp.data) < 100:
+                break
+            page += 1
+    except Exception:
+        pass  # dataset may not exist yet — will be created below
+
     uploaded = 0
     for item in golden_items:
         question = item.get("question", item.get("query", ""))
-        if not question:
+        if not question or question in existing:
             continue
         try:
             lf.create_dataset_item(
-                id=_item_id(question),
                 dataset_name=dataset_name,
-                # Flat strings → render as clean text columns in Langfuse UI
                 input=question,
                 expected_output=item.get("reference_answer") or "",
-                # Structured params → each key becomes a searchable metadata column
-                # (keep values short — Langfuse OTel propagation limit is 200 chars)
                 metadata={
                     "expected_function": item.get("expected_function"),
                     "source_course_id":  item.get("source_course_id"),
@@ -316,8 +328,23 @@ def run_eval(
     """
     run_name = f"{experiment}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
+    # question → Langfuse dataset item ID (for dataset run linking)
+    lf_item_ids: dict[str, str] = {}
     if lf:
         upsert_langfuse_dataset(lf, golden_items, dataset_name)
+        try:
+            page = 1
+            while True:
+                resp = lf.api.dataset_items.list(dataset_name=dataset_name, page=page, limit=100)
+                for it in resp.data:
+                    q = it.input if isinstance(it.input, str) else ""
+                    if q:
+                        lf_item_ids[q] = it.id
+                if len(resp.data) < 100:
+                    break
+                page += 1
+        except Exception as e:
+            logger.warning(f"Could not load dataset item IDs: {e}")
         print(f"\nRunning eval: experiment={experiment!r}  run={run_name!r}\n")
 
     results: list[dict] = []
@@ -364,6 +391,18 @@ def run_eval(
                 logger.warning(f"Langfuse span end failed for '{question[:40]}': {e}")
 
         if row is None:
+            # Still link skipped items to the dataset run so they appear in Langfuse
+            if lf and trace_id and dataset_name and question in lf_item_ids:
+                try:
+                    lf.api.dataset_run_items.create(
+                        run_name=run_name,
+                        dataset_item_id=lf_item_ids[question],
+                        trace_id=trace_id,
+                        metadata={"chunk_size": chunk_size, "chunk_overlap": chunk_overlap,
+                                  "top_k": top_k, "threshold": threshold, "skipped": True},
+                    )
+                except Exception as e:
+                    logger.warning(f"Langfuse skip link failed for '{question[:40]}': {e}")
             continue
 
         # Run RAGAS after span.end() — doesn't inflate trace latency.
@@ -401,7 +440,7 @@ def run_eval(
                         "top_k":         top_k if top_k is not None else "auto",
                         "threshold":     threshold,
                     },
-                    dataset_item_id=_item_id(question),
+                    dataset_item_id=lf_item_ids.get(question, _item_id(question)),
                     trace_id=trace_id,
                     observation_id=span.id,
                 )
