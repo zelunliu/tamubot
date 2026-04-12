@@ -10,7 +10,7 @@ python evals/run_probe.py --test-ids 1 3 7
 ## Benchmark (A/B)
 ```bash
 make eval-draft                          # generate questions → drafts/eval_draft_YYYYMMDD.xlsx
-make import-draft DRAFT=... TAG=v1       # approve → golden_sets/golden_*.jsonl
+make import-draft DRAFT=... TAG=v1       # approve → golden_sets/golden_*.xlsx
 CHUNK_SIZE=600 OVERLAP=100 make ingest-corpus
 make bench GOLDEN=... EXP=cs600_ov100   # → reports/benchmark_*.xlsx + .md
 make bench-ragas GOLDEN=... EXP=...     # with RAGAS (~30s/q)
