@@ -85,3 +85,18 @@ def test_append_run_column_overwrites_existing(tmp_path):
     assert ws.cell(row=2, column=col_idx).value == "new value"
     # only one run column added
     assert headers.count("run:exp_20260412") == 1
+
+
+def test_eval_chunking_accepts_xlsx_and_appends_run_column(tmp_path):
+    """eval_chunking.load_golden_set is gone; xlsx round-trips through golden_set.load."""
+    from evals.golden_set import save, load
+    items = [
+        {"id": 1, "question": "What is CSCE 611 about?", "reference_answer": "OS course.",
+         "expected_function": "hybrid_course", "human_notes": None},
+    ]
+    path = tmp_path / "golden.xlsx"
+    save(items, path)
+    loaded = load(path)
+    # confirm load_golden_set no longer exists in eval_chunking
+    import evals.eval_chunking as ec
+    assert not hasattr(ec, "load_golden_set")

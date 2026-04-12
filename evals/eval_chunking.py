@@ -6,7 +6,7 @@ experiment run — each query is one row, each metric is a column.
 
 Usage:
     python evals/eval_chunking.py \\
-        --golden-set tamu_data/evals/golden_sets/golden_20260313_draft_v1.jsonl \\
+        --golden-set tamu_data/evals/golden_sets/golden_20260411_v1.xlsx \\
         [--experiment chunk_600_ov100] \\
         [--dataset chunking_golden_v1] \\
         [--top-k 7] \\
@@ -27,23 +27,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from evals.golden_set import load as _load_golden_set, append_run_column as _append_run_column  # noqa: E402
 
 logger = logging.getLogger("tamubot.eval_chunking")
-
-
-# ---------------------------------------------------------------------------
-# Golden set loader
-# ---------------------------------------------------------------------------
-
-def load_golden_set(path: Path) -> list[dict]:
-    """Load a golden set JSONL file. Returns list of question dicts."""
-    items = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-    return items
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +269,7 @@ def _score_trace(
     """
     # Per-query retrieval metrics (embedding-based, cheap)
     for name in ("precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-                 "recall_at_k", "f1_at_k"):
+                 "recall_at_k", "f1_at_k", "avg_chunk_score"):
         value = row.get(name)
         if value is not None:
             lf.create_score(trace_id=trace_id, name=name, value=float(value))
@@ -423,6 +409,20 @@ def run_eval(
             recall_str = f"  recall={recall:.3f}" if recall is not None else ""
             print(f"    ...{recall_str}")
 
+        # Compute avg reranker score before dropping chunks
+        chunk_scores = [c["score"] for c in row.get("_chunks", []) if isinstance(c.get("score"), (int, float))]
+        row["avg_chunk_score"] = sum(chunk_scores) / len(chunk_scores) if chunk_scores else None
+
+        # Build run column value: "CSCE 670 §SCHEDULE 0.87, CSCE 638 §LO 0.71"
+        run_col_parts = []
+        for c in row.get("_chunks", []):
+            cid = c.get("course_id", "?")
+            cat = c.get("category", "?")
+            score = c.get("score")
+            score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
+            run_col_parts.append(f"{cid} §{cat} {score_str}")
+        row["_run_col_value"] = ", ".join(run_col_parts)
+
         # Strip internal _chunks before storing
         row.pop("_chunks", None)
         results.append(row)
@@ -450,7 +450,16 @@ def run_eval(
     if lf:
         lf.flush()
 
-    return results, run_name
+    # Build id → run_col_value map for append_run_column
+    question_to_id = {item.get("question", ""): item.get("id") for item in golden_items}
+    run_col_results = {}
+    for r in results:
+        qid = question_to_id.get(r.get("query", ""))
+        val = r.pop("_run_col_value", None)
+        if qid is not None and val is not None:
+            run_col_results[qid] = val
+
+    return results, run_name, run_col_results
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +517,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--golden-set", type=Path, required=True,
-        help="Path to golden set JSONL (e.g. tamu_data/evals/golden_sets/golden_*.jsonl)",
+        help="Path to golden set .xlsx (e.g. tamu_data/evals/golden_sets/golden_*.xlsx)",
     )
     parser.add_argument(
         "--experiment", default="chunking_eval",
@@ -555,7 +564,7 @@ def main() -> None:
     dataset_name = args.dataset or args.golden_set.stem
 
     print(f"\nLoading golden set: {args.golden_set}")
-    golden_items = load_golden_set(args.golden_set)
+    golden_items = _load_golden_set(args.golden_set)
     print(f"  {len(golden_items)} items loaded")
 
     lf = get_langfuse()
@@ -568,7 +577,7 @@ def main() -> None:
         f"  |  ragas: {'yes' if args.ragas else 'no'}"
     )
 
-    results, run_name = run_eval(
+    results, run_name, run_col_results = run_eval(
         golden_items=golden_items,
         experiment=args.experiment,
         dataset_name=dataset_name,
@@ -587,6 +596,10 @@ def main() -> None:
 
     aggregates = _compute_aggregates(results)
     print_summary(results, run_name, aggregates)
+
+    if run_col_results:
+        _append_run_column(args.golden_set, run_name, run_col_results)
+        print(f"Run column appended to {args.golden_set}  (run:{run_name})")
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
