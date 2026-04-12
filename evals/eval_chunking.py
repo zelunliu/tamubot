@@ -334,6 +334,8 @@ def run_eval(
         print(f"\nRunning eval: experiment={experiment!r}  run={run_name!r}\n")
 
     results: list[dict] = []
+    question_to_id = {item.get("question", ""): item.get("id") for item in golden_items}
+    run_col_results: dict = {}
 
     for i, item in enumerate(golden_items, 1):
         question = item.get("question", item.get("query", ""))
@@ -421,7 +423,9 @@ def run_eval(
             score = c.get("score")
             score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
             run_col_parts.append(f"{cid} §{cat} {score_str}")
-        row["_run_col_value"] = ", ".join(run_col_parts)
+        qid = question_to_id.get(question)
+        if qid is not None and run_col_parts:
+            run_col_results[qid] = ", ".join(run_col_parts)
 
         # Strip internal _chunks before storing
         row.pop("_chunks", None)
@@ -449,15 +453,6 @@ def run_eval(
 
     if lf:
         lf.flush()
-
-    # Build id → run_col_value map for append_run_column
-    question_to_id = {item.get("question", ""): item.get("id") for item in golden_items}
-    run_col_results = {}
-    for r in results:
-        qid = question_to_id.get(r.get("query", ""))
-        val = r.pop("_run_col_value", None)
-        if qid is not None and val is not None:
-            run_col_results[qid] = val
 
     return results, run_name, run_col_results
 
