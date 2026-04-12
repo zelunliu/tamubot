@@ -104,10 +104,10 @@ def main():
     golden_items = []
     for row in approved:
         item = {
-            "id": row.get("id") or (len(golden_items) + 1),
-            "question": str(row.get("question", "")).strip(),
-            "reference_answer": str(row.get("reference_answer", "")).strip(),
-            "expected_function": str(row.get("expected_function", "")).strip(),
+            "id": row.get("id") if row.get("id") is not None else (len(golden_items) + 1),
+            "question": str(row.get("question") or "").strip(),
+            "reference_answer": str(row.get("reference_answer") or "").strip(),
+            "expected_function": str(row.get("expected_function") or "").strip(),
             "human_notes": row.get("human_notes") or row.get("human_judgment"),
         }
         golden_items.append(item)
