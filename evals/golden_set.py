@@ -15,7 +15,7 @@ SCHEMA_COLUMNS = ["id", "question", "reference_answer", "expected_function", "hu
 def load(path: Path) -> list[dict]:
     """Read a golden set .xlsx. Returns list of dicts with SCHEMA_COLUMNS keys.
 
-    run:<experiment> columns are ignored.
+    run:<experiment> columns and any other non-schema columns are ignored.
     Rows with an empty question are skipped.
     """
     try:
@@ -32,12 +32,12 @@ def load(path: Path) -> list[dict]:
         if all(v is None for v in row):
             continue
         d = dict(zip(headers, row))
-        question = d.get("question")
+        question = str(d.get("question") or "").strip()
         if not question:
             continue
         items.append({
             "id": d.get("id"),
-            "question": str(question).strip(),
+            "question": question,
             "reference_answer": str(d.get("reference_answer") or "").strip(),
             "expected_function": str(d.get("expected_function") or "").strip(),
             "human_notes": d.get("human_notes"),
@@ -97,3 +97,4 @@ def append_run_column(path: Path, experiment: str, results: dict) -> None:
             ws.cell(row=row_idx, column=col_idx, value=results[row_id])
 
     wb.save(path)
+    wb.close()

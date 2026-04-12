@@ -1,7 +1,6 @@
 """Tests for evals/golden_set.py — load, save, append_run_column."""
-import json
-from pathlib import Path
 import pytest
+from evals.golden_set import SCHEMA_COLUMNS
 
 
 SAMPLE_ITEMS = [
@@ -50,7 +49,7 @@ def test_load_ignores_run_columns(tmp_path):
 
     loaded = load(path)
     assert "run:my_experiment" not in loaded[0]
-    assert len(loaded[0]) == 5  # exactly schema keys
+    assert len(loaded[0]) == len(SCHEMA_COLUMNS)  # exactly schema keys
 
 
 def test_append_run_column_adds_column(tmp_path):
