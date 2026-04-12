@@ -299,7 +299,7 @@ def run_eval(
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     description: Optional[str] = None,
-) -> tuple[list[dict], str]:
+) -> tuple[list[dict], str, dict]:
     """Run retrieval eval over all golden items.
 
     Langfuse layout when lf is set:
@@ -310,7 +310,7 @@ def run_eval(
       • All traces tagged [experiment, run_name, "chunking_eval"] for filtering.
 
     Returns:
-        Tuple of (results list, run_name string).
+        Tuple of (results list, run_name string, run_col_results dict mapping question id to chunk string).
     """
     run_name = f"{experiment}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
