@@ -75,6 +75,76 @@ flowchart TD
 
 ---
 
+## LangGraph Pipeline
+
+The `build_graph_with_memory()` state machine (`rag/graph/builder.py`). Outer arc = Streamlit session loop. Center cluster = underlying infrastructure. Recursive path (right branch) activates only for multi-course comparison queries.
+
+```mermaid
+flowchart TB
+
+    UserQuery(["User Query"])
+    StreamlitTop["Streamlit App"]
+
+    H_Inject["History Inject"]
+    Router{"Router"}
+    OutOfScope["Canned Response"]
+    H_Update["History Update"]
+
+    subgraph RAG_Engine ["RAG Engine"]
+        Retrieval["Retrieval"]
+        Generator["Generator"]
+        Retrieval --> Generator
+    end
+
+    RecRetrieval["Recursive Retrieval"]
+    RecGenerator["Recursive Generator"]
+
+    QueryAnswer(["Query Answer / RAGAS Evaluation"])
+    StreamlitBot["Streamlit App"]
+
+    subgraph Infra ["Infrastructure"]
+        LangfuseT["Langfuse Tracking"]
+        LangGraphO["LangGraph Orchestration"]
+        DockerC["Docker Containerization"]
+    end
+
+    Mem0_T(["mem0 Cloud"])
+    TAMU_T(["TAMU LLM"])
+    Atlas(["MongoDB Atlas"])
+    Voyage(["Voyage AI"])
+    TAMU_B(["TAMU LLM"])
+    Mem0_B(["mem0 Cloud"])
+
+    UserQuery --> StreamlitTop
+    StreamlitTop --> H_Inject
+    H_Inject --> Router
+    Router -->|retrieval| Retrieval
+    Router -->|out_of_scope| OutOfScope
+    Router -->|recursive| RecRetrieval
+    RecRetrieval --> RecGenerator
+    RecGenerator --> Retrieval
+    OutOfScope --> H_Update
+    Generator --> H_Update
+    H_Update --> QueryAnswer
+    QueryAnswer --> StreamlitBot
+    StreamlitBot -.->|next query| StreamlitTop
+
+    Mem0_T <--> H_Inject
+    TAMU_T <--> Router
+    Atlas <--> Retrieval
+    Voyage <--> Retrieval
+    TAMU_B <--> Generator
+    H_Update <--> Mem0_B
+
+    LangfuseT -.- H_Inject
+    LangfuseT -.- Router
+    LangfuseT -.- Retrieval
+    LangfuseT -.- Generator
+    LangfuseT -.- H_Update
+```
+
+---
+
 ## Ingestion Pipeline
 
 One-time ETL: scrape → parse → embed → store. Controlled by `ingestion_pipeline/`.

@@ -33,10 +33,6 @@ python evals/run_probe.py <args>
 - Answer length (chars)
 - Langfuse trace URL
 
-## Langfuse MCP
-
-If `langfuse` MCP server is active, offer to pull full trace details or compare two tagged runs. Gate 2 groundedness scores appear ~20–30s after run.
-
 ## Reference
 
 - Script: `evals/run_probe.py`

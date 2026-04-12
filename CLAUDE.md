@@ -5,9 +5,10 @@
 ## Docker Sandbox (standard dev entry point)
 
 ```bash
-make sandbox-up      # start claude + api-proxy + app containers
-make sandbox-shell   # open bash inside claude container
+make sandbox-up      # start dev + api-proxy containers (Streamlit on :8501)
+make sandbox-shell   # open bash inside dev container
 make sandbox-down    # tear down all containers
+make agent           # open Claude session inside dev container (exec, not new container)
 ```
 
 Streamlit: http://localhost:8501
@@ -43,6 +44,7 @@ Invoke via the Skill tool automatically (no `/` command needed) when intent matc
 - **server-ops**: user says "restart localhost/server/app", "start/stop server", "kill the server", "server status", "clear cache", or any variant of managing the local dev server
 - **task-budget**: any task involving TAMU API, Voyage AI, or Google AI calls (RAG queries, probes, ingestion, benchmarks)
 - **research-prompts**: user asks to generate or write a research prompt
+- **langfuse**: user asks about Langfuse traces, scores, prompts, datasets, sessions, instrumentation, SDK usage, or Langfuse documentation
 
 When skill tool engaged, make sure to notify user!
 

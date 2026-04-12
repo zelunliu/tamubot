@@ -1,4 +1,4 @@
-"""Recursive generator node — synthesizes new routing decision from anchor chunks.
+"""Recursive router node — synthesizes new routing decision from anchor chunks.
 
 Acts like a mini-router: given original query + history + anchor course chunks,
 it decides what to search for next (function, course_ids, rewritten_query).
@@ -16,7 +16,7 @@ _VALID_FUNCTIONS = {"semantic_general", "hybrid_course"}
 
 @timing_middleware
 @error_guard_middleware
-def recursive_generator_node(state: PipelineState) -> dict:
+def recursive_router_node(state: PipelineState) -> dict:
     """Synthesize a new routing decision from anchor chunks + original query."""
     from rag.tools.llm import call_llm
 
@@ -25,7 +25,7 @@ def recursive_generator_node(state: PipelineState) -> dict:
     history_context = state.get("history_context") or ""
     course_ids = state.get("course_ids", [])
     node_trace = list(state.get("node_trace", []))
-    node_trace.append("recursive_generator")
+    node_trace.append("recursive_router")
 
     # Summarize anchor content, capped to avoid token bloat
     anchor_text = " ".join(
@@ -41,14 +41,19 @@ def recursive_generator_node(state: PipelineState) -> dict:
         f"The student originally asked: {query}\n\n"
         f"{history_block}"
         f"You retrieved the following information about {course_label}:\n{anchor_text}\n\n"
+        f"IMPORTANT: {course_label} has already been retrieved and its content will be "
+        f"included in the generation context. Do NOT include {course_label} in course_ids "
+        f"or rewritten_query — your follow-up search must find OTHER courses that help "
+        f"answer the student's original question.\n\n"
         f"Based on the student's intent and the retrieved course information, decide what to "
         f"search for next. Output JSON only:\n"
         f'{{"function": "semantic_general" or "hybrid_course", '
         f'"course_ids": [], '
         f'"rewritten_query": "targeted search string"}}\n\n'
         f'Use "hybrid_course" with specific course_ids only when the answer requires '
-        f'looking up named specific courses (e.g. prerequisites). '
-        f'Use "semantic_general" for discovery (similar topics, complementary courses, etc).'
+        f'looking up named specific courses (e.g. prerequisites listed in the anchor). '
+        f'Use "semantic_general" for discovery (similar topics, complementary courses, '
+        f'courses to take after/with the anchor, etc).'
     )
 
     try:

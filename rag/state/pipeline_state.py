@@ -29,7 +29,7 @@ class ConversationMessage(TypedDict, total=False):
 class PipelineState(TypedDict, total=False):
     # --- Core query ---
     query: str                       # raw user input, never overwritten
-    rewritten_query: str             # router lookup query; overwritten by recursive_generator
+    rewritten_query: str             # router lookup query; overwritten by recursive_router
 
     # --- Router fields ---
     function: str                    # "hybrid_course"|"recursive"|"semantic_general"|"out_of_scope"

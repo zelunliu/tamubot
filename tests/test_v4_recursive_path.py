@@ -1,7 +1,7 @@
 """Tests for the recursive search path."""
 from unittest.mock import patch
 
-from rag.nodes.recursive_generator_node import recursive_generator_node
+from rag.nodes.recursive_router_node import recursive_router_node
 from rag.nodes.recursive_retrieval_node import recursive_retrieval_node
 
 
@@ -68,7 +68,7 @@ def test_recursive_retrieval_fallback_on_error():
 
 
 
-def test_recursive_generator_overwrites_function_and_query():
+def test_recursive_router_overwrites_function_and_query():
     state = {
         "query": "what courses should I take with CSCE 605?",
         "recursive_chunks": [{"course_id": "CSCE 605", "text": "graph algorithms and systems"}],
@@ -84,15 +84,15 @@ def test_recursive_generator_overwrites_function_and_query():
     )
     with patch("rag.tools.llm.call_llm") as mock_llm:
         mock_llm.return_value.text = llm_response
-        result = recursive_generator_node(state)
+        result = recursive_router_node(state)
 
     assert result["function"] == "semantic_general"
     assert result["course_ids"] == []
     assert result["rewritten_query"] == "graduate systems courses complementing graph theory"
-    assert "recursive_generator" in result["node_trace"]
+    assert "recursive_router" in result["node_trace"]
 
 
-def test_recursive_generator_hybrid_course_output():
+def test_recursive_router_hybrid_course_output():
     state = {
         "query": "explain the prerequisites for CSCE 605",
         "recursive_chunks": [{"course_id": "CSCE 605", "text": "requires CSCE 520 and CSCE 601"}],
@@ -108,14 +108,14 @@ def test_recursive_generator_hybrid_course_output():
     )
     with patch("rag.tools.llm.call_llm") as mock_llm:
         mock_llm.return_value.text = llm_response
-        result = recursive_generator_node(state)
+        result = recursive_router_node(state)
 
     assert result["function"] == "hybrid_course"
     assert "CSCE 520" in result["course_ids"]
     assert result["rewritten_query"] == "prerequisite foundational content"
 
 
-def test_recursive_generator_fallback_on_llm_failure():
+def test_recursive_router_fallback_on_llm_failure():
     state = {
         "query": "what should I take with CSCE 605?",
         "recursive_chunks": [],
@@ -126,14 +126,14 @@ def test_recursive_generator_fallback_on_llm_failure():
         "timing_ms": {},
     }
     with patch("rag.tools.llm.call_llm", side_effect=Exception("LLM timeout")):
-        result = recursive_generator_node(state)
+        result = recursive_router_node(state)
 
     assert result["function"] == "semantic_general"
     assert result["course_ids"] == []
     assert result["rewritten_query"] == "what should I take with CSCE 605?"
 
 
-def test_recursive_generator_rejects_invalid_function():
+def test_recursive_router_rejects_invalid_function():
     state = {
         "query": "what should I take with CSCE 605?",
         "recursive_chunks": [],
@@ -146,7 +146,7 @@ def test_recursive_generator_rejects_invalid_function():
     llm_response = '{"function": "recursive", "course_ids": [], "rewritten_query": "some query"}'
     with patch("rag.tools.llm.call_llm") as mock_llm:
         mock_llm.return_value.text = llm_response
-        result = recursive_generator_node(state)
+        result = recursive_router_node(state)
 
     assert result["function"] == "semantic_general"
 
@@ -207,7 +207,7 @@ def test_build_graph_has_recursive_nodes():
     graph = build_graph()
     node_names = set(graph.nodes.keys())
     assert "recursive_retrieval" in node_names
-    assert "recursive_generator" in node_names
+    assert "recursive_router" in node_names
     assert "anchor" not in node_names
     assert "eval_search" not in node_names
     assert "schedule_filter" not in node_names

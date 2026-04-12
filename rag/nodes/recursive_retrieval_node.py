@@ -7,11 +7,15 @@ from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 
-def _compute_dynamic_k(n_courses: int) -> int:
-    """Compute retrieve_k for hybrid_course scaled by number of courses."""
-    base = config.PER_COURSE_K["hybrid_course"]
+def _compute_dynamic_k(n_courses: int) -> dict:
+    """Compute retrieve_k and rerank_k for recursive path scaled by number of courses."""
+    base_hybrid = config.PER_COURSE_K["hybrid_course"]
+    base_recursive = config.PER_COURSE_K["recursive"]
     n = max(1, n_courses)
-    return min(base["retrieve_k"] * n, config.MAX_RETRIEVE_K)
+    return {
+        "retrieve_k": min(base_hybrid["retrieve_k"] * n, config.MAX_RETRIEVE_K),
+        "rerank_k": min(base_recursive["rerank_k"] * n, config.MAX_RERANK_K),
+    }
 
 
 @timing_middleware
@@ -26,7 +30,9 @@ def recursive_retrieval_node(state: PipelineState) -> dict:
     node_trace = list(state.get("node_trace", []))
     node_trace.append("recursive_retrieval")
 
-    retrieve_k = _compute_dynamic_k(len(course_ids))
+    dk = _compute_dynamic_k(len(course_ids))
+    retrieve_k = dk["retrieve_k"]
+    rerank_k = dk["rerank_k"]
 
     # Cache check
     if config.SESSION_CACHE_ENABLED:
@@ -41,7 +47,7 @@ def recursive_retrieval_node(state: PipelineState) -> dict:
         for cid in course_ids:
             chunks = hybrid_search(rewritten_query, cid, retrieve_k)
             all_chunks.extend(chunks)
-        reranked = voyage_rerank(rewritten_query, all_chunks, top_k=len(all_chunks))
+        reranked = voyage_rerank(rewritten_query, all_chunks, top_k=rerank_k)
 
         retrieval_cache_update = {}
         if config.SESSION_CACHE_ENABLED:

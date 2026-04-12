@@ -38,6 +38,7 @@ def retrieval_node(state: PipelineState) -> dict:
 
     dk = _compute_dynamic_k(function, len(course_ids))
     retrieve_k = dk["retrieve_k"]
+    rerank_k = dk["rerank_k"]
 
     # Cache check — skip retrieval on exact-match hit
     if config.SESSION_CACHE_ENABLED:
@@ -54,7 +55,7 @@ def retrieval_node(state: PipelineState) -> dict:
                 chunks = hybrid_search(rewritten_query, cid, retrieve_k)
                 all_chunks.extend(chunks)
             reranked = voyage_rerank(
-                rewritten_query, all_chunks, top_k=len(all_chunks),
+                rewritten_query, all_chunks, top_k=rerank_k,
             )
 
             retrieval_cache_update = {}
@@ -68,7 +69,7 @@ def retrieval_node(state: PipelineState) -> dict:
         elif function == "semantic_general":
             chunks = semantic_search(rewritten_query, retrieve_k)
             reranked = voyage_rerank(
-                rewritten_query, chunks, top_k=len(chunks),
+                rewritten_query, chunks, top_k=rerank_k,
             )
 
             retrieval_cache_update = {}
