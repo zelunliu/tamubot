@@ -24,7 +24,6 @@ tamu_data/processed/v3_step2_boilerplate.zip
 
 # Processed syllabus data (regeneratable by running the ingestion pipeline)
 tamu_data/processed/
-tamu_data/evals/golden_sets/
 
 # Logs
 logs/
