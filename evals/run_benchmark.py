@@ -5,7 +5,7 @@ and exports versioned reports for A/B experiment comparison.
 
 Usage:
     python evals/run_benchmark.py \
-        --golden-set tamu_data/evals/golden_sets/golden_20260311_v1.jsonl \
+        --golden-set tamu_data/evals/golden_sets/golden_20260411_v1.xlsx \
         --experiment-name cs600_ov100 \
         [--ragas]
 
@@ -15,7 +15,6 @@ Output:
 """
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -31,6 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
+from evals.golden_set import load as _load_golden_set, append_run_column as _append_run_column
 from rag import RouterResult
 from rag.generator import generate_stream
 from rag.graph.pipeline import run_pipeline as run_pipeline_v4
@@ -659,7 +659,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Benchmark runner — runs golden set through pipeline, exports versioned reports"
     )
-    parser.add_argument("--golden-set", required=True, help="Path to golden set JSONL")
+    parser.add_argument("--golden-set", required=True, help="Path to golden set .xlsx")
     parser.add_argument("--experiment-name", required=True,
                         help="Experiment identifier embedded in output filename (e.g. cs600_ov100)")
     parser.add_argument("--ragas", action="store_true",
@@ -671,12 +671,7 @@ def main():
         print(f"ERROR: Golden set not found: {golden_path}")
         sys.exit(1)
 
-    items = []
-    with golden_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
+    items = _load_golden_set(golden_path)
 
     print(f"\nBenchmark: {args.experiment_name}")
     print(f"Golden set: {golden_path}  ({len(items)} items)")
@@ -707,6 +702,17 @@ def main():
     print("\nWriting reports...")
     write_excel(rows, args.experiment_name, str(golden_path), xlsx_path, args.ragas)
     write_markdown(rows, args.experiment_name, md_path)
+
+    # Append pipeline answers as a run column in the golden set Excel
+    question_to_id = {item.get("question", ""): item.get("id") for item in items}
+    run_col_results = {}
+    for row in rows:
+        qid = question_to_id.get(row.question)
+        if qid is not None and row.answer_full:
+            run_col_results[qid] = row.answer_full
+    if run_col_results:
+        _append_run_column(golden_path, args.experiment_name, run_col_results)
+        print(f"Run column appended to {golden_path}  (run:{args.experiment_name})")
 
     # Final summary
     n = len(rows)
