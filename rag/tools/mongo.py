@@ -12,6 +12,7 @@ Canonical location: rag/tools/mongo.py
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from langfuse import observe
@@ -19,10 +20,10 @@ from pymongo import MongoClient
 
 import config
 
-CHUNKS_COLLECTION = "chunks_v3"
-COURSES_COLLECTION = "courses_v3"
-VECTOR_INDEX = "vector_index_v3"
-TEXT_INDEX = "text_index_v3"
+CHUNKS_COLLECTION = os.getenv("CHUNKS_COLLECTION", "chunks_v3")
+COURSES_COLLECTION = os.getenv("COURSES_COLLECTION", "courses_v3")
+VECTOR_INDEX = os.getenv("VECTOR_INDEX", "vector_index_v3")
+TEXT_INDEX = os.getenv("TEXT_INDEX", "text_index_v3")
 
 
 _client: Optional[MongoClient] = None
@@ -49,6 +50,8 @@ def _atlas_filter(course_id: str | None, term: str | None) -> dict | None:
         f["course_id"] = course_id
     if term:
         f["term"] = term
+    if ct := os.getenv("CHUNK_TAG_FILTER"):
+        f["chunk_tag"] = ct
     return f if f else None
 
 
@@ -69,8 +72,13 @@ def _build_vector_stage(embedding: list[float], k: int, filters: dict | None) ->
 
 def _build_text_stage(query: str, k: int, course_id: str | None) -> list[dict]:
     compound: dict = {"must": [{"text": {"query": query, "path": "content"}}]}
+    text_filters = []
     if course_id:
-        compound["filter"] = [{"equals": {"path": "course_id", "value": course_id}}]
+        text_filters.append({"equals": {"path": "course_id", "value": course_id}})
+    if ct := os.getenv("CHUNK_TAG_FILTER"):
+        text_filters.append({"equals": {"path": "chunk_tag", "value": ct}})
+    if text_filters:
+        compound["filter"] = text_filters
     return [
         {"$search": {"index": TEXT_INDEX, "compound": compound}},
         {"$limit": k},

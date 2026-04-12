@@ -27,6 +27,11 @@ class ChunkDocV3(BaseModel):
     term: str
     instructor_name: Optional[str] = None
 
+    # Chunk strategy metadata (populated during ingestion when --chunk-tag is provided)
+    chunk_tag: Optional[str] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+
     # Embedding (populated during ingestion)
     embedding: Optional[list[float]] = None
 

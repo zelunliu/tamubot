@@ -1,5 +1,7 @@
 # rag/ — RAG Pipeline
 
+Development is done by Claude Code inside Docker Container `tamubot-dev-1`
+
 ## Public API
 
 ```python

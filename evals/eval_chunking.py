@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime
@@ -26,6 +27,27 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# ---------------------------------------------------------------------------
+# Pre-parse collection/filter args BEFORE rag modules are imported.
+# rag/tools/mongo.py reads CHUNKS_COLLECTION etc. at import time, so env vars
+# must be set here — before the late `from rag.*` imports below (line ~102).
+# ---------------------------------------------------------------------------
+def _pre_arg(flag: str) -> "str | None":
+    """Extract the value of a --flag VALUE pair from sys.argv without argparse."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+if _col := _pre_arg("--chunks-collection"):
+    _suffix = _col.removeprefix("chunks_")
+    os.environ.setdefault("CHUNKS_COLLECTION", _col)
+    os.environ.setdefault("VECTOR_INDEX", f"vector_index_{_suffix}")
+    os.environ.setdefault("TEXT_INDEX", f"text_index_{_suffix}")
+if _ct := _pre_arg("--chunk-tag"):
+    os.environ.setdefault("CHUNK_TAG_FILTER", _ct)
 
 from evals.golden_set import load as _load_golden_set, append_run_column as _append_run_column  # noqa: E402
 
@@ -533,6 +555,16 @@ def main() -> None:
     parser.add_argument(
         "--ragas", action="store_true",
         help="Enable RAGAS ContextPrecision + ContextRecall (costs LLM tokens, ~30s/query)",
+    )
+    parser.add_argument(
+        "--chunks-collection", type=str, default=None,
+        help="MongoDB chunks collection to query (e.g. 'chunks_eval'). "
+             "Sets CHUNKS_COLLECTION/VECTOR_INDEX/TEXT_INDEX env vars before rag imports.",
+    )
+    parser.add_argument(
+        "--chunk-tag", type=str, default=None,
+        help="Filter retrieval to chunks with this chunk_tag field "
+             "(e.g. '300t_50o', 'semantic_v1'). Sets CHUNK_TAG_FILTER env var.",
     )
     parser.add_argument(
         "--chunk-size", type=int, default=None,
