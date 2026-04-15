@@ -122,11 +122,18 @@ def run_pipeline_eval(
     Returns:
         (chunks, router_result, timing_ms)
     """
+    from rag.router import deduplicate_chunks
+
     initial_state: PipelineState = {**_INITIAL_STATE, "query": query}
     invoke_kwargs = _make_invoke_kwargs(trace)
     result = _get_eval_graph().invoke(initial_state, **invoke_kwargs)
+
+    anchor = result.get("recursive_chunks", [])
+    followup = result.get("retrieved_chunks", [])
+    combined = deduplicate_chunks(anchor + followup) if anchor else followup
+
     return (
-        result.get("retrieved_chunks", []),
+        combined,
         _build_router_result(result),
         result.get("timing_ms", {}),
     )

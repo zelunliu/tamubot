@@ -26,11 +26,7 @@ Ready to run eval:
   Eval type:     chunking          # chunking | full-pipeline
   Experiment:    chunk_600ov100_k7_20260410
   Description:   <goal or notes for this run, e.g. "test smaller chunks for precision">
-  Metadata:      chunk_size=300, chunk_overlap=50, top_k=dynamic
-  hybrid_course:    retrieve_k=20, rerank_k=7
-  semantic_general: retrieve_k=30, rerank_k=10
-  recursive:        retrieve_k=15, rerank_k=5
-  Threshold:     0.35
+  Metadata:      show full FUNCTION_RETRIEVAL_CONFIG settings
   Outputs:       precision_at_k, hit_rate_at_k, recall_at_k, retrieved_tokens, context precision, context recall
   RAGAS:         no
 

@@ -105,8 +105,7 @@ def _compute_f1(precision: float, recall: float) -> float:
 def _compute_aggregates(results: list[dict]) -> dict:
     """Mean of each numeric metric across all query results."""
     metrics = [
-        "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-        "latency_ms", "recall_at_k", "f1_at_k", "context_precision",
+        "retrieved_tokens", "latency_ms", "recall_at_k", "context_precision",
     ]
     aggregates: dict = {}
     for m in metrics:
@@ -252,22 +251,16 @@ def _run_one_query(
     # top_k is a metric evaluation cutoff — slice the ranked chunks from pipeline
     eval_chunks = chunks[:top_k] if top_k is not None else chunks
 
-    emb = compute_embedding_metrics(question, eval_chunks, threshold)
+    retrieved_tokens = sum(len(c.get("content", "")) // 4 for c in eval_chunks)
 
-    print(
-        f"    prec={emb['precision_at_k']:.3f}  hit={emb['hit_rate_at_k']:.0f}"
-        f"  tokens={emb['retrieved_tokens']}  latency={latency_ms:.0f}ms"
-    )
+    print(f"    tokens={retrieved_tokens}  latency={latency_ms:.0f}ms")
 
     return {
         "query":            question,
         "_chunks":          eval_chunks,      # kept for RAGAS in loop, excluded from results
-        "precision_at_k":   emb["precision_at_k"],
-        "hit_rate_at_k":    emb["hit_rate_at_k"],
-        "retrieved_tokens": emb["retrieved_tokens"],
+        "retrieved_tokens": retrieved_tokens,
         "latency_ms":       latency_ms,
         "recall_at_k":      None,             # filled by loop after RAGAS
-        "f1_at_k":          None,
         "context_precision": None,
         "router_function":  router_result.function,
         "course_ids":       router_result.course_ids,
@@ -289,9 +282,8 @@ def _score_trace(
     RAGAS scores (context_precision, context_recall) are posted by
     compute_retrieval_ragas() directly — not duplicated here.
     """
-    # Per-query retrieval metrics (embedding-based, cheap)
-    for name in ("precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-                 "recall_at_k", "f1_at_k", "avg_chunk_score"):
+    # Per-query retrieval metrics
+    for name in ("retrieved_tokens", "recall_at_k", "avg_chunk_score"):
         value = row.get(name)
         if value is not None:
             lf.create_score(trace_id=trace_id, name=name, value=float(value))
@@ -426,12 +418,11 @@ def run_eval(
             )
             recall = ragas_scores.get("context_recall")
             precision_ragas = ragas_scores.get("context_precision")
-            f1 = _compute_f1(row["precision_at_k"], recall) if recall is not None else None
             row["recall_at_k"] = recall
-            row["f1_at_k"] = f1
             row["context_precision"] = precision_ragas
             recall_str = f"  recall={recall:.3f}" if recall is not None else ""
-            print(f"    ...{recall_str}")
+            prec_str = f"  context_precision={precision_ragas:.3f}" if precision_ragas is not None else ""
+            print(f"    ...{recall_str}{prec_str}")
 
         # Compute avg reranker score before dropping chunks
         chunk_scores = [c["score"] for c in row.get("_chunks", []) if isinstance(c.get("score"), (int, float))]
@@ -490,31 +481,27 @@ def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
     print(f"  RETRIEVAL EVAL: {run_name}  |  {len(results)} queries")
     print(f"{'='*80}")
 
-    header = f"  {'Query':<42} {'Prec':>6} {'Hit':>5} {'Tokens':>7} {'Lat(ms)':>8}"
+    header = f"  {'Query':<42} {'Tokens':>7} {'Lat(ms)':>8}"
     if has_ragas:
-        header += f" {'Recall':>7} {'F1':>6}"
+        header += f" {'Recall':>7} {'CtxPrec':>8}"
     print(header)
     print(f"  {'-'*78}")
 
     for r in results:
-        recall_str = ""
+        ragas_str = ""
         if has_ragas:
             rec = r.get("recall_at_k")
-            f1 = r.get("f1_at_k")
-            recall_str = (
-                f" {rec:>7.3f} {f1:>6.3f}"
-                if rec is not None and f1 is not None
-                else f" {'N/A':>7} {'N/A':>6}"
-            )
+            cp = r.get("context_precision")
+            rec_s = f"{rec:>7.3f}" if rec is not None else f"{'N/A':>7}"
+            cp_s = f"{cp:>8.3f}" if cp is not None else f"{'N/A':>8}"
+            ragas_str = f" {rec_s} {cp_s}"
         lat = r.get("latency_ms")
         lat_str = f"{lat:>8.0f}" if lat is not None else f"{'N/A':>8}"
         print(
             f"  {r.get('query', '')[:42]:<42}"
-            f" {r['precision_at_k']:>6.3f}"
-            f" {r['hit_rate_at_k']:>5.0f}"
             f" {r['retrieved_tokens']:>7d}"
             f" {lat_str}"
-            f"{recall_str}"
+            f"{ragas_str}"
         )
 
     print(f"{'='*80}")

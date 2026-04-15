@@ -32,7 +32,7 @@ _client: Optional[MongoClient] = None
 def _get_db():
     global _client
     if _client is None:
-        _client = MongoClient(config.MONGODB_URI)
+        _client = MongoClient(config.MONGODB_URI, tlsAllowInvalidCertificates=True)
     return _client[config.MONGODB_DB]
 
 

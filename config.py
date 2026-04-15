@@ -88,6 +88,13 @@ CHUNKS_PER_SLOT: int = 2
 # Fallback when no specific categories given: top-N per unique course_id.
 STRATIFIED_FALLBACK_PER_COURSE: int = 6
 
+# --- Reranker knee-point filter ---
+# When enabled, cuts low-signal chunks after reranking using a score-gap heuristic.
+RERANK_KNEE_ENABLED: bool = os.getenv("RERANK_KNEE_ENABLED", "false").lower() == "true"
+RERANK_KNEE_ABS_THRESHOLD: float = float(os.getenv("RERANK_KNEE_ABS_THRESHOLD", "0.15"))
+RERANK_KNEE_MIN_CHUNKS: int = int(os.getenv("RERANK_KNEE_MIN_CHUNKS", "2"))
+RERANK_KNEE_MIN_GAP_FALLBACK: float = float(os.getenv("RERANK_KNEE_MIN_GAP_FALLBACK", "0.05"))
+
 # --- Retrieval backend ---
 # "mongodb" (default) or "vertex" (legacy fallback)
 RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "mongodb")
