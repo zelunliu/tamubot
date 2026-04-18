@@ -5,7 +5,7 @@ and exports versioned reports for A/B experiment comparison.
 
 Usage:
     python evals/run_benchmark.py \
-        --golden-set tamu_data/evals/golden_sets/golden_20260311_v1.jsonl \
+        --golden-set tamu_data/evals/golden_sets/golden_20260411_v1.xlsx \
         --experiment-name cs600_ov100 \
         [--ragas]
 
@@ -15,7 +15,6 @@ Output:
 """
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -31,10 +30,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
+from evals.golden_set import append_run_column as _append_run_column
+from evals.golden_set import load as _load_golden_set
 from rag import RouterResult
 from rag.generator import generate_stream
 from rag.graph.pipeline import run_pipeline as run_pipeline_v4
-from rag.tools.langfuse import get_langfuse
+from rag.observability import (
+    EvalInputs,
+    benchmark_config,
+    create_trace,
+    finalize_trace,
+    get_langfuse,
+    run_evals,
+)
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
 
@@ -109,24 +117,11 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
     source_course_id = str(item.get("source_course_id") or "")
     expected_fn = str(item.get("expected_function", ""))
 
-    # Langfuse trace per question (enables avg_chunk_score in UI)
-    lf = get_langfuse()
-    lf_span = None
-    trace_id: Optional[str] = None
-    if lf is not None:
-        try:
-            lf_span = lf.start_observation(
-                name=f"benchmark_q{question_id}",
-                input={"question": query},
-                metadata={
-                    "experiment": experiment_name,
-                    "question_id": question_id,
-                    "expected_function": expected_fn,
-                },
-            )
-            trace_id = lf_span.trace_id
-        except Exception:
-            pass
+    # Langfuse trace per question via observability config
+    obs = benchmark_config(experiment_name=experiment_name, ragas=do_ragas)
+    obs.metadata.update({"question_id": question_id, "expected_function": expected_fn})
+    lf_trace, trace_id = create_trace(obs, query=query)
+    lf_span = lf_trace  # backward compat with pipeline trace= parameter
 
     t0 = time.perf_counter()
     error: Optional[str] = None
@@ -181,15 +176,13 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
     generator_ms = round((time.perf_counter() - t_gen) * 1000, 1)
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    # Langfuse: close span and post avg chunk relevance score
-    if lf_span is not None:
-        try:
-            lf_span.end(output=answer[:500])
-        except Exception:
-            pass
+    # Langfuse: close trace and post avg chunk relevance score
+    finalize_trace(lf_trace, output=answer[:500])
+    lf = get_langfuse()
+    if lf and trace_id:
         try:
             chunk_scores = [c["score"] for c in chunks if isinstance(c.get("score"), (int, float))]
-            if chunk_scores and lf is not None and trace_id:
+            if chunk_scores:
                 lf.create_score(
                     trace_id=trace_id,
                     name="avg_chunk_score",
@@ -200,14 +193,15 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
         except Exception:
             pass
 
-    # RAGAS (optional)
+    # RAGAS via observability eval blocks (synchronous for benchmarks)
     ragas_faithfulness: Optional[float] = None
     ragas_relevancy: Optional[float] = None
     if do_ragas and chunks and answer and not error:
         try:
-            from rag import compute_ragas_metrics
             contexts = [c.get("content", "") for c in chunks if c.get("content")]
-            scores = compute_ragas_metrics(question=query, contexts=contexts, answer=answer)
+            scores = run_evals(obs, EvalInputs(
+                question=query, contexts=contexts, answer=answer, trace_id=trace_id,
+            ))
             ragas_faithfulness = scores.get("faithfulness")
             ragas_relevancy = scores.get("answer_relevancy")
         except Exception:
@@ -659,7 +653,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Benchmark runner — runs golden set through pipeline, exports versioned reports"
     )
-    parser.add_argument("--golden-set", required=True, help="Path to golden set JSONL")
+    parser.add_argument("--golden-set", required=True, help="Path to golden set .xlsx")
     parser.add_argument("--experiment-name", required=True,
                         help="Experiment identifier embedded in output filename (e.g. cs600_ov100)")
     parser.add_argument("--ragas", action="store_true",
@@ -671,12 +665,7 @@ def main():
         print(f"ERROR: Golden set not found: {golden_path}")
         sys.exit(1)
 
-    items = []
-    with golden_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
+    items = _load_golden_set(golden_path)
 
     print(f"\nBenchmark: {args.experiment_name}")
     print(f"Golden set: {golden_path}  ({len(items)} items)")
@@ -707,6 +696,17 @@ def main():
     print("\nWriting reports...")
     write_excel(rows, args.experiment_name, str(golden_path), xlsx_path, args.ragas)
     write_markdown(rows, args.experiment_name, md_path)
+
+    # Append pipeline answers as a run column in the golden set Excel
+    question_to_id = {item.get("question", ""): item.get("id") for item in items}
+    run_col_results = {}
+    for row in rows:
+        qid = question_to_id.get(row.question)
+        if qid is not None and row.answer_full:
+            run_col_results[qid] = row.answer_full
+    if run_col_results:
+        _append_run_column(golden_path, args.experiment_name, run_col_results)
+        print(f"Run column appended to {golden_path}  (run:{args.experiment_name})")
 
     # Final summary
     n = len(rows)

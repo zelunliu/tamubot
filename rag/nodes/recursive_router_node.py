@@ -1,4 +1,4 @@
-"""Recursive generator node — synthesizes new routing decision from anchor chunks.
+"""Recursive router node — synthesizes new routing decision from anchor chunks.
 
 Acts like a mini-router: given original query + history + anchor course chunks,
 it decides what to search for next (function, course_ids, rewritten_query).
@@ -8,24 +8,46 @@ from __future__ import annotations
 
 import json
 
+from langfuse import get_client as _lf_get_client
+from langfuse import observe
+
+import config
 from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 _VALID_FUNCTIONS = {"semantic_general", "hybrid_course"}
 
 
+@observe(as_type="generation", name="pipeline.router.recursive")
+def _classify_recursive(prompt: str) -> dict:
+    """Call the LLM to synthesize a follow-up routing decision from anchor chunks."""
+    from rag.tools.llm import call_llm
+    messages = [{"role": "user", "content": prompt}]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
+    llm_result = call_llm(messages, temperature=0.2, max_tokens=4096, json_mode=True)
+    _lf_get_client().update_current_generation(
+        output=llm_result.text,
+        usage_details={
+            "input": llm_result.input_tokens or 0,
+            "output": llm_result.output_tokens or 0,
+        } if llm_result.input_tokens is not None else None,
+    )
+    return json.loads(llm_result.text)
+
+
 @timing_middleware
 @error_guard_middleware
-def recursive_generator_node(state: PipelineState) -> dict:
+def recursive_router_node(state: PipelineState) -> dict:
     """Synthesize a new routing decision from anchor chunks + original query."""
-    from rag.tools.llm import call_llm
-
     query = state.get("query", "")
     recursive_chunks = state.get("recursive_chunks", [])
     history_context = state.get("history_context") or ""
     course_ids = state.get("course_ids", [])
     node_trace = list(state.get("node_trace", []))
-    node_trace.append("recursive_generator")
+    node_trace.append("recursive_router")
 
     # Summarize anchor content, capped to avoid token bloat
     anchor_text = " ".join(
@@ -41,24 +63,23 @@ def recursive_generator_node(state: PipelineState) -> dict:
         f"The student originally asked: {query}\n\n"
         f"{history_block}"
         f"You retrieved the following information about {course_label}:\n{anchor_text}\n\n"
+        f"IMPORTANT: {course_label} has already been retrieved and its content will be "
+        f"included in the generation context. Do NOT include {course_label} in course_ids "
+        f"or rewritten_query — your follow-up search must find OTHER courses that help "
+        f"answer the student's original question.\n\n"
         f"Based on the student's intent and the retrieved course information, decide what to "
         f"search for next. Output JSON only:\n"
         f'{{"function": "semantic_general" or "hybrid_course", '
         f'"course_ids": [], '
         f'"rewritten_query": "targeted search string"}}\n\n'
         f'Use "hybrid_course" with specific course_ids only when the answer requires '
-        f'looking up named specific courses (e.g. prerequisites). '
-        f'Use "semantic_general" for discovery (similar topics, complementary courses, etc).'
+        f'looking up named specific courses (e.g. prerequisites listed in the anchor). '
+        f'Use "semantic_general" for discovery (similar topics, complementary courses, '
+        f'courses to take after/with the anchor, etc).'
     )
 
     try:
-        llm_result = call_llm(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=4096,
-            json_mode=True,
-        )
-        data = json.loads(llm_result.text)
+        data = _classify_recursive(prompt)
 
         new_function = data.get("function", "semantic_general")
         if new_function not in _VALID_FUNCTIONS:

@@ -6,7 +6,7 @@
 # --- App ---
 run:
 	@echo "Starting TamuBot..."
-	@. .venv/bin/activate && streamlit run app.py
+	@streamlit run app.py --server.headless true
 
 # --- Data Pipeline ---
 scrape-catalog:
@@ -35,16 +35,16 @@ ingest-corpus:
 
 # --- Dev / Testing ---
 test:
-	.venv/bin/pytest tests/ -v
+	pytest tests/ -v
 
 typecheck:
-	.venv/bin/mypy rag/ ingestion_pipeline/ evals/ --ignore-missing-imports
+	mypy rag/ ingestion_pipeline/ evals/ --ignore-missing-imports
 
 lint:
-	.venv/bin/ruff check rag/ ingestion_pipeline/ evals/ app.py config.py
+	ruff check rag/ ingestion_pipeline/ evals/ app.py config.py
 
 format:
-	.venv/bin/ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
+	ruff format rag/ ingestion_pipeline/ evals/ app.py config.py
 
 probe:
 	python evals/run_probe.py --suite smoke

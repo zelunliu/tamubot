@@ -47,7 +47,7 @@
     []
   ],
   "flexMode": "full",
-  "compactThreshold": 100,
+  "compactThreshold": 60,
   "colorLevel": 2,
   "defaultPadding": " ",
   "inheritSeparatorColors": false,

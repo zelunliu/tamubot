@@ -6,7 +6,7 @@ from langgraph.graph import END, StateGraph
 from rag.edges.routing import route_after_router
 from rag.nodes.generator_node import generator_node
 from rag.nodes.out_of_scope_node import out_of_scope_node
-from rag.nodes.recursive_generator_node import recursive_generator_node
+from rag.nodes.recursive_router_node import recursive_router_node
 from rag.nodes.recursive_retrieval_node import recursive_retrieval_node
 from rag.nodes.retrieval_node import retrieval_node
 from rag.nodes.router_node import router_node
@@ -19,7 +19,7 @@ def build_graph():
 
     graph.add_node("router", router_node)
     graph.add_node("recursive_retrieval", recursive_retrieval_node)
-    graph.add_node("recursive_generator", recursive_generator_node)
+    graph.add_node("recursive_router", recursive_router_node)
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("generator", generator_node)
     graph.add_node("out_of_scope", out_of_scope_node)
@@ -36,8 +36,8 @@ def build_graph():
         },
     )
 
-    graph.add_edge("recursive_retrieval", "recursive_generator")
-    graph.add_edge("recursive_generator", "retrieval")
+    graph.add_edge("recursive_retrieval", "recursive_router")
+    graph.add_edge("recursive_router", "retrieval")
     graph.add_edge("retrieval", "generator")
     graph.add_edge("generator", END)
     graph.add_edge("out_of_scope", END)
@@ -56,7 +56,7 @@ def build_graph_eval():
 
     graph.add_node("router", router_node)
     graph.add_node("recursive_retrieval", recursive_retrieval_node)
-    graph.add_node("recursive_generator", recursive_generator_node)
+    graph.add_node("recursive_router", recursive_router_node)
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("out_of_scope", out_of_scope_node)
 
@@ -72,8 +72,8 @@ def build_graph_eval():
         },
     )
 
-    graph.add_edge("recursive_retrieval", "recursive_generator")
-    graph.add_edge("recursive_generator", "retrieval")
+    graph.add_edge("recursive_retrieval", "recursive_router")
+    graph.add_edge("recursive_router", "retrieval")
     graph.add_edge("retrieval", END)
     graph.add_edge("out_of_scope", END)
 
@@ -90,7 +90,7 @@ def build_graph_with_memory(checkpointer=None):
     graph.add_node("history_inject", history_inject_node)
     graph.add_node("router", router_node)
     graph.add_node("recursive_retrieval", recursive_retrieval_node)
-    graph.add_node("recursive_generator", recursive_generator_node)
+    graph.add_node("recursive_router", recursive_router_node)
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("generator", generator_node)
     graph.add_node("out_of_scope", out_of_scope_node)
@@ -109,8 +109,8 @@ def build_graph_with_memory(checkpointer=None):
         },
     )
 
-    graph.add_edge("recursive_retrieval", "recursive_generator")
-    graph.add_edge("recursive_generator", "retrieval")
+    graph.add_edge("recursive_retrieval", "recursive_router")
+    graph.add_edge("recursive_router", "retrieval")
     graph.add_edge("retrieval", "generator")
     graph.add_edge("generator", "history_update")
     graph.add_edge("out_of_scope", "history_update")

@@ -62,6 +62,11 @@ def router_node(state: PipelineState) -> dict:
         cached = state.get("router_cache", {}).get(cache_key)
         if cached:
             node_trace.append("router_cache_hit")
+            try:
+                from langfuse import get_client
+                get_client().update_current_observation(metadata={"cache_hit": True})
+            except Exception:
+                pass
             return {
                 "router_result": None,  # RouterResult object not available from cache dict
                 "function": cached["function"],

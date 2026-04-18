@@ -43,9 +43,17 @@ from evals.eval_pipeline import (  # noqa: F401  (TestCase re-exported for calle
     TEST_SUITE,
     TestCase,
 )
-from rag import get_langfuse, run_pipeline_with_memory, run_ragas_background
+from rag import run_pipeline_with_memory
 from rag.generator import generate
-from rag.router import route_retrieve_rerank
+from rag.graph.pipeline import run_pipeline
+from rag.observability import (
+    EvalInputs,
+    create_trace,
+    finalize_trace,
+    get_langfuse,
+    probe_config,
+    run_evals,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,33 +104,17 @@ def run_probe(
         Summary dict with function, chunk count, trace URL, token estimates, etc.
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    trace_name = f"Probe_{ts}_{_sanitize(query)}"
-    tags = ["probe"]
-    if tag:
-        tags.append(tag)
-    if memory:
-        tags.append("memory")
 
-    # --- Langfuse trace ---
-    lf = get_langfuse()
-    span = None
-    trace_id = None
-    if lf is not None:
-        try:
-            span = lf.start_observation(
-                name=trace_name,
-                input={"query": query},
-                metadata={
-                    "tags": tags,
-                    "session_id": session_id or f"probe_{ts}",
-                    "tag": tag,
-                    "memory": memory,
-                },
-            )
-            trace_id = span.trace_id
-        except Exception as e:
-            print(f"  [WARNING] Langfuse trace creation failed: {e}", file=sys.stderr)
-    else:
+    # --- Langfuse trace via observability config ---
+    obs = probe_config(tag=tag, session_id=session_id or f"probe_{ts}", ragas=ragas)
+    if memory:
+        obs.tags.append("memory")
+    obs.metadata.update({"tag": tag, "memory": memory})
+    trace, trace_id = create_trace(obs, query=query)
+    # For backward compat with pipeline trace= parameter
+    span = trace
+
+    if get_langfuse() is None:
         print(
             "  [WARNING] Langfuse not configured (LANGFUSE_PUBLIC_KEY unset) "
             "— pipeline runs without tracing.",
@@ -145,7 +137,7 @@ def run_probe(
         generation_elapsed = time.time() - t1
     else:
         reranked, router_result, data_gaps, data_integrity, _conflicted, _timing = (
-            route_retrieve_rerank(query, trace=span)
+            run_pipeline(query, trace=span, return_timing=True)
         )
         retrieval_elapsed = time.time() - t0
 
@@ -161,21 +153,13 @@ def run_probe(
         )
         generation_elapsed = time.time() - t1
 
-    # Attach final answer to trace
-    if span is not None:
-        try:
-            span.end(output=answer[:500])
-        except Exception:
-            pass
+    # Attach final answer to trace and flush
+    finalize_trace(trace, output=answer[:500])
 
-    # --- Optional RAGAS background scoring ---
+    # --- Optional RAGAS evaluation via observability config ---
     if ragas and trace_id:
         contexts = [doc.get("content", "") for doc in reranked]
-        run_ragas_background(query, contexts, answer, trace_id)
-
-    # Flush so trace appears in Langfuse immediately
-    if lf is not None:
-        lf.flush()
+        run_evals(obs, EvalInputs(question=query, contexts=contexts, answer=answer, trace_id=trace_id))
 
     # --- Token estimates ---
     chunk_text = "".join(doc.get("content", "") for doc in reranked)

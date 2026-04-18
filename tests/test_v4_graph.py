@@ -68,7 +68,7 @@ def test_semantic_general_path():
 
 def test_recursive_path_node_trace():
     result = _invoke_graph("recursive", query="what should I take with CSCE 221?")
-    expected_nodes = ["router", "recursive_retrieval", "recursive_generator", "retrieval", "generator"]
+    expected_nodes = ["router", "recursive_retrieval", "recursive_router", "retrieval", "generator"]
     for node in expected_nodes:
         assert node in result["node_trace"], f"Missing node: {node}"
 

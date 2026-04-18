@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import logging
 
+from langfuse import get_client as _lf_get_client
+from langfuse import observe
+
 import config
 from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import ConversationMessage, PipelineState
@@ -82,6 +85,7 @@ def history_update_node(state: PipelineState) -> dict:
     }
 
 
+@observe(as_type="generation", name="pipeline.history.summary")
 def _update_summary(existing_summary: str, user_msg: str, assistant_msg: str) -> str:
     """Call LLM to produce an updated concise session summary."""
     prior = f"Prior summary: {existing_summary}" if existing_summary else "No prior summary."
@@ -96,9 +100,20 @@ def _update_summary(existing_summary: str, user_msg: str, assistant_msg: str) ->
             ),
         }
     ]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
     try:
         result = call_llm(messages, temperature=0.0, max_tokens=4096)
         updated = result.text.strip()
+        _lf_get_client().update_current_generation(
+            output=updated,
+            usage_details={
+                "input": result.input_tokens or 0,
+                "output": result.output_tokens or 0,
+            } if result.input_tokens is not None else None,
+        )
         return updated if updated else existing_summary
     except Exception:
         import logging

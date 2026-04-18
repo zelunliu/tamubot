@@ -131,7 +131,101 @@ def build_course_doc(data: dict, source_file: str) -> dict:
     return validated.model_dump()
 
 
-def build_chunk_docs_v3(data: dict, source_file: str) -> list[dict]:
+_SEMESTER_MAP = {
+    "11": "Spring", "21": "Summer I", "31": "Summer II", "41": "Fall",
+    "01": "Spring", "02": "Summer", "03": "Fall",
+}
+
+
+def _parse_v3_result_filename(stem: str) -> dict:
+    """Extract metadata from v3_result filename: {semester}_{dept}_{num}_{section}_{crn}_v{ver}.
+
+    Returns dict with keys: crn, course_id, section, term (empty string on parse failure).
+    """
+    parts = stem.split("_")
+    # Expected: ['202541', 'CSCE', '111', '500', '49744', 'v010']
+    if len(parts) < 5:
+        return {"crn": "", "course_id": "", "section": "", "term": ""}
+    semester = parts[0]          # e.g. '202541'
+    dept = parts[1]              # e.g. 'CSCE'
+    course_num = parts[2]        # e.g. '111'
+    section = parts[3]           # e.g. '500'
+    crn = parts[4]               # e.g. '49744'
+    year = semester[:4]
+    sem_code = semester[4:]
+    season = _SEMESTER_MAP.get(sem_code, f"Term{sem_code}")
+    term = f"{season} {year}"
+    course_id = f"{dept} {course_num}"
+    return {"crn": crn, "course_id": course_id, "section": section, "term": term}
+
+
+def build_chunk_docs_v3_result(
+    data: dict,
+    source_file: str,
+    chunk_tag: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[dict]:
+    """Build ChunkDocV3 docs from v3_result format files.
+
+    v3_result format has top-level course_id/semester/source_file instead of
+    course_metadata. CRN, section, term are parsed from source_file filename.
+    """
+    stem = Path(source_file).stem
+    meta = _parse_v3_result_filename(stem)
+    crn = meta["crn"]
+    course_id = meta["course_id"]
+    section = meta["section"]
+    term = meta["term"]
+
+    # chunk_size/overlap from file if not provided on CLI
+    eff_chunk_size = chunk_size if chunk_size is not None else data.get("chunk_size")
+    eff_chunk_overlap = chunk_overlap if chunk_overlap is not None else data.get("overlap")
+
+    docs = []
+    for i, chunk in enumerate(data.get("chunks", [])):
+        idx = chunk.get("chunk_index", i)
+        validated = ChunkDocV3(
+            crn=crn,
+            chunk_index=idx,
+            content=chunk.get("content") or "",
+            has_table=chunk.get("has_table") or False,
+            course_id=course_id,
+            section=section,
+            term=term,
+            instructor_name=None,
+            source_file=source_file,
+            chunk_tag=chunk_tag,
+            chunk_size=eff_chunk_size,
+            chunk_overlap=eff_chunk_overlap,
+        )
+        docs.append(validated.model_dump())
+    return docs
+
+
+def build_course_doc_v3_result(data: dict, source_file: str) -> dict:
+    """Build CourseDocV3 doc from v3_result format files."""
+    stem = Path(source_file).stem
+    meta = _parse_v3_result_filename(stem)
+    chunks = data.get("chunks", [])
+    validated = CourseDocV3(
+        crn=meta["crn"],
+        course_id=meta["course_id"],
+        section=meta["section"],
+        term=meta["term"],
+        chunk_count=len(chunks),
+        source_file=source_file,
+    )
+    return validated.model_dump()
+
+
+def build_chunk_docs_v3(
+    data: dict,
+    source_file: str,
+    chunk_tag: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[dict]:
     """Build ChunkDocV3 documents for the chunks_v3 collection."""
     meta = data.get("course_metadata", {})
     crn = str(meta.get("crn") or "")
@@ -153,6 +247,9 @@ def build_chunk_docs_v3(data: dict, source_file: str) -> list[dict]:
             term=term,
             instructor_name=instructor_name,
             source_file=source_file,
+            chunk_tag=chunk_tag,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
         docs.append(validated.model_dump())
     return docs
@@ -270,10 +367,30 @@ def main():
                         help="JSON file with 'crns' list — ingest only those CRNs "
                              "(e.g. tamu_data/evals/eval_corpus.json)")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
-    parser.add_argument("--v3", action="store_true", help="Ingest from V3 flat JSONs")
+    parser.add_argument("--v3", action="store_true", help="Ingest from V3 flat JSONs (v3_step3_flat format)")
+    parser.add_argument("--v3-result", action="store_true",
+                        help="Ingest from v3_result chunker output format "
+                             "(top-level course_id/semester, CRN from filename)")
+    parser.add_argument("--source-dir", type=str,
+                        help="Override source directory (default: tamu_data/processed/v3_step3_flat)")
+    parser.add_argument("--chunks-collection", type=str,
+                        help="Target MongoDB collection for chunks (default: chunks_v3 with --v3)")
+    parser.add_argument("--courses-collection", type=str,
+                        help="Target MongoDB collection for courses (default: courses_v3 with --v3)")
+    parser.add_argument("--chunk-tag", type=str,
+                        help="Strategy tag stored on each chunk doc (e.g. '300t_50o', 'semantic_v1')")
+    parser.add_argument("--chunk-size", type=int,
+                        help="Chunk token size stored on each chunk doc (for reporting)")
+    parser.add_argument("--chunk-overlap", type=int,
+                        help="Chunk overlap token size stored on each chunk doc (for reporting)")
     args = parser.parse_args()
 
-    parsed_dir = PARSED_DIR_V3 if args.v3 else PARSED_DIR_LEGACY
+    if args.source_dir:
+        parsed_dir = Path(args.source_dir)
+    elif args.v3 or getattr(args, 'v3_result', False):
+        parsed_dir = PARSED_DIR_V3
+    else:
+        parsed_dir = PARSED_DIR_LEGACY
     if not parsed_dir.exists():
         print(f"ERROR: Parsed directory not found: {parsed_dir}")
         sys.exit(1)
@@ -301,8 +418,9 @@ def main():
     if not json_files:
         return
 
-    chunks_col = "chunks_v3" if args.v3 else "chunks"
-    courses_col = "courses_v3" if args.v3 else "courses"
+    is_v3 = args.v3 or getattr(args, 'v3_result', False)
+    chunks_col = args.chunks_collection or ("chunks_v3" if is_v3 else "chunks")
+    courses_col = args.courses_collection or ("courses_v3" if is_v3 else "courses")
 
     if args.dry_run:
         print("DRY RUN — no database writes will occur")
@@ -312,7 +430,16 @@ def main():
                 if "error" in data:
                     print(f"  {f.name}: SKIP (error file)")
                     continue
-                chunks = build_chunk_docs_v3(data, f.name) if args.v3 else build_chunk_docs(data, f.name)
+                if getattr(args, 'v3_result', False):
+                    chunks = build_chunk_docs_v3_result(
+                        data, f.name, chunk_tag=args.chunk_tag,
+                        chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
+                    )
+                elif args.v3:
+                    chunks = build_chunk_docs_v3(data, f.name, chunk_tag=args.chunk_tag,
+                                                 chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap)
+                else:
+                    chunks = build_chunk_docs(data, f.name)
                 print(f"  {f.name}: {len(chunks)} chunks")
         return
 
@@ -335,8 +462,22 @@ def main():
 
         try:
             # Build documents
-            if args.v3:
-                chunk_docs = build_chunk_docs_v3(data, filepath.name)
+            if getattr(args, 'v3_result', False):
+                chunk_docs = build_chunk_docs_v3_result(
+                    data, filepath.name,
+                    chunk_tag=args.chunk_tag,
+                    chunk_size=args.chunk_size,
+                    chunk_overlap=args.chunk_overlap,
+                )
+                course_doc = build_course_doc_v3_result(data, filepath.name)
+                policy_ops = []
+            elif args.v3:
+                chunk_docs = build_chunk_docs_v3(
+                    data, filepath.name,
+                    chunk_tag=args.chunk_tag,
+                    chunk_size=args.chunk_size,
+                    chunk_overlap=args.chunk_overlap,
+                )
                 course_doc = build_course_doc_v3(data, filepath.name)
                 policy_ops = []
             else:

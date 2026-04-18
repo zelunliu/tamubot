@@ -1,5 +1,4 @@
 ---
-name: run-eval
 description: Guided eval runner — discovers golden sets, confirms settings, runs eval
 triggers: ["run eval", "run benchmark", "run evals", "benchmark the pipeline", "benchmark rag", "run chunking eval"]
 ---
@@ -27,8 +26,8 @@ Ready to run eval:
   Eval type:     chunking          # chunking | full-pipeline
   Experiment:    chunk_600ov100_k7_20260410
   Description:   <goal or notes for this run, e.g. "test smaller chunks for precision">
-  Metadata:      chunk_size=600, chunk_overlap=100, top_k=7, threshold=0.35
-  Outputs:       precision_at_k, hit_rate_at_k, recall_at_k, retrieved_tokens
+  Metadata:      show full FUNCTION_RETRIEVAL_CONFIG settings
+  Outputs:       precision_at_k, hit_rate_at_k, recall_at_k, retrieved_tokens, context precision, context recall
   RAGAS:         no
 
 Confirm or edit.
@@ -42,25 +41,18 @@ Wait for confirmation before proceeding.
 
 ## Step 3 — Run
 
-**Retrieval / chunking eval** — use `eval_chunking.py`. It has full Langfuse integration (traces, scores, dataset run linking). `eval_retrieval_metrics.py` is a metrics library only — never use it as a runner.
-
+**Chunking eval:**
 ```bash
-python evals/eval_chunking.py \
-  --golden-set <golden_file> \
-  --experiment <experiment> \
-  --dataset "<dataset_name>" \
-  --chunk-size <n> --chunk-overlap <n> \
-  --top-k <n> --threshold <n> \
-  --description "<description>" \
-  [--ragas]
+docker exec tamubot-dev-1 bash -c "cd /workspace && make eval-chunking \
+  GOLDEN=<golden_file> EXP=<experiment> \
+  CHUNK_SIZE=<n> CHUNK_OVERLAP=<n> TOP_K=<n> THRESHOLD=<n> \
+  DESC='<description>' $(if ragas: RAGAS=1)"
 ```
 
-**Full-pipeline benchmark** (end-to-end with generation):
+**Full-pipeline benchmark:**
 ```bash
-python evals/run_benchmark.py \
-  --golden-set <golden_file> \
-  --experiment-name <experiment> \
-  [--ragas]
+docker exec tamubot-dev-1 bash -c "cd /workspace && make bench \
+  GOLDEN=<golden_file> EXP=<experiment> $(if ragas: --ragas)"
 ```
 
 Stream output live.

@@ -5,7 +5,7 @@ import traceback
 import streamlit as st
 
 import config
-from rag.tools.langfuse import get_langfuse
+from rag.observability import create_trace, finalize_trace, prod_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tamubot")
@@ -159,17 +159,8 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
             # --- MongoDB 3-stage pipeline: Route → Retrieve+Rerank → Generate ---
 
             # Create a parent Langfuse trace for this request
-            lf = get_langfuse()
-            lf_trace = None
-            if lf is not None:
-                try:
-                    lf_trace = lf.start_observation(
-                        name="TamuBot_Complete_Pipeline",
-                        input=prompt,
-                        metadata={"session_id": str(id(st.session_state))},
-                    )
-                except Exception:
-                    lf_trace = None
+            obs = prod_config(session_id=str(id(st.session_state)))
+            lf_trace, _trace_id = create_trace(obs, query=prompt)
 
             source_docs = []
             router_result = None
@@ -206,15 +197,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                 if _cached_answer:
                     answer_placeholder = st.empty()
                     answer_placeholder.markdown(_cached_answer)
-                    if lf_trace is not None:
-                        try:
-                            lf_trace.update(output=_cached_answer)
-                        except Exception:
-                            pass
-                        try:
-                            lf.flush()
-                        except Exception:
-                            pass
+                    finalize_trace(lf_trace, output=_cached_answer)
                     st.session_state.messages.append({"role": "assistant", "content": _cached_answer})
                     st.stop()
 
@@ -256,15 +239,7 @@ if prompt := st.chat_input("Ask about courses, syllabi, or degree requirements..
                     answer += "\n\n---\n**Syllabi:** " + links
 
             # Close the parent trace and flush all buffered spans
-            if lf_trace is not None:
-                try:
-                    lf_trace.update(output=answer)
-                except Exception:
-                    pass
-                try:
-                    lf.flush()
-                except Exception:
-                    pass
+            finalize_trace(lf_trace, output=answer)
 
             if source_docs:
                 with st.expander("View Source Documents", expanded=False):

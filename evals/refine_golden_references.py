@@ -10,15 +10,17 @@ Schema changes applied:
            expected_semantic_intent, human_judgment
 
 Usage:
-    python evals/refine_golden_references.py
-    python evals/refine_golden_references.py --input tamu_data/evals/golden_sets/golden_20260313_draft_v1.jsonl
+    python evals/refine_golden_references.py --input <jsonl> --output <jsonl>
+    python evals/refine_golden_references.py --input <jsonl> --overwrite
     python evals/refine_golden_references.py --dry-run       # prints prompts, skips API
-    python evals/refine_golden_references.py --overwrite     # writes in-place
-    python evals/refine_golden_references.py --excel         # also export to .xlsx
     python evals/refine_golden_references.py --excel-only    # convert existing JSONL → .xlsx, no API calls
+
+Excel and Langfuse dataset upload are automatic after every successful run.
+Use --dataset to override the dataset name (default: output filename stem).
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -27,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+from rag import get_langfuse
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -321,6 +324,71 @@ def deduplicate_and_number(items: list[dict]) -> tuple[list[dict], int, int]:
 
 
 # ---------------------------------------------------------------------------
+# Langfuse dataset upsert
+# ---------------------------------------------------------------------------
+
+def _item_id(question: str) -> str:
+    return hashlib.md5(question.encode()).hexdigest()[:16]
+
+
+def upsert_langfuse_dataset(items: list[dict], dataset_name: str) -> None:
+    """Push golden set items to a Langfuse dataset (create-or-update)."""
+    lf = get_langfuse()
+    if lf is None:
+        print("  [Langfuse] Not configured — skipping dataset upload.")
+        return
+
+    try:
+        lf.create_dataset(
+            name=dataset_name,
+            description="TamuBot golden evaluation set — questions with reference answers.",
+        )
+    except Exception:
+        pass  # already exists
+
+    # Fetch existing questions to avoid duplicate items
+    existing: set[str] = set()
+    try:
+        page = 1
+        while True:
+            resp = lf.api.dataset_items.list(dataset_name=dataset_name, page=page, limit=100)
+            for it in resp.data:
+                q = it.input if isinstance(it.input, str) else ""
+                if q:
+                    existing.add(q)
+            if len(resp.data) < 100:
+                break
+            page += 1
+    except Exception:
+        pass
+
+    uploaded = 0
+    for item in items:
+        question = item.get("question", "")
+        if not question or question in existing:
+            continue
+        try:
+            lf.create_dataset_item(
+                dataset_name=dataset_name,
+                input=question,
+                expected_output=item.get("reference_answer") or "",
+                metadata={
+                    "id":                  item.get("id"),
+                    "expected_function":   item.get("expected_function"),
+                    "source_course_id":    item.get("source_course_id"),
+                    "source_category":     item.get("source_category"),
+                    "expected_course_ids": item.get("expected_course_ids"),
+                },
+            )
+            uploaded += 1
+        except Exception as e:
+            print(f"  [Langfuse] Item upsert failed for '{question[:40]}': {e}")
+
+    lf.flush()
+    print(f"  Langfuse dataset '{dataset_name}': {uploaded}/{len(items)} items uploaded.")
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
@@ -329,8 +397,8 @@ def refine(
     output_path: Path,
     dry_run: bool = False,
     verbose: bool = False,
-    excel: bool = False,
     excel_only: bool = False,
+    dataset_name: str = "",
 ) -> None:
     print(f"\n{'=' * 60}")
     print("  Golden Set Reference Answer Refinement")
@@ -340,6 +408,8 @@ def refine(
         print("  Mode:   Excel export only (no API calls)")
     else:
         print(f"  API:    {'DRY-RUN (no calls)' if dry_run else config.TAMU_MODEL}")
+    if dataset_name:
+        print(f"  Langfuse dataset: {dataset_name}")
     print(f"{'=' * 60}\n")
 
     items = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -358,6 +428,8 @@ def refine(
         print(f"  JSONL:  {output_path}")
         xlsx_path = output_path.with_suffix(".xlsx")
         export_to_excel(items, xlsx_path)
+        ds_name = dataset_name or output_path.stem
+        upsert_langfuse_dataset(items, ds_name)
         return
 
     print(f"Indexing markdown files from {MARKDOWN_DIR}...")
@@ -437,9 +509,11 @@ def refine(
     print(f"  Removed — duplicates: {n_dupes}  |  empty answers: {n_empty}")
     print(f"{'=' * 60}\n")
 
-    if excel:
-        xlsx_path = output_path.with_suffix(".xlsx")
-        export_to_excel(results, xlsx_path)
+    xlsx_path = output_path.with_suffix(".xlsx")
+    export_to_excel(results, xlsx_path)
+
+    ds_name = dataset_name or output_path.stem
+    upsert_langfuse_dataset(results, ds_name)
 
 
 # ---------------------------------------------------------------------------
@@ -471,12 +545,12 @@ def main() -> None:
         help="Print prompt previews and synthesized answers",
     )
     parser.add_argument(
-        "--excel", action="store_true",
-        help="Also export the output to a .xlsx file alongside the JSONL",
-    )
-    parser.add_argument(
         "--excel-only", action="store_true",
         help="Convert the input JSONL to .xlsx without making any API calls",
+    )
+    parser.add_argument(
+        "--dataset", default="",
+        help="Langfuse dataset name to upload items to (default: output filename stem)",
     )
     args = parser.parse_args()
 
@@ -492,8 +566,8 @@ def main() -> None:
         output_path=output_path,
         dry_run=args.dry_run,
         verbose=args.verbose,
-        excel=args.excel,
         excel_only=args.excel_only,
+        dataset_name=args.dataset,
     )
 
 

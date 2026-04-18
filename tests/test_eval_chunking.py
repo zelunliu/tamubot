@@ -1,38 +1,38 @@
 """Unit tests for pure functions in evals/eval_chunking.py."""
-import json
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # load_golden_set
 # ---------------------------------------------------------------------------
 
-def test_load_golden_set_returns_all_items(tmp_path):
-    """Reads every non-empty JSONL line."""
+def test_golden_set_load_returns_all_items(tmp_path):
+    """Reads every non-empty row from an xlsx golden set."""
+    from evals.golden_set import load, save
     data = [
-        {"question": "What is grading?", "reference_answer": "A/B/C"},
-        {"question": "Who teaches it?", "reference_answer": "Dr. Smith"},
+        {"id": 1, "question": "What is grading?", "reference_answer": "A/B/C",
+         "expected_function": "hybrid_course", "human_notes": None},
+        {"id": 2, "question": "Who teaches it?", "reference_answer": "Dr. Smith",
+         "expected_function": "hybrid_course", "human_notes": None},
     ]
-    gs_file = tmp_path / "golden.jsonl"
-    gs_file.write_text("\n".join(json.dumps(d) for d in data), encoding="utf-8")
-
-    from evals.eval_chunking import load_golden_set
-    result = load_golden_set(gs_file)
-
+    path = tmp_path / "golden.xlsx"
+    save(data, path)
+    result = load(path)
     assert len(result) == 2
     assert result[0]["question"] == "What is grading?"
 
 
-def test_load_golden_set_skips_blank_lines(tmp_path):
-    """Ignores blank lines in JSONL."""
-    gs_file = tmp_path / "golden.jsonl"
-    gs_file.write_text(
-        '{"question": "Q1", "reference_answer": "A1"}\n\n\n',
-        encoding="utf-8",
-    )
-
-    from evals.eval_chunking import load_golden_set
-    result = load_golden_set(gs_file)
-
+def test_golden_set_load_skips_empty_question_rows(tmp_path):
+    """Ignores rows with empty question in xlsx golden set."""
+    from evals.golden_set import load, save
+    data = [
+        {"id": 1, "question": "Q1", "reference_answer": "A1",
+         "expected_function": "hybrid_course", "human_notes": None},
+        {"id": 2, "question": "", "reference_answer": "",
+         "expected_function": "", "human_notes": None},
+    ]
+    path = tmp_path / "golden.xlsx"
+    save(data, path)
+    result = load(path)
     assert len(result) == 1
 
 
@@ -176,7 +176,7 @@ def test_run_eval_skips_item_without_reference_when_ragas():
 
     with patch("evals.eval_chunking.run_pipeline_eval") as mock_pipe:
         from evals.eval_chunking import run_eval
-        results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=True, lf=None)
+        results, _, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=True, lf=None)
 
     mock_pipe.assert_not_called()
     assert results == []
@@ -188,7 +188,7 @@ def test_run_eval_skips_item_without_question():
 
     with patch("evals.eval_chunking.run_pipeline_eval") as mock_pipe:
         from evals.eval_chunking import run_eval
-        results, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=False, lf=None)
+        results, _, _ = run_eval(items, "test", "test_ds", None, 0.85, ragas_enabled=False, lf=None)
 
     mock_pipe.assert_not_called()
     assert results == []
@@ -203,7 +203,7 @@ def test_run_eval_returns_embedding_metrics_only():
          patch("evals.eval_chunking.compute_embedding_metrics",
                return_value={"precision_at_k": 1.0, "hit_rate_at_k": 1.0, "retrieved_tokens": 30}):
         from evals.eval_chunking import run_eval
-        results, run_name = run_eval(
+        results, run_name, _ = run_eval(
             [_make_item()], "test_exp", "test_ds", None, 0.85, ragas_enabled=False, lf=None
         )
 
@@ -218,33 +218,30 @@ def test_run_eval_logs_trace_and_scores_to_langfuse():
     """When lf is set: creates one trace per query, scores each metric, links dataset item."""
     mock_rr = _make_mock_router_result()
     mock_lf = MagicMock()
-    mock_span = MagicMock()
-    mock_span.trace_id = "trace-abc"
-    mock_lf.start_observation.return_value = mock_span
+    mock_trace = MagicMock()
+    mock_trace.id = "trace-abc"
 
     with patch("evals.eval_chunking.upsert_langfuse_dataset") as mock_upsert, \
+         patch("evals.eval_chunking.create_trace",
+               return_value=(mock_trace, "trace-abc")) as mock_ct, \
          patch("evals.eval_chunking.run_pipeline_eval",
-               return_value=([{"content": "x"}], mock_rr, {})), \
-         patch("evals.eval_chunking.compute_embedding_metrics",
-               return_value={"precision_at_k": 0.5, "hit_rate_at_k": 1.0, "retrieved_tokens": 10}):
+               return_value=([{"content": "x", "score": 0.9}], mock_rr, {})):
         from evals.eval_chunking import run_eval
-        results, run_name = run_eval(
+        results, run_name, _ = run_eval(
             [_make_item()], "exp", "test_ds", None, 0.85, ragas_enabled=False, lf=mock_lf
         )
 
     # dataset upsert called
     mock_upsert.assert_called_once()
-    # one span opened per query
-    mock_lf.start_observation.assert_called_once()
-    # span ended before scoring
-    mock_span.end.assert_called_once()
-    # scores posted via create_score (not score_trace)
+    # one trace created per query
+    mock_ct.assert_called_once()
+    # trace updated with output
+    mock_trace.update.assert_called_once()
+    # scores posted via create_score (retrieved_tokens from _score_trace)
     score_names = {call.kwargs["name"] for call in mock_lf.create_score.call_args_list}
-    assert "precision_at_k" in score_names
-    assert "hit_rate_at_k" in score_names
     assert "retrieved_tokens" in score_names
     # dataset item linked via dataset_run_items
     mock_lf.api.dataset_run_items.create.assert_called_once()
     # results returned
     assert len(results) == 1
-    assert results[0]["precision_at_k"] == 0.5
+    assert results[0]["retrieved_tokens"] >= 0

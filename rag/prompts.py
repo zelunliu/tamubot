@@ -49,11 +49,13 @@ a named course as an anchor ("What should I take with CS 638?", "What follows CS
 False when the question is about named courses only, or no course ID is mentioned.
 
 QUERY REWRITING
-For recursive queries, rewritten_query must be a focused lookup string targeting the
-anchor course content (strip the discovery intent):
+For recursive queries, rewritten_query is an anchor course lookup ONLY.
+Strip ALL discovery intent — the discovery goal is handled in a later step.
+The query must name the course, not what the student wants to do with it:
 - "What should I take with CSCE 605?" → "retrieve course CSCE 605"
-- "Who teaches CSCE 605?" → "retrieve professor CSCE 605"
-- "Good courses with CSCE 605 this semester?" → "retrieve schedule CSCE 605"
+- "What courses follow CSCE 632?" → "retrieve course CSCE 632"
+- "Compare CSCE 638 with something similar" → "retrieve course CSCE 638"
+- "Who teaches courses like CSCE 605?" → "retrieve course CSCE 605"
 For all other queries, expand with synonyms as usual.
 
 Output ONLY a JSON object with these fields:
@@ -122,12 +124,14 @@ _HYBRID_COURSE_DEFAULT = (
 _FUNCTION_PROMPTS: dict[str, str] = {
     "hybrid_course": _HYBRID_COURSE_DEFAULT,
     "recursive": (
-        "The user wants to find courses related to a specific anchor course. "
-        "You have already retrieved information about the anchor course and used it "
-        "to run a targeted discovery search. Answer based on the discovered courses, using "
-        "the anchor course as context for why each result is relevant. "
-        "Present recommendations clearly — one per paragraph or as a bulleted list. "
-        "Recommend at most 3 courses — prioritize depth of explanation over breadth."
+        "The student asked about courses in relation to a specific anchor course. "
+        "Context includes both the anchor course and related discovered courses. "
+        "Answer the student's original question directly: "
+        "for discovery questions (what to take after/with/similar to X), recommend the "
+        "discovered courses using the anchor only as background context — do not recommend "
+        "the anchor course itself as an answer to a discovery query. "
+        "For comparison questions (compare X with Y), present a structured comparison of both. "
+        "Limit discovery recommendations to at most 3 courses — depth over breadth."
     ),
     "semantic_general": (
         "The user has a broad question not tied to a specific course. "

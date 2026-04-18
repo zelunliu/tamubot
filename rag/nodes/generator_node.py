@@ -17,10 +17,18 @@ def generator_node(state: PipelineState) -> dict:
     if state.get("recursive_search"):
         function = "recursive"
 
+    anchor_chunks = state.get("recursive_chunks") or []
+    anchor_ids = {c.get("course_id") for c in anchor_chunks}
+    follow_up_chunks = [
+        c for c in (state.get("retrieved_chunks") or [])
+        if c.get("course_id") not in anchor_ids
+    ]
+    results = anchor_chunks + follow_up_chunks
+
     try:
         tokens = list(generate_stream(
-            results=state.get("retrieved_chunks", []),
-            question=state.get("rewritten_query") or state.get("query", ""),
+            results=results,
+            question=state.get("query", ""),
             function=function,
             course_ids=state.get("course_ids", []),
             intent_type=state.get("intent_type"),

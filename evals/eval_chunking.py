@@ -6,7 +6,7 @@ experiment run — each query is one row, each metric is a column.
 
 Usage:
     python evals/eval_chunking.py \\
-        --golden-set tamu_data/evals/golden_sets/golden_20260313_draft_v1.jsonl \\
+        --golden-set tamu_data/evals/golden_sets/golden_20260411_v1.xlsx \\
         [--experiment chunk_600_ov100] \\
         [--dataset chunking_golden_v1] \\
         [--top-k 7] \\
@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime
@@ -27,23 +28,31 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# ---------------------------------------------------------------------------
+# Pre-parse collection/filter args BEFORE rag modules are imported.
+# rag/tools/mongo.py reads CHUNKS_COLLECTION etc. at import time, so env vars
+# must be set here — before the late `from rag.*` imports below (line ~102).
+# ---------------------------------------------------------------------------
+def _pre_arg(flag: str) -> "str | None":
+    """Extract the value of a --flag VALUE pair from sys.argv without argparse."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+if _col := _pre_arg("--chunks-collection"):
+    _suffix = _col.removeprefix("chunks_")
+    os.environ.setdefault("CHUNKS_COLLECTION", _col)
+    os.environ.setdefault("VECTOR_INDEX", f"vector_index_{_suffix}")
+    os.environ.setdefault("TEXT_INDEX", f"text_index_{_suffix}")
+if _ct := _pre_arg("--chunk-tag"):
+    os.environ.setdefault("CHUNK_TAG_FILTER", _ct)
+
+from evals.golden_set import append_run_column as _append_run_column  # noqa: E402
+from evals.golden_set import load as _load_golden_set  # noqa: E402
 
 logger = logging.getLogger("tamubot.eval_chunking")
-
-
-# ---------------------------------------------------------------------------
-# Golden set loader
-# ---------------------------------------------------------------------------
-
-def load_golden_set(path: Path) -> list[dict]:
-    """Load a golden set JSONL file. Returns list of question dicts."""
-    items = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-    return items
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +106,7 @@ def _compute_f1(precision: float, recall: float) -> float:
 def _compute_aggregates(results: list[dict]) -> dict:
     """Mean of each numeric metric across all query results."""
     metrics = [
-        "precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-        "latency_ms", "recall_at_k", "f1_at_k", "context_precision",
+        "retrieved_tokens", "latency_ms", "recall_at_k", "context_precision",
     ]
     aggregates: dict = {}
     for m in metrics:
@@ -115,13 +123,16 @@ def _compute_aggregates(results: list[dict]) -> dict:
 
 from rag.graph.pipeline import run_pipeline_eval  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Langfuse dataset upsert
 # ---------------------------------------------------------------------------
-
-from rag import get_langfuse  # noqa: E402
-from rag.tools.langfuse import compute_retrieval_ragas  # noqa: E402
+from rag.observability import (  # noqa: E402
+    EvalInputs,
+    chunking_config,
+    create_trace,
+    get_langfuse,
+    run_evals,
+)
 
 
 def _item_id(question: str) -> str:
@@ -244,22 +255,16 @@ def _run_one_query(
     # top_k is a metric evaluation cutoff — slice the ranked chunks from pipeline
     eval_chunks = chunks[:top_k] if top_k is not None else chunks
 
-    emb = compute_embedding_metrics(question, eval_chunks, threshold)
+    retrieved_tokens = sum(len(c.get("content", "")) // 4 for c in eval_chunks)
 
-    print(
-        f"    prec={emb['precision_at_k']:.3f}  hit={emb['hit_rate_at_k']:.0f}"
-        f"  tokens={emb['retrieved_tokens']}  latency={latency_ms:.0f}ms"
-    )
+    print(f"    tokens={retrieved_tokens}  latency={latency_ms:.0f}ms")
 
     return {
         "query":            question,
         "_chunks":          eval_chunks,      # kept for RAGAS in loop, excluded from results
-        "precision_at_k":   emb["precision_at_k"],
-        "hit_rate_at_k":    emb["hit_rate_at_k"],
-        "retrieved_tokens": emb["retrieved_tokens"],
+        "retrieved_tokens": retrieved_tokens,
         "latency_ms":       latency_ms,
         "recall_at_k":      None,             # filled by loop after RAGAS
-        "f1_at_k":          None,
         "context_precision": None,
         "router_function":  router_result.function,
         "course_ids":       router_result.course_ids,
@@ -281,9 +286,8 @@ def _score_trace(
     RAGAS scores (context_precision, context_recall) are posted by
     compute_retrieval_ragas() directly — not duplicated here.
     """
-    # Per-query retrieval metrics (embedding-based, cheap)
-    for name in ("precision_at_k", "hit_rate_at_k", "retrieved_tokens",
-                 "recall_at_k", "f1_at_k"):
+    # Per-query retrieval metrics
+    for name in ("retrieved_tokens", "recall_at_k", "avg_chunk_score"):
         value = row.get(name)
         if value is not None:
             lf.create_score(trace_id=trace_id, name=name, value=float(value))
@@ -313,7 +317,7 @@ def run_eval(
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     description: Optional[str] = None,
-) -> tuple[list[dict], str]:
+) -> tuple[list[dict], str, dict]:
     """Run retrieval eval over all golden items.
 
     Langfuse layout when lf is set:
@@ -324,7 +328,7 @@ def run_eval(
       • All traces tagged [experiment, run_name, "chunking_eval"] for filtering.
 
     Returns:
-        Tuple of (results list, run_name string).
+        Tuple of (results list, run_name string, run_col_results dict mapping question id to chunk string).
     """
     run_name = f"{experiment}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -348,47 +352,38 @@ def run_eval(
         print(f"\nRunning eval: experiment={experiment!r}  run={run_name!r}\n")
 
     results: list[dict] = []
+    question_to_id = {item.get("question", ""): item.get("id") for item in golden_items}
+    run_col_results: dict = {}
 
     for i, item in enumerate(golden_items, 1):
         question = item.get("question", item.get("query", ""))
         reference = item.get("reference_answer", "") or ""
 
-        # Open Langfuse span BEFORE pipeline call.
-        # The span's trace_id is passed to run_pipeline_eval() → CallbackHandler,
-        # which nests router + retrieval node spans under this trace — same
-        # structure as production runs.
-        span = None
-        if lf:
-            try:
-                span = lf.start_observation(
-                    name=f"chunking_eval_{run_name}",
-                    input=question,
-                    metadata={"experiment": experiment, "run_name": run_name},
-                )
-            except Exception as e:
-                logger.warning(f"Langfuse span open failed for '{question[:40]}': {e}")
+        # Create trace BEFORE pipeline call — trace_id passed to
+        # run_pipeline_eval() → CallbackHandler for span nesting.
+        obs = chunking_config(experiment=experiment, run_name=run_name, ragas=ragas_enabled)
+        trace, trace_id_for_item = create_trace(obs, query=question)
+        span = trace  # backward compat with _run_one_query trace= parameter
 
         row = _run_one_query(
             question, reference, top_k, threshold, ragas_enabled,
             i, len(golden_items), span=span,
         )
 
-        # End span BEFORE RAGAS — trace latency = router + retrieval only.
-        trace_id = None
-        if lf and span is not None:
+        # End trace BEFORE RAGAS — trace latency = router + retrieval only.
+        trace_id = trace_id_for_item
+        if trace is not None:
             try:
                 if row is not None:
-                    span.update(
+                    trace.update(
                         output={"router_function": row["router_function"],
                                 "n_chunks": len(row["_chunks"])},
                         metadata={"experiment": experiment, "run_name": run_name,
                                   "router_function": row["router_function"],
                                   "course_ids": row["course_ids"]},
                     )
-                span.end()
-                trace_id = span.trace_id
             except Exception as e:
-                logger.warning(f"Langfuse span end failed for '{question[:40]}': {e}")
+                logger.warning(f"Langfuse trace update failed for '{question[:40]}': {e}")
 
         if row is None:
             # Still link skipped items to the dataset run so they appear in Langfuse
@@ -405,23 +400,36 @@ def run_eval(
                     logger.warning(f"Langfuse skip link failed for '{question[:40]}': {e}")
             continue
 
-        # Run RAGAS after span.end() — doesn't inflate trace latency.
-        # compute_retrieval_ragas() posts context_precision + context_recall
-        # scores directly to Langfuse via trace_id.
+        # Run RAGAS after trace update — doesn't inflate trace latency.
         if ragas_enabled and row["_chunks"] and reference:
             contexts = [c.get("content", "") for c in row["_chunks"]]
-            ragas_scores = compute_retrieval_ragas(
+            ragas_scores = run_evals(obs, EvalInputs(
                 question=question, contexts=contexts, reference=reference,
                 trace_id=trace_id,
-            )
+            ))
             recall = ragas_scores.get("context_recall")
             precision_ragas = ragas_scores.get("context_precision")
-            f1 = _compute_f1(row["precision_at_k"], recall) if recall is not None else None
             row["recall_at_k"] = recall
-            row["f1_at_k"] = f1
             row["context_precision"] = precision_ragas
             recall_str = f"  recall={recall:.3f}" if recall is not None else ""
-            print(f"    ...{recall_str}")
+            prec_str = f"  context_precision={precision_ragas:.3f}" if precision_ragas is not None else ""
+            print(f"    ...{recall_str}{prec_str}")
+
+        # Compute avg reranker score before dropping chunks
+        chunk_scores = [c["score"] for c in row.get("_chunks", []) if isinstance(c.get("score"), (int, float))]
+        row["avg_chunk_score"] = sum(chunk_scores) / len(chunk_scores) if chunk_scores else None
+
+        # Build run column value: "CSCE 670 §SCHEDULE 0.87, CSCE 638 §LO 0.71"
+        run_col_parts = []
+        for c in row.get("_chunks", []):
+            cid = c.get("course_id", "?")
+            cat = c.get("category", "?")
+            score = c.get("score")
+            score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
+            run_col_parts.append(f"{cid} §{cat} {score_str}")
+        qid = question_to_id.get(question)
+        if qid is not None and run_col_parts:
+            run_col_results[qid] = ", ".join(run_col_parts)
 
         # Strip internal _chunks before storing
         row.pop("_chunks", None)
@@ -450,7 +458,7 @@ def run_eval(
     if lf:
         lf.flush()
 
-    return results, run_name
+    return results, run_name, run_col_results
 
 
 # ---------------------------------------------------------------------------
@@ -464,31 +472,27 @@ def print_summary(results: list[dict], run_name: str, aggregates: dict) -> None:
     print(f"  RETRIEVAL EVAL: {run_name}  |  {len(results)} queries")
     print(f"{'='*80}")
 
-    header = f"  {'Query':<42} {'Prec':>6} {'Hit':>5} {'Tokens':>7} {'Lat(ms)':>8}"
+    header = f"  {'Query':<42} {'Tokens':>7} {'Lat(ms)':>8}"
     if has_ragas:
-        header += f" {'Recall':>7} {'F1':>6}"
+        header += f" {'Recall':>7} {'CtxPrec':>8}"
     print(header)
     print(f"  {'-'*78}")
 
     for r in results:
-        recall_str = ""
+        ragas_str = ""
         if has_ragas:
             rec = r.get("recall_at_k")
-            f1 = r.get("f1_at_k")
-            recall_str = (
-                f" {rec:>7.3f} {f1:>6.3f}"
-                if rec is not None and f1 is not None
-                else f" {'N/A':>7} {'N/A':>6}"
-            )
+            cp = r.get("context_precision")
+            rec_s = f"{rec:>7.3f}" if rec is not None else f"{'N/A':>7}"
+            cp_s = f"{cp:>8.3f}" if cp is not None else f"{'N/A':>8}"
+            ragas_str = f" {rec_s} {cp_s}"
         lat = r.get("latency_ms")
         lat_str = f"{lat:>8.0f}" if lat is not None else f"{'N/A':>8}"
         print(
             f"  {r.get('query', '')[:42]:<42}"
-            f" {r['precision_at_k']:>6.3f}"
-            f" {r['hit_rate_at_k']:>5.0f}"
             f" {r['retrieved_tokens']:>7d}"
             f" {lat_str}"
-            f"{recall_str}"
+            f"{ragas_str}"
         )
 
     print(f"{'='*80}")
@@ -508,7 +512,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--golden-set", type=Path, required=True,
-        help="Path to golden set JSONL (e.g. tamu_data/evals/golden_sets/golden_*.jsonl)",
+        help="Path to golden set .xlsx (e.g. tamu_data/evals/golden_sets/golden_*.xlsx)",
     )
     parser.add_argument(
         "--experiment", default="chunking_eval",
@@ -529,6 +533,16 @@ def main() -> None:
     parser.add_argument(
         "--ragas", action="store_true",
         help="Enable RAGAS ContextPrecision + ContextRecall (costs LLM tokens, ~30s/query)",
+    )
+    parser.add_argument(
+        "--chunks-collection", type=str, default=None,
+        help="MongoDB chunks collection to query (e.g. 'chunks_eval'). "
+             "Sets CHUNKS_COLLECTION/VECTOR_INDEX/TEXT_INDEX env vars before rag imports.",
+    )
+    parser.add_argument(
+        "--chunk-tag", type=str, default=None,
+        help="Filter retrieval to chunks with this chunk_tag field "
+             "(e.g. '300t_50o', 'semantic_v1'). Sets CHUNK_TAG_FILTER env var.",
     )
     parser.add_argument(
         "--chunk-size", type=int, default=None,
@@ -555,7 +569,7 @@ def main() -> None:
     dataset_name = args.dataset or args.golden_set.stem
 
     print(f"\nLoading golden set: {args.golden_set}")
-    golden_items = load_golden_set(args.golden_set)
+    golden_items = _load_golden_set(args.golden_set)
     print(f"  {len(golden_items)} items loaded")
 
     lf = get_langfuse()
@@ -568,7 +582,7 @@ def main() -> None:
         f"  |  ragas: {'yes' if args.ragas else 'no'}"
     )
 
-    results, run_name = run_eval(
+    results, run_name, run_col_results = run_eval(
         golden_items=golden_items,
         experiment=args.experiment,
         dataset_name=dataset_name,
@@ -587,6 +601,10 @@ def main() -> None:
 
     aggregates = _compute_aggregates(results)
     print_summary(results, run_name, aggregates)
+
+    if run_col_results:
+        _append_run_column(args.golden_set, run_name, run_col_results)
+        print(f"Run column appended to {args.golden_set}  (run:{run_name})")
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
