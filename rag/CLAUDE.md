@@ -8,7 +8,9 @@ Development is done by Claude Code inside Docker Container `tamubot-dev-1`
 from rag import run_pipeline, run_pipeline_with_memory, get_current_state
 from rag import ChunkDoc, CourseDoc, PolicyDoc, VALID_CATEGORIES
 from rag import RouterResult, PipelineState, ConversationState
-from rag import get_langfuse, run_ragas_background, compute_ragas_metrics
+from rag import get_langfuse
+from rag.observability import prod_config, probe_config, benchmark_config, chunking_config
+from rag.observability import create_trace, finalize_trace, EvalInputs, run_evals
 ```
 
 ## LLM Client
@@ -31,4 +33,4 @@ for token in stream_llm(messages, temperature=0.2, max_tokens=4096, thinking_bud
 - **Gemini JSON mode**: free-form Markdown fields silently return empty → always render Markdown in Python (`_render_comparison_markdown()`)
 - **Primacy-recency** (`format_context_xml`): rank 1 → context start, rank 2 → context end, ranks 3–N → middle
 - **Gate 1** (sync, regex): `validate_citations_with_trace()` — checks `[Source N]` presence after generation
-- **Gate 2** (async, LLM): `run_groundedness_scoring_background()` — RAGAS groundedness in background thread, score → Langfuse
+- **Observability**: `rag/observability/` package replaces `rag/tools/langfuse.py` — config-driven tracing + eval blocks

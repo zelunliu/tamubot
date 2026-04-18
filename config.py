@@ -35,7 +35,7 @@ GOOGLE_API_RPM: int = int(os.getenv("GOOGLE_API_RPM", "20"))
 # --- TAMU AI API (OpenAI-compatible gateway; data privacy + institutional billing) ---
 TAMU_API_KEY = os.getenv("TAMU_API_KEY")
 TAMU_BASE_URL = os.getenv("TAMU_BASE_URL", "https://chat-api.tamu.ai/openai")
-TAMU_MODEL = os.getenv("TAMU_MODEL", "protected.gemini-2.5-flash")
+TAMU_MODEL = os.getenv("TAMU_MODEL", "protected.gemini-2.5-flash-lite")
 # When set, all RAG LLM calls route through TAMU API instead of direct Google API.
 # ingestion_pipeline/process_syllabi.py is excluded (uses PDF multimodal input).
 USE_TAMU_API: bool = bool(TAMU_API_KEY)
@@ -88,8 +88,13 @@ CHUNKS_PER_SLOT: int = 2
 # Fallback when no specific categories given: top-N per unique course_id.
 STRATIFIED_FALLBACK_PER_COURSE: int = 6
 
+# --- Reranker score threshold ---
+# Drops chunks below a fixed score after reranking. Always active.
+RERANK_SCORE_THRESHOLD: float = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.35"))
+RERANK_SCORE_MIN_CHUNKS: int = int(os.getenv("RERANK_SCORE_MIN_CHUNKS", "2"))
+
 # --- Reranker knee-point filter ---
-# When enabled, cuts low-signal chunks after reranking using a score-gap heuristic.
+# When enabled, cuts low-signal chunks using a score-gap heuristic (off by default).
 RERANK_KNEE_ENABLED: bool = os.getenv("RERANK_KNEE_ENABLED", "false").lower() == "true"
 RERANK_KNEE_ABS_THRESHOLD: float = float(os.getenv("RERANK_KNEE_ABS_THRESHOLD", "0.15"))
 RERANK_KNEE_MIN_CHUNKS: int = int(os.getenv("RERANK_KNEE_MIN_CHUNKS", "2"))

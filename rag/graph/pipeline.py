@@ -93,12 +93,18 @@ def run_pipeline(
         (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids)
         or if return_timing=True: adds timing_ms dict as 6th element.
     """
+    from rag.router import deduplicate_chunks
+
     initial_state: PipelineState = {**_INITIAL_STATE, "query": query}
     invoke_kwargs = _make_invoke_kwargs(trace)
     result = _get_graph().invoke(initial_state, **invoke_kwargs)
 
+    anchor = result.get("recursive_chunks", [])
+    followup = result.get("retrieved_chunks", [])
+    chunks = deduplicate_chunks(anchor + followup) if anchor else followup
+
     five_tuple = (
-        result.get("retrieved_chunks", []),
+        chunks,
         _build_router_result(result),
         result.get("data_gaps", []),
         result.get("data_integrity", True),
@@ -180,9 +186,15 @@ def run_pipeline_with_memory(
     invoke_kwargs = _make_invoke_kwargs(trace, thread_config)
     result = _memory_graph.invoke(initial_state, **invoke_kwargs)
 
+    from rag.router import deduplicate_chunks
+
+    anchor = result.get("recursive_chunks", [])
+    followup = result.get("retrieved_chunks", [])
+    chunks = deduplicate_chunks(anchor + followup) if anchor else followup
+
     answer_str = result.get("answer") or ""
     return (
-        result.get("retrieved_chunks", []),
+        chunks,
         _build_router_result(result),
         result.get("data_gaps", []),
         result.get("data_integrity", True),

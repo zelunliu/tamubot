@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import config
 from lightrag import QueryParam
-from rag.tools.langfuse import compute_ragas_metrics
+from rag.observability.evals import EvalInputs, run_evals
 
 # Add spike dir to path for sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -114,12 +114,14 @@ async def run_eval(golden_path: Path, storage_dir: Path | None = None, skip_raga
             row.elapsed_ms = int((time.time() - t0) * 1000)
 
             if not skip_ragas:
+                from rag.observability import benchmark_config
                 print(f"  Scoring with RAGAS...")
-                scores = compute_ragas_metrics(
+                obs = benchmark_config(ragas=True)
+                scores = run_evals(obs, EvalInputs(
                     question=question,
                     contexts=[context] if context else ["(no context)"],
                     answer=answer,
-                )
+                ))
                 row.ragas_faithfulness = scores.get("faithfulness")
                 row.ragas_answer_relevancy = scores.get("answer_relevancy")
                 faith_str = f"{row.ragas_faithfulness:.3f}" if row.ragas_faithfulness is not None else "N/A"

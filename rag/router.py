@@ -138,7 +138,7 @@ FUNCTION_CATEGORY_STRATEGIES: dict = {}
 # Classification
 # ---------------------------------------------------------------------------
 
-@observe(as_type="generation", name="Router_Stage")
+@observe(as_type="generation", name="pipeline.router")
 def classify_query(
     query: str,
     prior_course_ids: Optional[list[str]] = None,
@@ -229,28 +229,6 @@ def classify_query(
 
     return result
 
-
-# ---------------------------------------------------------------------------
-# Orchestrator: route → retrieve → rerank
-# ---------------------------------------------------------------------------
-
-def route_retrieve_rerank(
-    query: str,
-    trace=None,
-) -> tuple[list[dict], "RouterResult", list[tuple[str, str]], bool, list[str], dict]:
-    """Run the full RAG pipeline via v4.
-
-    Returns:
-        (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids,
-         timing_ms)  where timing_ms = {"router_ms": float, "retrieval_ms": float}
-    """
-    from rag.graph.pipeline import run_pipeline  # lazy import to avoid circular
-    return run_pipeline(query, trace=trace, return_timing=True)  # trace used for CallbackHandler
-
-
-def router_order(query: str) -> "RouterResult":
-    """Router_Stage: classify query using @observe-decorated classify_query."""
-    return classify_query(query)
 
 
 def deduplicate_chunks(results: list[dict]) -> list[dict]:

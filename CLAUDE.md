@@ -2,28 +2,19 @@
 
 > Module-level detail: `rag/CLAUDE.md`, `ingestion_pipeline/CLAUDE.md`, `evals/CLAUDE.md`
 
-## Docker Sandbox (standard dev entry point)
+## Environment
 
-```bash
-make sandbox-up      # start dev + api-proxy containers (Streamlit on :8501)
-make sandbox-shell   # open bash inside dev container
-make sandbox-down    # tear down all containers
-make agent           # open Claude session inside dev container (exec, not new container)
-```
+Claude Code runs **inside** the Docker container (`tamubot-dev-1`). Docker is not available inside the container. Python packages are installed system-wide (no `.venv`).
 
-Streamlit: http://localhost:8501
+Host-side commands (run from Windows Powershell, not from Claude): `make sandbox-up | sandbox-down | sandbox-shell | agent`
+
 Docs: `docs/DOCKER_SETUP.md` (Windows 11 WSL2 + Mac) | `docs/API_SAFETY.md` (proxy + rate limits)
 
 ## Commands
 
 ```bash
-# Inside container (no Docker available) — bare host / WSL2 direct
-streamlit run app.py --server.headless true          # start app
-
-# Windows Git Bash (outside container, with venv)
-source .venv/Scripts/activate && streamlit run app.py
-
-make test | lint | typecheck | format | eval-router | probe | probe-full
+streamlit run app.py --server.headless true          # start app (port 8501)
+make test | lint | typecheck | format | probe | probe-full
 ```
 
 

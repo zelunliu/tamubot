@@ -8,18 +8,40 @@ from __future__ import annotations
 
 import json
 
+from langfuse import get_client as _lf_get_client
+from langfuse import observe
+
+import config
 from rag.graph.middleware import error_guard_middleware, timing_middleware
 from rag.state.pipeline_state import PipelineState
 
 _VALID_FUNCTIONS = {"semantic_general", "hybrid_course"}
 
 
+@observe(as_type="generation", name="pipeline.router.recursive")
+def _classify_recursive(prompt: str) -> dict:
+    """Call the LLM to synthesize a follow-up routing decision from anchor chunks."""
+    from rag.tools.llm import call_llm
+    messages = [{"role": "user", "content": prompt}]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
+    llm_result = call_llm(messages, temperature=0.2, max_tokens=4096, json_mode=True)
+    _lf_get_client().update_current_generation(
+        output=llm_result.text,
+        usage_details={
+            "input": llm_result.input_tokens or 0,
+            "output": llm_result.output_tokens or 0,
+        } if llm_result.input_tokens is not None else None,
+    )
+    return json.loads(llm_result.text)
+
+
 @timing_middleware
 @error_guard_middleware
 def recursive_router_node(state: PipelineState) -> dict:
     """Synthesize a new routing decision from anchor chunks + original query."""
-    from rag.tools.llm import call_llm
-
     query = state.get("query", "")
     recursive_chunks = state.get("recursive_chunks", [])
     history_context = state.get("history_context") or ""
@@ -57,13 +79,7 @@ def recursive_router_node(state: PipelineState) -> dict:
     )
 
     try:
-        llm_result = call_llm(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=4096,
-            json_mode=True,
-        )
-        data = json.loads(llm_result.text)
+        data = _classify_recursive(prompt)
 
         new_function = data.get("function", "semantic_general")
         if new_function not in _VALID_FUNCTIONS:

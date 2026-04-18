@@ -5,6 +5,9 @@ using Gemini Flash with function-adaptive system prompts.
 """
 
 
+from langfuse import get_client as _lf_get_client
+from langfuse import observe
+
 import config
 from rag.gates import validate_citations_with_trace
 from rag.prompts import (
@@ -60,6 +63,7 @@ def build_system_prompt(
 # Generation
 # ---------------------------------------------------------------------------
 
+@observe(as_type="generation", name="pipeline.generator")
 def generate(
     results: list[dict],
     question: str,
@@ -116,13 +120,18 @@ def generate(
         else config.THINKING_BUDGET_METADATA
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
     llm_result = None
     try:
         llm_result = call_llm(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=messages,
             temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
             max_tokens=4096,
             thinking_budget=thinking_budget,
@@ -130,6 +139,13 @@ def generate(
         text = llm_result.text
     except Exception:
         raise
+    _lf_get_client().update_current_generation(
+        output=text,
+        usage_details={
+            "input": llm_result.input_tokens or 0,
+            "output": llm_result.output_tokens or 0,
+        } if llm_result and llm_result.input_tokens is not None else None,
+    )
     text = collapse_whitespace(text)
 
     # Prepend data integrity disclaimer when DB chunks are missing
@@ -148,6 +164,7 @@ def generate(
     return text
 
 
+@observe(as_type="generation", name="pipeline.generator.comparison")
 def generate_comparison(
     results: list[dict],
     question: str,
@@ -172,16 +189,26 @@ def generate_comparison(
         f"Question: {question}\n\n"
         f"Compare the following courses: {courses_list}."
     )
-
+    messages = [
+        {"role": "system", "content": COMPARISON_SYSTEM},
+        {"role": "user", "content": user_message},
+    ]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
+    usage_out: list = []
     for token in stream_llm(
-        messages=[
-            {"role": "system", "content": COMPARISON_SYSTEM},
-            {"role": "user", "content": user_message},
-        ],
+        messages=messages,
         temperature=0.2,
         max_tokens=4096,
+        usage_out=usage_out,
     ):
         yield token
+    if usage_out:
+        _lf_get_client().update_current_generation(
+            usage_details={"input": usage_out[0] or 0, "output": usage_out[1] or 0},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +222,7 @@ _OUT_OF_SCOPE_RESPONSE = (
 )
 
 
+@observe(as_type="generation", name="pipeline.generator")
 def generate_stream(
     results: list[dict],
     question: str,
@@ -260,19 +288,31 @@ def generate_stream(
         else config.THINKING_BUDGET_METADATA
     )
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+    _lf_get_client().update_current_generation(
+        model=config.TAMU_MODEL if config.USE_TAMU_API else config.GENERATION_MODEL,
+        input=messages,
+    )
     full_text_parts: list[str] = []
+    usage_out: list = []
 
     for token in stream_llm(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
+        messages=messages,
         temperature=_FUNCTION_TEMPERATURES.get(function, 0.1),
         max_tokens=4096,
         thinking_budget=thinking_budget,
+        usage_out=usage_out,
     ):
         full_text_parts.append(token)
         yield token
+
+    if usage_out:
+        _lf_get_client().update_current_generation(
+            usage_details={"input": usage_out[0] or 0, "output": usage_out[1] or 0},
+        )
 
     # Post-stream: run Gate 1 citation check
     complete_text = "".join(full_text_parts)

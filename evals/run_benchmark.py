@@ -30,11 +30,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import config
-from evals.golden_set import load as _load_golden_set, append_run_column as _append_run_column
+from evals.golden_set import append_run_column as _append_run_column
+from evals.golden_set import load as _load_golden_set
 from rag import RouterResult
 from rag.generator import generate_stream
 from rag.graph.pipeline import run_pipeline as run_pipeline_v4
-from rag.tools.langfuse import get_langfuse
+from rag.observability import (
+    EvalInputs,
+    benchmark_config,
+    create_trace,
+    finalize_trace,
+    get_langfuse,
+    run_evals,
+)
 
 REPORTS_DIR = Path("tamu_data/evals/reports")
 
@@ -109,24 +117,11 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
     source_course_id = str(item.get("source_course_id") or "")
     expected_fn = str(item.get("expected_function", ""))
 
-    # Langfuse trace per question (enables avg_chunk_score in UI)
-    lf = get_langfuse()
-    lf_span = None
-    trace_id: Optional[str] = None
-    if lf is not None:
-        try:
-            lf_span = lf.start_observation(
-                name=f"benchmark_q{question_id}",
-                input={"question": query},
-                metadata={
-                    "experiment": experiment_name,
-                    "question_id": question_id,
-                    "expected_function": expected_fn,
-                },
-            )
-            trace_id = lf_span.trace_id
-        except Exception:
-            pass
+    # Langfuse trace per question via observability config
+    obs = benchmark_config(experiment_name=experiment_name, ragas=do_ragas)
+    obs.metadata.update({"question_id": question_id, "expected_function": expected_fn})
+    lf_trace, trace_id = create_trace(obs, query=query)
+    lf_span = lf_trace  # backward compat with pipeline trace= parameter
 
     t0 = time.perf_counter()
     error: Optional[str] = None
@@ -181,15 +176,13 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
     generator_ms = round((time.perf_counter() - t_gen) * 1000, 1)
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    # Langfuse: close span and post avg chunk relevance score
-    if lf_span is not None:
-        try:
-            lf_span.end(output=answer[:500])
-        except Exception:
-            pass
+    # Langfuse: close trace and post avg chunk relevance score
+    finalize_trace(lf_trace, output=answer[:500])
+    lf = get_langfuse()
+    if lf and trace_id:
         try:
             chunk_scores = [c["score"] for c in chunks if isinstance(c.get("score"), (int, float))]
-            if chunk_scores and lf is not None and trace_id:
+            if chunk_scores:
                 lf.create_score(
                     trace_id=trace_id,
                     name="avg_chunk_score",
@@ -200,14 +193,15 @@ def run_one(item: dict, do_ragas: bool, question_id: int = 0, experiment_name: s
         except Exception:
             pass
 
-    # RAGAS (optional)
+    # RAGAS via observability eval blocks (synchronous for benchmarks)
     ragas_faithfulness: Optional[float] = None
     ragas_relevancy: Optional[float] = None
     if do_ragas and chunks and answer and not error:
         try:
-            from rag import compute_ragas_metrics
             contexts = [c.get("content", "") for c in chunks if c.get("content")]
-            scores = compute_ragas_metrics(question=query, contexts=contexts, answer=answer)
+            scores = run_evals(obs, EvalInputs(
+                question=query, contexts=contexts, answer=answer, trace_id=trace_id,
+            ))
             ragas_faithfulness = scores.get("faithfulness")
             ragas_relevancy = scores.get("answer_relevancy")
         except Exception:

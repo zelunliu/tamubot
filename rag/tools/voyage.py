@@ -31,7 +31,7 @@ def _get_client() -> voyageai.Client:
     return _voyage
 
 
-@observe(name="embed.voyage")
+@observe(name="pipeline.retrieval.embed")
 def embed_query(text: str) -> list[float]:
     """Embed a query string using Voyage AI voyage-3."""
     client = _get_client()
@@ -73,13 +73,14 @@ def knee_filter(
     return chunks
 
 
-@observe(name="rerank.voyage")
-def rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
+@observe(name="pipeline.retrieval.rerank")
+def rerank(query: str, chunks: list[dict], top_k: int, *, apply_knee: bool = True) -> list[dict]:
     """Cross-encoder rerank chunks by relevance to query, return top_k.
 
     Preserves all original chunk fields. Adds/updates 'score' field.
     Returns chunks sorted descending by score.
-    If config.RERANK_KNEE_ENABLED, applies knee-point score filtering after top_k slice.
+    Always drops chunks below config.RERANK_SCORE_THRESHOLD (floor: config.RERANK_SCORE_MIN_CHUNKS).
+    If config.RERANK_KNEE_ENABLED and apply_knee, additionally applies knee-point filtering.
     Falls back to original order (sliced to top_k) on any Voyage error.
     """
     if not chunks:
@@ -94,7 +95,12 @@ def rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
             chunk = dict(chunks[item.index])
             chunk["score"] = item.relevance_score
             results.append(chunk)
-        if config.RERANK_KNEE_ENABLED:
+        # Fixed score threshold — always active
+        min_chunks = config.RERANK_SCORE_MIN_CHUNKS
+        filtered = [c for c in results if c.get("score", 0.0) >= config.RERANK_SCORE_THRESHOLD]
+        results = filtered if len(filtered) >= min_chunks else results[:min_chunks]
+        # Knee-point filter — optional, off by default
+        if config.RERANK_KNEE_ENABLED and apply_knee:
             results = knee_filter(
                 results,
                 min_floor=config.RERANK_KNEE_MIN_CHUNKS,

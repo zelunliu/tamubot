@@ -49,7 +49,8 @@ if _col := _pre_arg("--chunks-collection"):
 if _ct := _pre_arg("--chunk-tag"):
     os.environ.setdefault("CHUNK_TAG_FILTER", _ct)
 
-from evals.golden_set import load as _load_golden_set, append_run_column as _append_run_column  # noqa: E402
+from evals.golden_set import append_run_column as _append_run_column  # noqa: E402
+from evals.golden_set import load as _load_golden_set  # noqa: E402
 
 logger = logging.getLogger("tamubot.eval_chunking")
 
@@ -122,13 +123,16 @@ def _compute_aggregates(results: list[dict]) -> dict:
 
 from rag.graph.pipeline import run_pipeline_eval  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Langfuse dataset upsert
 # ---------------------------------------------------------------------------
-
-from rag import get_langfuse  # noqa: E402
-from rag.tools.langfuse import compute_retrieval_ragas  # noqa: E402
+from rag.observability import (  # noqa: E402
+    EvalInputs,
+    chunking_config,
+    create_trace,
+    get_langfuse,
+    run_evals,
+)
 
 
 def _item_id(question: str) -> str:
@@ -355,42 +359,31 @@ def run_eval(
         question = item.get("question", item.get("query", ""))
         reference = item.get("reference_answer", "") or ""
 
-        # Open Langfuse span BEFORE pipeline call.
-        # The span's trace_id is passed to run_pipeline_eval() → CallbackHandler,
-        # which nests router + retrieval node spans under this trace — same
-        # structure as production runs.
-        span = None
-        if lf:
-            try:
-                span = lf.start_observation(
-                    name=f"chunking_eval_{run_name}",
-                    input=question,
-                    metadata={"experiment": experiment, "run_name": run_name},
-                )
-            except Exception as e:
-                logger.warning(f"Langfuse span open failed for '{question[:40]}': {e}")
+        # Create trace BEFORE pipeline call — trace_id passed to
+        # run_pipeline_eval() → CallbackHandler for span nesting.
+        obs = chunking_config(experiment=experiment, run_name=run_name, ragas=ragas_enabled)
+        trace, trace_id_for_item = create_trace(obs, query=question)
+        span = trace  # backward compat with _run_one_query trace= parameter
 
         row = _run_one_query(
             question, reference, top_k, threshold, ragas_enabled,
             i, len(golden_items), span=span,
         )
 
-        # End span BEFORE RAGAS — trace latency = router + retrieval only.
-        trace_id = None
-        if lf and span is not None:
+        # End trace BEFORE RAGAS — trace latency = router + retrieval only.
+        trace_id = trace_id_for_item
+        if trace is not None:
             try:
                 if row is not None:
-                    span.update(
+                    trace.update(
                         output={"router_function": row["router_function"],
                                 "n_chunks": len(row["_chunks"])},
                         metadata={"experiment": experiment, "run_name": run_name,
                                   "router_function": row["router_function"],
                                   "course_ids": row["course_ids"]},
                     )
-                span.end()
-                trace_id = span.trace_id
             except Exception as e:
-                logger.warning(f"Langfuse span end failed for '{question[:40]}': {e}")
+                logger.warning(f"Langfuse trace update failed for '{question[:40]}': {e}")
 
         if row is None:
             # Still link skipped items to the dataset run so they appear in Langfuse
@@ -407,15 +400,13 @@ def run_eval(
                     logger.warning(f"Langfuse skip link failed for '{question[:40]}': {e}")
             continue
 
-        # Run RAGAS after span.end() — doesn't inflate trace latency.
-        # compute_retrieval_ragas() posts context_precision + context_recall
-        # scores directly to Langfuse via trace_id.
+        # Run RAGAS after trace update — doesn't inflate trace latency.
         if ragas_enabled and row["_chunks"] and reference:
             contexts = [c.get("content", "") for c in row["_chunks"]]
-            ragas_scores = compute_retrieval_ragas(
+            ragas_scores = run_evals(obs, EvalInputs(
                 question=question, contexts=contexts, reference=reference,
                 trace_id=trace_id,
-            )
+            ))
             recall = ragas_scores.get("context_recall")
             precision_ragas = ragas_scores.get("context_precision")
             row["recall_at_k"] = recall
