@@ -2,7 +2,7 @@
 
 Validates routing AND the generated answer text for each turn.
 
-Run inside the claude container:
+Run inside the project root:
   python tools/test_coreference.py
 
 Makes ~6 TAMU API calls and ~6 Voyage AI calls.
@@ -13,9 +13,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import uuid
-from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory
-from rag.v4.session import SessionManager
-from rag.generator import generator_order
+from rag.graph.pipeline import run_pipeline_with_memory
+from rag.graph.session import SessionManager
+from rag.generator import generate_answer
 
 session_manager = SessionManager()
 session_id = f"coreference-test-{uuid.uuid4().hex[:8]}"
@@ -39,7 +39,8 @@ for i, query in enumerate(QUERIES, 1):
     print(f"TURN {i}: {query!r}")
     print("─" * 70)
 
-    chunks, rr, gaps, integrity, conflicts = run_pipeline_v4_with_memory(
+    # Returns: (chunks, router_result, data_gaps, data_integrity, conflicted_course_ids, answer_tokens)
+    chunks, rr, gaps, integrity, conflicts, answer_tokens = run_pipeline_with_memory(
         query, thread_config=thread_config
     )
 
@@ -47,19 +48,8 @@ for i, query in enumerate(QUERIES, 1):
           f"course_ids={rr.course_ids if rr else 'N/A'}")
     print(f"Chunks  → {len(chunks)} retrieved")
 
-    # Generate the actual answer (same as app.py does)
-    answer = ""
-    if rr is not None:
-        stream = generator_order(
-            recurrent=False,
-            chunks=chunks,
-            query=query,
-            router_result=rr,
-            data_gaps=gaps,
-            data_integrity=integrity,
-            conflicted_course_ids=conflicts,
-        )
-        answer = "".join(stream)
+    # Get the answer from answer_tokens
+    answer = answer_tokens[0] if answer_tokens else ""
 
     print(f"\nAnswer:\n{answer[:800]}{'...' if len(answer) > 800 else ''}")
     results.append((query, rr, chunks, answer))

@@ -14,9 +14,11 @@ print(f"SESSION_CACHE_ENABLED  = {config.SESSION_CACHE_ENABLED}")
 print(f"USE_TAMU_API           = {config.USE_TAMU_API}")
 print()
 
-import rag.v4.pipeline_v4 as pv4  # noqa: E402
-from rag.v4.pipeline_v4 import run_pipeline_v4_with_memory  # noqa: E402
-from rag.v4.session import SessionManager  # noqa: E402
+
+
+
+from rag.graph.pipeline import run_pipeline_with_memory, get_current_state  # noqa: E402
+from rag.graph.session import SessionManager  # noqa: E402
 
 SESSION_ID = "verify-cache-001"
 session_mgr = SessionManager()
@@ -28,15 +30,18 @@ FOLLOW_UP = "What are the prerequisites for that course?"
 
 def run_and_inspect(query: str, label: str) -> dict:
     t0 = time.perf_counter()
-    run_pipeline_v4_with_memory(query, thread_config=thread_config)
+
+    run_pipeline_with_memory(query, thread_config=thread_config)
     elapsed = (time.perf_counter() - t0) * 1000
 
-    # Read node_trace from graph state
-    graph = pv4._memory_graph
-    state = {}
-    if graph:
-        snap = graph.get_state(thread_config)
-        state = snap.values if snap and snap.values else {}
+
+
+
+
+
+
+    # Read state from graph
+    state = get_current_state(thread_config)
 
     node_trace = state.get("node_trace", [])
     timing_ms = state.get("timing_ms", {})
@@ -60,7 +65,8 @@ def run_and_inspect(query: str, label: str) -> dict:
 
 
 def check_answer_cache(state: dict, query: str) -> None:
-    from rag.v4.cache_utils import normalize_query
+
+    from rag.graph.cache_utils import normalize_query
     answer_cache = state.get("answer_cache", {})
     key = normalize_query(query)
     if key in answer_cache:
