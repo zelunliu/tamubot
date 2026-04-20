@@ -14,9 +14,6 @@ print(f"SESSION_CACHE_ENABLED  = {config.SESSION_CACHE_ENABLED}")
 print(f"USE_TAMU_API           = {config.USE_TAMU_API}")
 print()
 
-
-
-
 from rag.graph.pipeline import run_pipeline_with_memory, get_current_state  # noqa: E402
 from rag.graph.session import SessionManager  # noqa: E402
 
@@ -30,15 +27,8 @@ FOLLOW_UP = "What are the prerequisites for that course?"
 
 def run_and_inspect(query: str, label: str) -> dict:
     t0 = time.perf_counter()
-
     run_pipeline_with_memory(query, thread_config=thread_config)
     elapsed = (time.perf_counter() - t0) * 1000
-
-
-
-
-
-
 
     # Read state from graph
     state = get_current_state(thread_config)
@@ -65,7 +55,6 @@ def run_and_inspect(query: str, label: str) -> dict:
 
 
 def check_answer_cache(state: dict, query: str) -> None:
-
     from rag.graph.cache_utils import normalize_query
     answer_cache = state.get("answer_cache", {})
     key = normalize_query(query)
