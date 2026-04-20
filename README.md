@@ -788,6 +788,7 @@ config.py  (shared root)
 - **`<thinking>` block stripping** — `strip_thinking_blocks()` removes Chain-of-Verification quotes before display
 - **Observability stack**: Langfuse tracing + RAGAS automated evaluation; `intent_type` in router span metadata
 - **CBD reorganization** — `rag/` owns the schema contract (`models.py`); `ingestion_pipeline/` is the producer (`ingest.py` + `setup_atlas.py` moved from `rag/`); Pydantic validation enforced at ingest time; `CourseDoc` now stores `missing_sections` + `completeness_warnings`
+- **All 13 categories now query-routable** — Added `SAFETY` and `COURSE_SUMMARY` to `rag.models.VALID_CATEGORIES`; router can now target these categories directly for specific queries (e.g., "What are the safety requirements for CSCE 121?")
 
 ### Known Issues
 
@@ -797,17 +798,15 @@ config.py  (shared root)
 - **Router token budget**: `thinking_budget=512` + `max_output_tokens=1024` — watch if prompt grows.
 - **Recall@k 36%**: CRN-exact matching counts cross-section hits as misses → redefine hit as `course_id + category`.
 - **Golden set ~10 label errors**: run adjudication before trusting router accuracy (74% raw, ~90% estimated).
-- **`SAFETY` / `COURSE_SUMMARY` not query-routable**: not in `rag.models.VALID_CATEGORIES`; stored in MongoDB but router never targets them directly.
 
 ### Next Steps
 
 1. Run `refine_errors.py` on remaining 15 SSL/DNS failures in `gemini_parsed/`
 2. Expand parsing to all departments (`python ingestion_pipeline/process_syllabi.py` without `--department`)
-3. Add `SAFETY` to `rag.models.VALID_CATEGORIES` to make it query-routable
-4. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
-5. Redefine Recall@k hit as `course_id + category` to fix 36% undercount
-6. Parse and ingest Simple Syllabus PDFs (`tamu_data/raw/simple_syllabus_YYYYMMDD/`) — run `process_syllabi.py` against that folder
-7. Investigate Simple Syllabus API to retrieve Fall 2025 syllabi (the `doc-library-search` endpoint defaults to current+future terms only; past-term parameter unknown)
+3. Run full pipeline eval with ingested MongoDB (retrieval quality + citation rate)
+4. Redefine Recall@k hit as `course_id + category` to fix 36% undercount
+5. Parse and ingest Simple Syllabus PDFs (`tamu_data/raw/simple_syllabus_YYYYMMDD/`) — run `process_syllabi.py` against that folder
+6. Investigate Simple Syllabus API to retrieve Fall 2025 syllabi (the `doc-library-search` endpoint defaults to current+future terms only; past-term parameter unknown)
 
 ---
 
